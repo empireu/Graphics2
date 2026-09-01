@@ -7,4 +7,8 @@
         <Nullable>enable</Nullable>
     </PropertyGroup>
 
+    <ItemGroup>
+      <ProjectReference Include="..\Graphics2.Applications\Graphics2.Applications.csproj" />
+    </ItemGroup>
+
 </Project>

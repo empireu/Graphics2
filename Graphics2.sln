@@ -4,6 +4,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Demo", "Demo\Demo.csproj", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Graphics2.Core", "Graphics2.Core\Graphics2.Core.csproj", "{8684214A-493C-4033-ABEB-A2B83399311A}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Graphics2.Windowing", "Graphics2.Windowing\Graphics2.Windowing.csproj", "{BB2EAFAF-2E7C-42BF-865D-FBD0151149A4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Graphics2.Applications", "Graphics2.Applications\Graphics2.Applications.csproj", "{98AFBC3B-ACEE-4CF3-BC1E-A5CC783DB5A5}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -18,5 +22,13 @@ Global
 		{8684214A-493C-4033-ABEB-A2B83399311A}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{8684214A-493C-4033-ABEB-A2B83399311A}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{8684214A-493C-4033-ABEB-A2B83399311A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BB2EAFAF-2E7C-42BF-865D-FBD0151149A4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BB2EAFAF-2E7C-42BF-865D-FBD0151149A4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BB2EAFAF-2E7C-42BF-865D-FBD0151149A4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BB2EAFAF-2E7C-42BF-865D-FBD0151149A4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{98AFBC3B-ACEE-4CF3-BC1E-A5CC783DB5A5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{98AFBC3B-ACEE-4CF3-BC1E-A5CC783DB5A5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{98AFBC3B-ACEE-4CF3-BC1E-A5CC783DB5A5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{98AFBC3B-ACEE-4CF3-BC1E-A5CC783DB5A5}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

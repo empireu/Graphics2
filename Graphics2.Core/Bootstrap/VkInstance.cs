@@ -5,7 +5,7 @@ using Silk.NET.Vulkan.Extensions.EXT;
 
 namespace Graphics2.Core.Bootstrap;
 
-public sealed class VkInstanceDescription
+public sealed record VkInstanceDescription
 {
     /// <summary>
     ///     If true, the validation layers will be enabled.
@@ -29,15 +29,63 @@ public sealed class VkInstanceDescription
     // ReSharper disable once CollectionNeverUpdated.Global
     public List<string> AdditionalExtensions { get; init; } = [];
 
-    public DebugUtilsMessageSeverityFlagsEXT MessageSeverityFlags { get; init; } =
-        // DebugUtilsMessageSeverityFlagsEXT.VerboseBitExt |
-        DebugUtilsMessageSeverityFlagsEXT.WarningBitExt |
-        DebugUtilsMessageSeverityFlagsEXT.ErrorBitExt;
+    public bool ValidationShowVerboseSeverity { get; init; } = false;
+    public bool ValidationShowWarningSeverity { get; init; } = true;
+    public bool ValidationShowErrorSeverity { get; init; } = true;
     
-    public DebugUtilsMessageTypeFlagsEXT MessageTypeFlags { get; init; } = 
-        DebugUtilsMessageTypeFlagsEXT.GeneralBitExt |
-        DebugUtilsMessageTypeFlagsEXT.PerformanceBitExt |
-        DebugUtilsMessageTypeFlagsEXT.ValidationBitExt;
+    internal DebugUtilsMessageSeverityFlagsEXT MessageSeverityFlags
+    {
+        get
+        {
+            var flags = DebugUtilsMessageSeverityFlagsEXT.None;
+
+            if (ValidationShowVerboseSeverity)
+            {
+                flags |= DebugUtilsMessageSeverityFlagsEXT.VerboseBitExt;
+            }
+
+            if (ValidationShowWarningSeverity)
+            {
+                flags |= DebugUtilsMessageSeverityFlagsEXT.WarningBitExt;
+            }
+
+            if (ValidationShowErrorSeverity)
+            {
+                flags |= DebugUtilsMessageSeverityFlagsEXT.ErrorBitExt;
+            }
+
+            return flags;
+        }
+    }
+
+    public bool ValidationShowGeneralMessages { get; init; } = true;
+    public bool ValidationShowPerformanceMessages { get; init; } = true;
+    public bool ValidationShowValidationMessages { get; init; } = true;
+
+    internal DebugUtilsMessageTypeFlagsEXT MessageTypeFlags
+    {
+        get
+        {
+            var flags = DebugUtilsMessageTypeFlagsEXT.None;
+
+            if (ValidationShowGeneralMessages)
+            {
+                flags |= DebugUtilsMessageTypeFlagsEXT.GeneralBitExt;
+            }
+
+            if (ValidationShowPerformanceMessages)
+            {
+                flags |= DebugUtilsMessageTypeFlagsEXT.PerformanceBitExt;
+            }
+
+            if (ValidationShowValidationMessages)
+            {
+                flags |= DebugUtilsMessageTypeFlagsEXT.ValidationBitExt;
+            }
+
+            return flags;
+        }
+    }
     
     /// <summary>
     ///     The validation message callback.
