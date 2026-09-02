@@ -98,15 +98,15 @@ public sealed unsafe class VkInstance : IDisposable
     public static readonly DebugUtilsMessengerCallbackFunctionEXT DefaultCallback = DefaultDebugCallback;
     
     public readonly Vk Vk;
-    public readonly Instance Instance;
+    public readonly Instance Handle;
     private readonly Debugger? _debugger;
 
     private int _disposed;
     
-    private VkInstance(Vk vk, Instance instance, Debugger? debugger)
+    private VkInstance(Vk vk, Instance handle, Debugger? debugger)
     {
         Vk = vk;
-        Instance = instance;
+        Handle = handle;
         _debugger = debugger;
     }
     
@@ -117,8 +117,8 @@ public sealed unsafe class VkInstance : IDisposable
             return;
         }
 
-        _debugger?.DebugUtils.DestroyDebugUtilsMessenger(Instance, _debugger.DebugMessenger, null);
-        Vk.DestroyInstance(Instance, null);
+        _debugger?.DebugUtils.DestroyDebugUtilsMessenger(Handle, _debugger.DebugMessenger, null);
+        Vk.DestroyInstance(Handle, null);
         Vk.Dispose();
     }
     

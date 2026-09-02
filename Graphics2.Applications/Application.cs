@@ -36,7 +36,7 @@ public abstract unsafe class Application : IDisposable
             .ToList()
         });
         
-        var surfaceHandle = Window.Surface.Create<AllocationCallbacks>(new VkHandle(Instance.Instance.Handle), null);
+        var surfaceHandle = Window.Surface.Create<AllocationCallbacks>(new VkHandle(Instance.Handle.Handle), null);
         Surface = new SurfaceKHR(surfaceHandle.Handle);
     }
 
