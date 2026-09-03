@@ -49,6 +49,8 @@ public sealed unsafe class VkSwapchain : IDisposable
     public Extent2D Extent { get; private set; }
 
     public IReadOnlyList<ImageView> Views => _views;
+
+    public IReadOnlyList<Image> Images => _images;
     
     public static VkSwapchain Create(
         VkDevice device,

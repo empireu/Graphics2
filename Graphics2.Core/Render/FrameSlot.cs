@@ -90,6 +90,11 @@ public sealed unsafe class FrameSlot : IDisposable
         return new FrameSlot(device, commandPool, commandBuffer, acquireSemaphore, fence);
     }
 
+    public void Reset()
+    {
+        Device.Instance.Vk.ResetCommandPool(Device.Device, _commandPool, CommandPoolResetFlags.None);
+    }
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
