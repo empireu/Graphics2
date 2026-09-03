@@ -7,26 +7,25 @@ namespace Graphics2.Core.Bootstrap;
 
 public sealed class VkDeviceDescription
 {
+    // ReSharper disable once CollectionNeverUpdated.Global
+    // ReSharper disable once FieldCanBeMadeReadOnly.Global
     public List<string> AdditionalExtensions = [];
 }
 
-public unsafe class VkDevice : IDisposable
+public sealed unsafe class VkDevice : IDisposable
 {
-    private readonly DeviceInfo _deviceInfo;
     private int _disposed;
     
-    private VkDevice(VkInstance instance, DeviceInfo deviceInfo, Device device, Queue queue)
+    private VkDevice(VkInstance instance, DeviceInfo info, Device device, Queue queue)
     {
-        Queue = queue;
-        Device = device;
         Instance = instance;
-    
-        _deviceInfo = deviceInfo;
-        
-        
+        Info = info;
+        Device = device;
+        Queue = queue;
     }
     
     public readonly VkInstance Instance;
+    public readonly DeviceInfo Info;
     public readonly Device Device;
     public readonly Queue Queue;
 
@@ -146,11 +145,7 @@ public unsafe class VkDevice : IDisposable
         }
         
         Span<PhysicalDevice> physicalDevices = stackalloc PhysicalDevice[(int)physicalDeviceCount];
-        if (instance.Vk.EnumeratePhysicalDevices(
-                instance.Handle,
-                ref physicalDeviceCount,
-                ref physicalDevices.GetPinnableReference()) != Result.Success
-            )
+        if (instance.Vk.EnumeratePhysicalDevices(instance.Handle, ref physicalDeviceCount, ref physicalDevices.GetPinnableReference()) != Result.Success)
         {
             throw new VkBootstrapException("Failed to enumerate physical devices after count");
         }
@@ -182,7 +177,8 @@ public unsafe class VkDevice : IDisposable
         throw new VkBootstrapException("Failed to find suitable device");
     }
 
-    private readonly struct DeviceInfo
+    // ReSharper disable UnusedAutoPropertyAccessor.Global
+    public readonly struct DeviceInfo
     {
         public PhysicalDevice PhysicalDevice { get; init; }
         
@@ -200,7 +196,8 @@ public unsafe class VkDevice : IDisposable
         
         public ulong DeviceLocalMemory { get; init; }
     }
-    
+    // ReSharper restore UnusedAutoPropertyAccessor.Global
+
     private static bool TryFindDevice(
         VkInstance instance,
         SurfaceTarget surfaceTarget,
@@ -328,7 +325,7 @@ public unsafe class VkDevice : IDisposable
         public readonly SurfaceKHR Surface = surface;
     }
 
-    private readonly struct QueueFamilyScanResults(List<uint> graphicsFamilies, List<uint> presentFamilies)
+    public readonly struct QueueFamilyScanResults(List<uint> graphicsFamilies, List<uint> presentFamilies)
     {
         public readonly List<uint> GraphicsFamilies = graphicsFamilies;
         public readonly List<uint> PresentFamilies = presentFamilies;
