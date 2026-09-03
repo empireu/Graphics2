@@ -12,18 +12,32 @@ public sealed class VkDeviceDescription
 
 public unsafe class VkDevice : IDisposable
 {
-    private readonly VkInstance _instance;
     private readonly DeviceInfo _deviceInfo;
-
-    private VkDevice(VkInstance instance, DeviceInfo deviceInfo)
+    private int _disposed;
+    
+    private VkDevice(VkInstance instance, DeviceInfo deviceInfo, Device device, Queue queue)
     {
-        _instance = instance;
+        Queue = queue;
+        Device = device;
+        Instance = instance;
+    
         _deviceInfo = deviceInfo;
+        
+        
     }
+    
+    public readonly VkInstance Instance;
+    public readonly Device Device;
+    public readonly Queue Queue;
 
     public void Dispose()
     {
-        
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        Instance.Vk.DestroyDevice(Device, null);
     }
 
     public static VkDevice Create(VkInstance instance, SurfaceKHR surface, VkDeviceDescription description)
@@ -33,12 +47,92 @@ public unsafe class VkDevice : IDisposable
             throw new VkBootstrapException("Failed to get KHR surface extension");
         }
 
-        var deviceInfo = PickGraphicsDevice(instance, new SurfaceTarget(khrSurface, surface), description);
+        var extensions = description.AdditionalExtensions.ToList();
+        extensions.Add(KhrSwapchain.ExtensionName);
 
-        return new VkDevice(instance, deviceInfo);
+        var pickedInfo = PickGraphicsDevice(
+            instance,
+            extensions,
+            new SurfaceTarget(khrSurface, surface),
+            description
+        );
+
+        var queuePriority = 1.0f;
+        var queueCreateInfo = new DeviceQueueCreateInfo
+        {
+            SType = StructureType.DeviceQueueCreateInfo,
+            QueueFamilyIndex = pickedInfo.ChosenGraphicsPresentFamily,
+            QueueCount = 1,
+            PQueuePriorities = &queuePriority
+        };
+        
+        PhysicalDeviceVulkan11Features vk11Features = new()
+        {
+            SType = StructureType.PhysicalDeviceVulkan11Features,
+            ShaderDrawParameters = true
+        };
+        
+        PhysicalDeviceVulkan12Features vk12Features = new()
+        {
+            SType = StructureType.PhysicalDeviceVulkan12Features,
+            DescriptorIndexing = true,
+            ShaderSampledImageArrayNonUniformIndexing = true,
+            RuntimeDescriptorArray = true
+        };
+        
+        PhysicalDeviceVulkan13Features vk13Features = new()
+        {
+            SType = StructureType.PhysicalDeviceVulkan13Features,
+            DynamicRendering = true,
+            Synchronization2 = true,
+        };
+        
+        PhysicalDeviceFeatures2 features2 = new()
+        {
+            SType = StructureType.PhysicalDeviceFeatures2,
+            PNext = &vk11Features,
+            Features = new PhysicalDeviceFeatures
+            {
+                SamplerAnisotropy = true
+            }
+        };
+        
+        vk11Features.PNext = &vk12Features;
+        vk12Features.PNext = &vk13Features;
+
+
+        Device logicalDevice;
+        
+        var ppEnabledExtensions = (byte**)SilkMarshal.StringArrayToPtr(extensions);
+
+        try
+        {
+            DeviceCreateInfo createInfo = new()
+            {
+                SType = StructureType.DeviceCreateInfo,
+                PNext = &features2,
+                QueueCreateInfoCount = 1,
+                PQueueCreateInfos = &queueCreateInfo,
+                EnabledExtensionCount = (uint)extensions.Count,
+                PpEnabledExtensionNames = ppEnabledExtensions
+            };
+            
+            if (instance.Vk.CreateDevice(pickedInfo.PhysicalDevice, &createInfo, null, out logicalDevice) != Result.Success)
+            {
+                throw new Exception("Failed to create logical device");
+            }
+        }
+        finally
+        {
+            SilkMarshal.Free((IntPtr)ppEnabledExtensions);
+        }
+        
+        var queue = instance.Vk.GetDeviceQueue(logicalDevice, pickedInfo.ChosenGraphicsPresentFamily, 0);
+        
+        return new VkDevice(instance, pickedInfo, logicalDevice, queue);
     }
 
-    private static DeviceInfo PickGraphicsDevice(VkInstance instance, SurfaceTarget surfaceTarget, VkDeviceDescription description)
+    private static DeviceInfo PickGraphicsDevice(VkInstance instance, List<string> extensions, SurfaceTarget surfaceTarget, VkDeviceDescription description)
     {
         uint physicalDeviceCount;
         if (instance.Vk.EnumeratePhysicalDevices(instance.Handle, &physicalDeviceCount, null) != Result.Success)
@@ -60,10 +154,7 @@ public unsafe class VkDevice : IDisposable
         {
             throw new VkBootstrapException("Failed to enumerate physical devices after count");
         }
-
-        var extensions = description.AdditionalExtensions.ToList();
-        extensions.Add(KhrSwapchain.ExtensionName);
-
+        
         var discreteDevices = physicalDevices.ToArray().Where(device =>
         {
             instance.Vk.GetPhysicalDeviceProperties(device, out var properties);
