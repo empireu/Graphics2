@@ -1,6 +1,8 @@
 using Graphics2.Core.Bootstrap;
+using Graphics2.Core.Resources;
 using Silk.NET.Maths;
 using Silk.NET.Vulkan;
+using Pipeline = Graphics2.Core.Resources.Pipeline;
 
 // ReSharper disable ForCanBeConvertedToForeach
 
@@ -198,6 +200,42 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         }
 
         _vk.CmdBeginRendering(_cmd, &renderingInfo);
+    }
+
+    public void SetPipeline(Pipeline pipeline)
+    {
+        _vk.CmdBindPipeline(_cmd, PipelineBindPoint.Graphics, pipeline.Handle);
+    }
+
+    public void SetViewport(float x, float y, float width, float height, float minDepth = 0.0f, float maxDepth = 1.0f)
+    {
+        var viewport = new Viewport
+        {
+            X = x,
+            Y = y,
+            Width = width,
+            Height = height,
+            MinDepth = minDepth,
+            MaxDepth = maxDepth
+        };
+        
+        _vk.CmdSetViewport(_cmd, 0, 1, &viewport);
+    }
+
+    public void SetScissor(int x, int y, uint width, uint height)
+    {
+        var scissor = new Rect2D
+        {
+            Offset = new Offset2D(x, y),
+            Extent = new Extent2D(width, height)
+        };
+        
+        _vk.CmdSetScissor(_cmd, 0, 1, &scissor);
+    }
+
+    public void Draw(uint vertexCount, uint instanceCount = 1, uint firstVertex = 0, uint firstInstance = 0)
+    {
+        _vk.CmdDraw(_cmd, vertexCount, instanceCount, firstVertex, firstInstance);
     }
 
     public void End()

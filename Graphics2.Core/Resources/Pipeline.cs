@@ -1,3 +1,6 @@
+using Graphics2.Core.Bootstrap;
+using Silk.NET.Vulkan;
+
 namespace Graphics2.Core.Resources;
 
 public enum CompareOp
@@ -79,4 +82,58 @@ public sealed class PipelineDescription
     public bool Wireframe { get; init; }
 
     public BlendState[]? Blends { get; init; }
+}
+
+public sealed unsafe class Pipeline : IDisposable
+{
+    private readonly VkDevice _device;
+    private readonly VkShader _vertexShader;
+    private readonly VkShader? _fragmentShader;
+    private readonly DescriptorSetLayout[] _descriptorSetLayouts;
+    private int _disposed;
+
+    internal Silk.NET.Vulkan.Pipeline Handle;
+    internal PipelineLayout Layout;
+
+    public ShaderReflection Reflection { get; }
+
+    internal Pipeline(
+        VkDevice device,
+        Silk.NET.Vulkan.Pipeline handle,
+        PipelineLayout layout,
+        DescriptorSetLayout[] descriptorSetLayouts,
+        VkShader vertexShader,
+        VkShader? fragmentShader,
+        ShaderReflection reflection)
+    {
+        _device = device;
+        Handle = handle;
+        Layout = layout;
+        _descriptorSetLayouts = descriptorSetLayouts;
+        _vertexShader = vertexShader;
+        _fragmentShader = fragmentShader;
+        Reflection = reflection;
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        var vk = _device.Instance.Vk;
+        vk.DeviceWaitIdle(_device.Device);
+
+        vk.DestroyPipeline(_device.Device, Handle, null);
+        vk.DestroyPipelineLayout(_device.Device, Layout, null);
+
+        foreach (var setLayout in _descriptorSetLayouts)
+        {
+            vk.DestroyDescriptorSetLayout(_device.Device, setLayout, null);
+        }
+
+        _vertexShader.Dispose();
+        _fragmentShader?.Dispose();
+    }
 }

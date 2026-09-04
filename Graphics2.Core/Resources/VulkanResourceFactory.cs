@@ -2,6 +2,7 @@ using Graphics2.Allocator;
 using Graphics2.Core.Bootstrap;
 using Graphics2.Core.Render;
 using Silk.NET.Vulkan;
+using Silk.NET.Core.Native;
 
 namespace Graphics2.Core.Resources;
 
@@ -13,6 +14,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
     private readonly BlockAllocator<VulkanMemory> _gpuOnly;
     private readonly BlockAllocator<VulkanMemory> _cpuToGpu;
     private readonly BlockAllocator<VulkanMemory> _gpuToCpu;
+    private readonly ShaderCompiler _shaderCompiler;
     private int _disposed;
 
     public VulkanResourceFactory(VkDevice device)
@@ -26,6 +28,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         _gpuOnly = new BlockAllocator<VulkanMemory>(DefaultBlockSize, gpuOnlyLayer);
         _cpuToGpu = new BlockAllocator<VulkanMemory>(DefaultBlockSize, cpuToGpuLayer);
         _gpuToCpu = new BlockAllocator<VulkanMemory>(DefaultBlockSize, gpuToCpuLayer);
+        _shaderCompiler = new ShaderCompiler();
     }
 
     public VkBuffer CreateBuffer(BufferDescription description)
@@ -196,6 +199,341 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         return new Texture(_device, _gpuOnly, imageHandle, viewHandle, allocation, description.Width, description.Height, description.Format, description.Usage);
     }
 
+    public Pipeline CreatePipeline(PipelineDescription description)
+    {
+        var compiled = _shaderCompiler.Compile(description.Source, description.VertexEntryPoint, description.FragmentEntryPoint);
+
+        var vertexShader = CreateShader(new ShaderDescription
+        {
+            SpirV = compiled.VertexSpirV,
+            Stage = ShaderStage.Vertex,
+            EntryPoint = "main"
+        });
+
+        VkShader? fragmentShader = null;
+        if (compiled.FragmentSpirV is not null && description.FragmentEntryPoint is not null)
+        {
+            fragmentShader = CreateShader(new ShaderDescription
+            {
+                SpirV = compiled.FragmentSpirV,
+                Stage = ShaderStage.Fragment,
+                EntryPoint = "main"
+            });
+        }
+
+        var descriptorSetLayouts = CreateDescriptorSetLayouts(compiled.Reflection);
+        var pipelineLayout = CreatePipelineLayout(descriptorSetLayouts);
+
+        var pipelineHandle = CreateGraphicsPipeline(description, vertexShader, fragmentShader, pipelineLayout, compiled.Reflection);
+
+        return new Pipeline(_device, pipelineHandle, pipelineLayout, descriptorSetLayouts, vertexShader, fragmentShader, compiled.Reflection);
+    }
+
+    private DescriptorSetLayout[] CreateDescriptorSetLayouts(ShaderReflection reflection)
+    {
+        var vk = _device.Instance.Vk;
+
+        if (reflection.Parameters.Length == 0)
+        {
+            return [];
+        }
+
+        var maxSet = 0u;
+        foreach (var param in reflection.Parameters)
+        {
+            if (param.BindingSpace > maxSet)
+            {
+                maxSet = param.BindingSpace;
+            }
+        }
+
+        var setCount = maxSet + 1;
+        var bindingsBySet = new List<DescriptorSetLayoutBinding>[(int)setCount];
+        for (var i = 0; i < setCount; i++)
+        {
+            bindingsBySet[i] = [];
+        }
+
+        foreach (var param in reflection.Parameters)
+        {
+            var descriptorType = param.Kind switch
+            {
+                ShaderParameterKind.UniformBuffer => DescriptorType.UniformBuffer,
+                ShaderParameterKind.StorageBuffer => DescriptorType.StorageBuffer,
+                ShaderParameterKind.SampledImage => DescriptorType.SampledImage,
+                ShaderParameterKind.Sampler => DescriptorType.Sampler,
+                ShaderParameterKind.StorageImage => DescriptorType.StorageImage,
+                _ => throw new NotSupportedException($"Unsupported shader parameter kind: {param.Kind}")
+            };
+
+            bindingsBySet[(int)param.BindingSpace].Add(new DescriptorSetLayoutBinding
+            {
+                Binding = param.BindingIndex,
+                DescriptorType = descriptorType,
+                DescriptorCount = 1,
+                StageFlags = ShaderStageFlags.VertexBit | ShaderStageFlags.FragmentBit,
+                PImmutableSamplers = null
+            });
+        }
+
+        var layouts = new DescriptorSetLayout[setCount];
+        for (var i = 0; i < setCount; i++)
+        {
+            var bindings = bindingsBySet[i];
+            if (bindings.Count == 0)
+            {
+                layouts[i] = default;
+                continue;
+            }
+
+            var bindingsArray = bindings.ToArray();
+            fixed (DescriptorSetLayoutBinding* ptr = bindingsArray)
+            {
+                var createInfo = new DescriptorSetLayoutCreateInfo
+                {
+                    SType = StructureType.DescriptorSetLayoutCreateInfo,
+                    BindingCount = (uint)bindingsArray.Length,
+                    PBindings = ptr
+                };
+
+                if (vk.CreateDescriptorSetLayout(_device.Device, in createInfo, null, out layouts[i]) != Result.Success)
+                {
+                    throw new VkAllocationException($"Failed to create descriptor set layout for set {i}.");
+                }
+            }
+        }
+
+        return layouts;
+    }
+
+    private PipelineLayout CreatePipelineLayout(DescriptorSetLayout[] descriptorSetLayouts)
+    {
+        var vk = _device.Instance.Vk;
+
+        fixed (DescriptorSetLayout* ptr = descriptorSetLayouts)
+        {
+            var createInfo = new PipelineLayoutCreateInfo
+            {
+                SType = StructureType.PipelineLayoutCreateInfo,
+                SetLayoutCount = (uint)descriptorSetLayouts.Length,
+                PSetLayouts = ptr,
+                PushConstantRangeCount = 0
+            };
+
+            if (vk.CreatePipelineLayout(_device.Device, in createInfo, null, out var layout) != Result.Success)
+            {
+                throw new VkAllocationException("Failed to create pipeline layout.");
+            }
+
+            return layout;
+        }
+    }
+
+    private Silk.NET.Vulkan.Pipeline CreateGraphicsPipeline(
+        PipelineDescription description,
+        VkShader vertexShader,
+        VkShader? fragmentShader,
+        PipelineLayout pipelineLayout,
+        ShaderReflection reflection)
+    {
+        var vk = _device.Instance.Vk;
+
+        var stageCount = fragmentShader is not null ? 2u : 1u;
+        var stages = stackalloc PipelineShaderStageCreateInfo[(int)stageCount];
+
+        var vertName = SilkMarshal.StringToPtr("main", NativeStringEncoding.UTF8);
+        stages[0] = new PipelineShaderStageCreateInfo
+        {
+            SType = StructureType.PipelineShaderStageCreateInfo,
+            Stage = ShaderStageFlags.VertexBit,
+            Module = vertexShader.Handle,
+            PName = (byte*)vertName
+        };
+
+        nint fragName = 0;
+        if (fragmentShader is not null)
+        {
+            fragName = SilkMarshal.StringToPtr("main", NativeStringEncoding.UTF8);
+            stages[1] = new PipelineShaderStageCreateInfo
+            {
+                SType = StructureType.PipelineShaderStageCreateInfo,
+                Stage = ShaderStageFlags.FragmentBit,
+                Module = fragmentShader.Handle,
+                PName = (byte*)fragName
+            };
+        }
+
+        var vertexInputs = Array.Empty<VertexAttributeReflection>();
+        var vsEntry = Array.Find(reflection.EntryPoints, ep => ep.Stage == ShaderStage.Vertex);
+        if (vsEntry.VertexInputs.Length > 0)
+        {
+            vertexInputs = vsEntry.VertexInputs;
+        }
+
+        var bindingDescription = new VertexInputBindingDescription
+        {
+            Binding = 0,
+            Stride = 0,
+            InputRate = VertexInputRate.Vertex
+        };
+
+        var attributeDescriptions = stackalloc VertexInputAttributeDescription[vertexInputs.Length];
+        for (var i = 0; i < vertexInputs.Length; i++)
+        {
+            attributeDescriptions[i] = new VertexInputAttributeDescription
+            {
+                Binding = 0,
+                Location = vertexInputs[i].Location,
+                Format = VertexAttributeFormatToVk(vertexInputs[i].Format),
+                Offset = 0
+            };
+        }
+
+        var vertexInputInfo = new PipelineVertexInputStateCreateInfo
+        {
+            SType = StructureType.PipelineVertexInputStateCreateInfo,
+            VertexBindingDescriptionCount = 1,
+            PVertexBindingDescriptions = &bindingDescription,
+            VertexAttributeDescriptionCount = (uint)vertexInputs.Length,
+            PVertexAttributeDescriptions = attributeDescriptions
+        };
+
+        var inputAssembly = new PipelineInputAssemblyStateCreateInfo
+        {
+            SType = StructureType.PipelineInputAssemblyStateCreateInfo,
+            Topology = PrimitiveTopologyToVk(description.Topology),
+            PrimitiveRestartEnable = false
+        };
+
+        var viewportState = new PipelineViewportStateCreateInfo
+        {
+            SType = StructureType.PipelineViewportStateCreateInfo,
+            ViewportCount = 1,
+            ScissorCount = 1
+        };
+
+        var rasterizer = new PipelineRasterizationStateCreateInfo
+        {
+            SType = StructureType.PipelineRasterizationStateCreateInfo,
+            DepthClampEnable = false,
+            RasterizerDiscardEnable = false,
+            PolygonMode = description.Wireframe ? PolygonMode.Line : PolygonMode.Fill,
+            CullMode = CullModeToVk(description.CullMode),
+            FrontFace = FrontFaceToVk(description.FrontFace),
+            DepthBiasEnable = false,
+            LineWidth = 1.0f
+        };
+
+        var multisampling = new PipelineMultisampleStateCreateInfo
+        {
+            SType = StructureType.PipelineMultisampleStateCreateInfo,
+            RasterizationSamples = SampleCountFlags.Count1Bit,
+            SampleShadingEnable = false
+        };
+
+        var colorBlendAttachments = stackalloc PipelineColorBlendAttachmentState[description.ColorAttachments.Length];
+        for (var i = 0; i < description.ColorAttachments.Length; i++)
+        {
+            var blend = description.Blends is not null && i < description.Blends.Length
+                ? description.Blends[i]
+                : BlendState.None;
+
+            colorBlendAttachments[i] = new PipelineColorBlendAttachmentState
+            {
+                BlendEnable = blend.Enabled,
+                SrcColorBlendFactor = BlendFactorToVk(blend.SrcFactor),
+                DstColorBlendFactor = BlendFactorToVk(blend.DstFactor),
+                ColorBlendOp = BlendOp.Add,
+                SrcAlphaBlendFactor = BlendFactorToVk(blend.SrcFactor),
+                DstAlphaBlendFactor = BlendFactorToVk(blend.DstFactor),
+                AlphaBlendOp = BlendOp.Add,
+                ColorWriteMask = ColorComponentFlags.RBit | ColorComponentFlags.GBit | ColorComponentFlags.BBit | ColorComponentFlags.ABit
+            };
+        }
+
+        var colorBlending = new PipelineColorBlendStateCreateInfo
+        {
+            SType = StructureType.PipelineColorBlendStateCreateInfo,
+            LogicOpEnable = false,
+            LogicOp = LogicOp.Copy,
+            AttachmentCount = (uint)description.ColorAttachments.Length,
+            PAttachments = colorBlendAttachments
+        };
+
+        var depthStencil = new PipelineDepthStencilStateCreateInfo
+        {
+            SType = StructureType.PipelineDepthStencilStateCreateInfo,
+            DepthTestEnable = description.DepthTest,
+            DepthWriteEnable = description.DepthWrite,
+            DepthCompareOp = CompareOpToVk(description.DepthCompare),
+            DepthBoundsTestEnable = false,
+            StencilTestEnable = false
+        };
+
+        var dynamicStates = stackalloc DynamicState[2]
+        {
+            DynamicState.Viewport,
+            DynamicState.Scissor
+        };
+
+        var dynamicState = new PipelineDynamicStateCreateInfo
+        {
+            SType = StructureType.PipelineDynamicStateCreateInfo,
+            DynamicStateCount = 2,
+            PDynamicStates = dynamicStates
+        };
+
+        var colorFormats = stackalloc Format[description.ColorAttachments.Length];
+        for (var i = 0; i < description.ColorAttachments.Length; i++)
+        {
+            colorFormats[i] = TextureFormatToVk(description.ColorAttachments[i]);
+        }
+
+        var renderingInfo = new PipelineRenderingCreateInfo
+        {
+            SType = StructureType.PipelineRenderingCreateInfo,
+            ColorAttachmentCount = (uint)description.ColorAttachments.Length,
+            PColorAttachmentFormats = colorFormats,
+            DepthAttachmentFormat = description.DepthAttachment is not null
+                ? TextureFormatToVk(description.DepthAttachment.Value)
+                : Format.Undefined
+        };
+
+        var pipelineInfo = new GraphicsPipelineCreateInfo
+        {
+            SType = StructureType.GraphicsPipelineCreateInfo,
+            StageCount = stageCount,
+            PStages = stages,
+            PVertexInputState = &vertexInputInfo,
+            PInputAssemblyState = &inputAssembly,
+            PViewportState = &viewportState,
+            PRasterizationState = &rasterizer,
+            PMultisampleState = &multisampling,
+            PColorBlendState = &colorBlending,
+            PDepthStencilState = &depthStencil,
+            PDynamicState = &dynamicState,
+            Layout = pipelineLayout,
+            RenderPass = default,
+            PNext = &renderingInfo
+        };
+
+        Silk.NET.Vulkan.Pipeline pipelineHandle;
+        var result = vk.CreateGraphicsPipelines(_device.Device, default, 1, in pipelineInfo, null, out pipelineHandle);
+
+        SilkMarshal.Free(vertName);
+        if (fragName != 0)
+        {
+            SilkMarshal.Free(fragName);
+        }
+
+        if (result != Result.Success)
+        {
+            throw new VkAllocationException("Failed to create graphics pipeline.");
+        }
+
+        return pipelineHandle;
+    }
+
     private BlockAllocator<VulkanMemory> BufferUsageToAllocator(BufferUsage usage)
     {
         var memoryUsage = BufferUsageToMemoryUsage(usage);
@@ -310,6 +648,77 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         _ => ImageAspectFlags.ColorBit
     };
 
+    private static Format VertexAttributeFormatToVk(VertexAttributeFormat format) => format switch
+    {
+        VertexAttributeFormat.Float => Format.R32Sfloat,
+        VertexAttributeFormat.Float2 => Format.R32G32Sfloat,
+        VertexAttributeFormat.Float3 => Format.R32G32B32Sfloat,
+        VertexAttributeFormat.Float4 => Format.R32G32B32A32Sfloat,
+        VertexAttributeFormat.Int => Format.R32Sint,
+        VertexAttributeFormat.Int2 => Format.R32G32Sint,
+        VertexAttributeFormat.Int3 => Format.R32G32B32Sint,
+        VertexAttributeFormat.Int4 => Format.R32G32B32A32Sint,
+        VertexAttributeFormat.UInt => Format.R32Uint,
+        VertexAttributeFormat.UInt2 => Format.R32G32Uint,
+        VertexAttributeFormat.UInt3 => Format.R32G32B32Uint,
+        VertexAttributeFormat.UInt4 => Format.R32G32B32A32Uint,
+        _ => throw new ArgumentOutOfRangeException(nameof(format))
+    };
+
+    private static Silk.NET.Vulkan.PrimitiveTopology PrimitiveTopologyToVk(PrimitiveTopology topology) => topology switch
+    {
+        PrimitiveTopology.PointList => Silk.NET.Vulkan.PrimitiveTopology.PointList,
+        PrimitiveTopology.LineList => Silk.NET.Vulkan.PrimitiveTopology.LineList,
+        PrimitiveTopology.LineStrip => Silk.NET.Vulkan.PrimitiveTopology.LineStrip,
+        PrimitiveTopology.TriangleList => Silk.NET.Vulkan.PrimitiveTopology.TriangleList,
+        PrimitiveTopology.TriangleStrip => Silk.NET.Vulkan.PrimitiveTopology.TriangleStrip,
+        PrimitiveTopology.TriangleFan => Silk.NET.Vulkan.PrimitiveTopology.TriangleFan,
+        _ => throw new ArgumentOutOfRangeException(nameof(topology))
+    };
+
+    private static CullModeFlags CullModeToVk(CullMode mode) => mode switch
+    {
+        CullMode.None => CullModeFlags.None,
+        CullMode.Front => CullModeFlags.FrontBit,
+        CullMode.Back => CullModeFlags.BackBit,
+        _ => throw new ArgumentOutOfRangeException(nameof(mode))
+    };
+
+    private static Silk.NET.Vulkan.FrontFace FrontFaceToVk(FrontFace frontFace) => frontFace switch
+    {
+        FrontFace.CounterClockwise => Silk.NET.Vulkan.FrontFace.CounterClockwise,
+        FrontFace.Clockwise => Silk.NET.Vulkan.FrontFace.Clockwise,
+        _ => throw new ArgumentOutOfRangeException(nameof(frontFace))
+    };
+
+    private static Silk.NET.Vulkan.BlendFactor BlendFactorToVk(BlendFactor factor) => factor switch
+    {
+        BlendFactor.Zero => Silk.NET.Vulkan.BlendFactor.Zero,
+        BlendFactor.One => Silk.NET.Vulkan.BlendFactor.One,
+        BlendFactor.SrcAlpha => Silk.NET.Vulkan.BlendFactor.SrcAlpha,
+        BlendFactor.OneMinusSrcAlpha => Silk.NET.Vulkan.BlendFactor.OneMinusSrcAlpha,
+        BlendFactor.DstAlpha => Silk.NET.Vulkan.BlendFactor.DstAlpha,
+        BlendFactor.OneMinusDstAlpha => Silk.NET.Vulkan.BlendFactor.OneMinusDstAlpha,
+        BlendFactor.SrcColor => Silk.NET.Vulkan.BlendFactor.SrcColor,
+        BlendFactor.OneMinusSrcColor => Silk.NET.Vulkan.BlendFactor.OneMinusSrcColor,
+        BlendFactor.DstColor => Silk.NET.Vulkan.BlendFactor.DstColor,
+        BlendFactor.OneMinusDstColor => Silk.NET.Vulkan.BlendFactor.OneMinusDstColor,
+        _ => throw new ArgumentOutOfRangeException(nameof(factor))
+    };
+
+    private static Silk.NET.Vulkan.CompareOp CompareOpToVk(CompareOp op) => op switch
+    {
+        CompareOp.Never => Silk.NET.Vulkan.CompareOp.Never,
+        CompareOp.Less => Silk.NET.Vulkan.CompareOp.Less,
+        CompareOp.Equal => Silk.NET.Vulkan.CompareOp.Equal,
+        CompareOp.LessOrEqual => Silk.NET.Vulkan.CompareOp.LessOrEqual,
+        CompareOp.Greater => Silk.NET.Vulkan.CompareOp.Greater,
+        CompareOp.NotEqual => Silk.NET.Vulkan.CompareOp.NotEqual,
+        CompareOp.GreaterOrEqual => Silk.NET.Vulkan.CompareOp.GreaterOrEqual,
+        CompareOp.Always => Silk.NET.Vulkan.CompareOp.Always,
+        _ => throw new ArgumentOutOfRangeException(nameof(op))
+    };
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -323,5 +732,6 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         _gpuOnly.Dispose();
         _cpuToGpu.Dispose();
         _gpuToCpu.Dispose();
+        _shaderCompiler.Dispose();
     }
 }

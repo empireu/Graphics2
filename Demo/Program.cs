@@ -25,7 +25,38 @@ app.Run();
 
 class App(ApplicationDescription description) : Application(description)
 {
+    private const string ShaderSource = """
+        struct VertexOutput {
+            float4 position : SV_POSITION;
+            float3 color : COLOR;
+        };
+
+        [shader("vertex")]
+        VertexOutput vsMain(uint vertexId : SV_VertexID) {
+            VertexOutput output;
+            float2 positions[3] = {
+                float2(-0.5, -0.5),
+                float2(0.5, -0.5),
+                float2(0.0, 0.5)
+            };
+            float3 colors[3] = {
+                float3(1.0, 0.0, 0.0),
+                float3(0.0, 1.0, 0.0),
+                float3(0.0, 0.0, 1.0)
+            };
+            output.position = float4(positions[vertexId], 0.0, 1.0);
+            output.color = colors[vertexId];
+            return output;
+        }
+
+        [shader("fragment")]
+        float4 fsMain(VertexOutput input) : SV_TARGET {
+            return float4(input.color, 1.0);
+        }
+        """;
+
     private Texture? _depthTexture;
+    private Pipeline? _pipeline;
     private int _frames;
 
     protected override void OnResize(Vector2D<int> framebufferSize)
@@ -39,6 +70,19 @@ class App(ApplicationDescription description) : Application(description)
             Height = (uint)framebufferSize.Y,
             Format = TextureFormat.D32Sfloat,
             Usage = TextureUsage.DepthAttachment
+        });
+
+        _pipeline?.Dispose();
+        _pipeline = Factory.CreatePipeline(new PipelineDescription
+        {
+            Source = ShaderSource,
+            VertexEntryPoint = "vsMain",
+            FragmentEntryPoint = "fsMain",
+            ColorAttachments = [TextureFormat.B8G8R8A8Srgb],
+            DepthAttachment = TextureFormat.D32Sfloat,
+            DepthTest = false,
+            DepthWrite = false,
+            CullMode = CullMode.None
         });
     }
 
@@ -67,6 +111,11 @@ class App(ApplicationDescription description) : Application(description)
             }
         });
 
+        pass.SetPipeline(_pipeline!);
+        pass.SetViewport(0, 0, frame.Extent.X, frame.Extent.Y);
+        pass.SetScissor(0, 0, (uint)frame.Extent.X, (uint)frame.Extent.Y);
+        pass.Draw(3);
+
         if (++_frames >= 30)
         {
             Window.Window.Close();
@@ -75,6 +124,7 @@ class App(ApplicationDescription description) : Application(description)
 
     protected override void OnDispose()
     {
+        _pipeline?.Dispose();
         _depthTexture?.Dispose();
     }
 }
