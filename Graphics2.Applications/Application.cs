@@ -1,5 +1,6 @@
 using Graphics2.Core.Bootstrap;
 using Graphics2.Core.Render;
+using Graphics2.Core.Resources;
 using Graphics2.Windowing;
 using Silk.NET.Core.Contexts;
 using Silk.NET.Core.Native;
@@ -26,6 +27,7 @@ public abstract unsafe class Application : IDisposable
     public readonly G2Window Window;
     public readonly SurfaceKHR Surface;
     public readonly VkDevice Device;
+    public readonly VulkanResourceFactory Factory;
     
     private readonly KhrSurface _khrSurface;
     private Vector2D<int> _lastFramebufferSize;
@@ -47,6 +49,8 @@ public abstract unsafe class Application : IDisposable
         var surfaceHandle = Window.Surface.Create<AllocationCallbacks>(new VkHandle(Instance.Handle.Handle), null);
         Surface = new SurfaceKHR(surfaceHandle.Handle);
         Device = VkDevice.Create(Instance, Surface, new VkDeviceDescription());
+        Factory = new VulkanResourceFactory(Device);
+       
         if (!Instance.Vk.TryGetInstanceExtension<KhrSurface>(Instance.Handle, out var khrSurface))
         {
             throw new VkBootstrapException("Failed to get KHR surface extension");
@@ -117,6 +121,7 @@ public abstract unsafe class Application : IDisposable
         _disposed = true;
 
         Context?.Dispose();
+        Factory.Dispose();
         Window.Dispose();
         Device.Dispose();
         _khrSurface.DestroySurface(Instance.Handle, Surface, null);
