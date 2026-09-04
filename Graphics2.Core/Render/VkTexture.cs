@@ -8,9 +8,17 @@ namespace Graphics2.Core.Render;
 public enum TextureLayout
 {
     /// <summary>
+    ///     Don't care. Contents are discarded (layout is undefined).
+    /// </summary>
+    None,
+    /// <summary>
     ///     Color attachment optimal. Image is written by a render pass.
     /// </summary>
     ColorAttachment,
+    /// <summary>
+    ///     Depth attachment optimal. Image is used as a depth/stencil attachment.
+    /// </summary>
+    DepthAttachment,
     /// <summary>
     ///     Shader read only optimal. Image is sampled by a shader.
     /// </summary>
@@ -18,11 +26,7 @@ public enum TextureLayout
     /// <summary>
     ///     Present source. Image is ready for presentation.
     /// </summary>
-    Present,
-    /// <summary>
-    ///     Don't care. Contents are discarded (layout is undefined).
-    /// </summary>
-    None
+    Present
 }
 
 public class VkTexture

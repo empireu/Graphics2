@@ -1,6 +1,7 @@
 using Graphics2.Core.Bootstrap;
 using Silk.NET.Maths;
 using Silk.NET.Vulkan;
+
 // ReSharper disable ForCanBeConvertedToForeach
 
 namespace Graphics2.Core.Render;
@@ -31,25 +32,20 @@ public sealed unsafe class RenderPassEncoder : IDisposable
 
     private void BeginPass()
     {
-        if (_descriptor.DepthAttachment is not null)
-        {
-            throw new NotImplementedException("Depth attachments are not implemented");
-        }
-
         var colors = _descriptor.ColorAttachments;
         if (colors is null || colors.Length == 0)
         {
             throw new ArgumentException("RenderPassDescriptor requires at least one color attachment for now", nameof(_descriptor));
         }
 
+        var depth = _descriptor.DepthAttachment;
+
         var area = _descriptor.RenderArea ?? new Box2D<int>(Vector2D<int>.Zero, _defaultExtent);
         var offset = new Offset2D(area.Min.X, area.Min.Y);
         var extent = new Extent2D((uint)(area.Max.X - area.Min.X), (uint)(area.Max.Y - area.Min.Y));
 
-        // We need ColorAttachmentOptimal.
-        // Clear/DontCare discard contents.
-        // Load preserves.
-        var preBarriers = stackalloc ImageMemoryBarrier2[colors.Length];
+        var barrierCount = colors.Length + (depth is not null ? 1 : 0);
+        var preBarriers = stackalloc ImageMemoryBarrier2[barrierCount];
         var preCount = 0;
         for (var i = 0; i < colors.Length; i++)
         {
@@ -86,6 +82,38 @@ public sealed unsafe class RenderPassEncoder : IDisposable
             };
         }
 
+        if (depth is not null)
+        {
+            var oldLayout = depth.LoadOp == LoadOp.Load
+                ? depth.Target.CurrentLayout
+                : ImageLayout.Undefined;
+
+            if (oldLayout != ImageLayout.DepthAttachmentOptimal)
+            {
+                preBarriers[preCount++] = new ImageMemoryBarrier2
+                {
+                    SType = StructureType.ImageMemoryBarrier2,
+                    SrcStageMask = PipelineStageFlags2.EarlyFragmentTestsBit | PipelineStageFlags2.LateFragmentTestsBit,
+                    SrcAccessMask = AccessFlags2.None,
+                    DstStageMask = PipelineStageFlags2.EarlyFragmentTestsBit | PipelineStageFlags2.LateFragmentTestsBit,
+                    DstAccessMask = AccessFlags2.DepthStencilAttachmentReadBit | AccessFlags2.DepthStencilAttachmentWriteBit,
+                    OldLayout = oldLayout,
+                    NewLayout = ImageLayout.DepthAttachmentOptimal,
+                    SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                    DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                    Image = depth.Target.Image,
+                    SubresourceRange = new ImageSubresourceRange
+                    {
+                        AspectMask = ImageAspectFlags.DepthBit,
+                        BaseMipLevel = 0,
+                        LevelCount = 1,
+                        BaseArrayLayer = 0,
+                        LayerCount = 1
+                    }
+                };
+            }
+        }
+
         if (preCount > 0)
         {
             var dependencyInfo = new DependencyInfo
@@ -94,7 +122,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
                 ImageMemoryBarrierCount = (uint)preCount,
                 PImageMemoryBarriers = preBarriers
             };
-            
+
             _vk.CmdPipelineBarrier2(_cmd, &dependencyInfo);
         }
 
@@ -140,6 +168,35 @@ public sealed unsafe class RenderPassEncoder : IDisposable
             PColorAttachments = attachments
         };
 
+        if (depth != null)
+        {
+            var depthAttachmentInfo = new RenderingAttachmentInfo
+            {
+                SType = StructureType.RenderingAttachmentInfo,
+                ImageView = depth.Target.View,
+                ImageLayout = ImageLayout.DepthAttachmentOptimal,
+                LoadOp = depth.LoadOp switch
+                {
+                    LoadOp.Clear => AttachmentLoadOp.Clear,
+                    LoadOp.Load => AttachmentLoadOp.Load,
+                    LoadOp.DontCare => AttachmentLoadOp.DontCare,
+                    _ => AttachmentLoadOp.Clear
+                },
+                StoreOp = depth.StoreOp switch
+                {
+                    StoreOp.Store => AttachmentStoreOp.Store,
+                    StoreOp.DontCare => AttachmentStoreOp.DontCare,
+                    _ => AttachmentStoreOp.Store
+                },
+                ClearValue = new ClearValue
+                {
+                    DepthStencil = new ClearDepthStencilValue(depth.ClearDepth, 0)
+                }
+            };
+            
+            renderingInfo.PDepthAttachment = &depthAttachmentInfo;
+        }
+
         _vk.CmdBeginRendering(_cmd, &renderingInfo);
     }
 
@@ -153,10 +210,11 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         _ended = true;
 
         _vk.CmdEndRendering(_cmd);
-        
-        // Now, we transition ColorAttachmentOptimal to whatever is required by the caller.
+
         var colors = _descriptor.ColorAttachments;
-        var postBarriers = stackalloc ImageMemoryBarrier2[colors.Length];
+        var depth = _descriptor.DepthAttachment;
+        var barrierCount = colors.Length + (depth != null ? 1 : 0);
+        var postBarriers = stackalloc ImageMemoryBarrier2[barrierCount];
         var postCount = 0;
         for (var i = 0; i < colors.Length; i++)
         {
@@ -192,6 +250,41 @@ public sealed unsafe class RenderPassEncoder : IDisposable
             };
         }
 
+        if (depth != null)
+        {
+            var finalVkLayout = ToVkLayout(depth.FinalLayout);
+            depth.Target.CurrentLayout = finalVkLayout;
+
+            if (finalVkLayout is ImageLayout.DepthAttachmentOptimal or ImageLayout.Undefined)
+            {
+                // Ignored. Staying in DepthAttachmentOptimal, or discarding.
+            }
+            else
+            {
+                postBarriers[postCount++] = new ImageMemoryBarrier2
+                {
+                    SType = StructureType.ImageMemoryBarrier2,
+                    SrcStageMask = PipelineStageFlags2.EarlyFragmentTestsBit | PipelineStageFlags2.LateFragmentTestsBit,
+                    SrcAccessMask = AccessFlags2.DepthStencilAttachmentWriteBit,
+                    DstStageMask = PipelineStageFlags2.EarlyFragmentTestsBit | PipelineStageFlags2.LateFragmentTestsBit,
+                    DstAccessMask = AccessFlags2.None,
+                    OldLayout = ImageLayout.DepthAttachmentOptimal,
+                    NewLayout = finalVkLayout,
+                    SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                    DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                    Image = depth.Target.Image,
+                    SubresourceRange = new ImageSubresourceRange
+                    {
+                        AspectMask = ImageAspectFlags.DepthBit,
+                        BaseMipLevel = 0,
+                        LevelCount = 1,
+                        BaseArrayLayer = 0,
+                        LayerCount = 1
+                    }
+                };
+            }
+        }
+
         if (postCount > 0)
         {
             var dependencyInfo = new DependencyInfo
@@ -200,7 +293,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
                 ImageMemoryBarrierCount = (uint)postCount,
                 PImageMemoryBarriers = postBarriers
             };
-            
+
             _vk.CmdPipelineBarrier2(_cmd, &dependencyInfo);
         }
     }
@@ -213,6 +306,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         TextureLayout.ShaderRead => ImageLayout.ShaderReadOnlyOptimal,
         TextureLayout.Present => ImageLayout.PresentSrcKhr,
         TextureLayout.None => ImageLayout.Undefined,
+        TextureLayout.DepthAttachment => ImageLayout.DepthAttachmentOptimal,
         _ => ImageLayout.ColorAttachmentOptimal
     };
 }

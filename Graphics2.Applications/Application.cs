@@ -84,6 +84,8 @@ public abstract unsafe class Application : IDisposable
 
     protected abstract void OnFrame(double deltaTime, Frame frame);
 
+    protected virtual void OnDispose() { }
+
     public void Run()
     {
         if (_lastFramebufferSize is { X: > 0, Y: > 0 })
@@ -119,7 +121,7 @@ public abstract unsafe class Application : IDisposable
         }
 
         _disposed = true;
-
+        OnDispose();
         Context?.Dispose();
         Factory.Dispose();
         Window.Dispose();
