@@ -1,19 +1,21 @@
+// ReSharper disable ForCanBeConvertedToForeach
 namespace Graphics2.Allocator;
 
 /// <summary>
-///     Manager for multiple <see cref="MemoryBlock"/>s.
+///     Manager for multiple <see cref="MemoryBlock{T}"/>s.
 ///     Allocating will probe all blocks to see the best-fit across all of them, then commit.
 ///     When there isn't enough space, a new block is allocated.
 /// </summary>
-public sealed class BlockAllocator
+public sealed class BlockAllocator<THandle> : IDisposable
 {
-    private readonly List<MemoryBlock> _blocks = [];
     private readonly long _defaultBlockSize;
+    private readonly IAllocationLayer<THandle> _allocationLayer;
+    private readonly List<MemoryBlock<THandle>> _blocks = [];
+    private readonly Dictionary<int, MemoryBlock<THandle>> _blocksById = new();
     private int _nextBlockId;
-
-    public IReadOnlyList<MemoryBlock> Blocks => _blocks;
-
-    public BlockAllocator(long defaultBlockSize)
+    private bool _disposed;
+    
+    public BlockAllocator(long defaultBlockSize, IAllocationLayer<THandle> allocationLayer)
     {
         if (defaultBlockSize <= 0)
         {
@@ -21,8 +23,17 @@ public sealed class BlockAllocator
         }
 
         _defaultBlockSize = defaultBlockSize;
+        _allocationLayer = allocationLayer;
     }
 
+    public IReadOnlyList<MemoryBlock<THandle>> Blocks => _blocks;
+    
+    private MemoryBlock<THandle> GetBlock(int blockId) => !_blocksById.TryGetValue(blockId, out var block) 
+        ? throw new ArgumentException($"Allocation block {blockId} not found", nameof(blockId)) 
+        : block;
+
+    public THandle GetBase(Allocation allocation) => GetBlock(allocation.BlockId).Handle;
+    
     public Allocation Allocate(long size, long alignment)
     {
         if (size <= 0)
@@ -30,49 +41,59 @@ public sealed class BlockAllocator
             throw new ArgumentOutOfRangeException(nameof(size), "Size must be positive.");
         }
 
-        MemoryBlock? bestBlock = null;
-        AllocationProbe? bestProbe = null;
-
-        foreach (var block in _blocks)
+        AllocationProbe<THandle>? bestProbe = null;
+        for (var blockIndex = 0; blockIndex < _blocks.Count; blockIndex++)
         {
+            var block = _blocks[blockIndex];
             var probe = block.Probe(size, alignment);
-            if (probe is null)
+
+            if (!probe.HasValue || (bestProbe.HasValue && probe.Value.Waste >= bestProbe.Value.Waste))
             {
                 continue;
             }
-
-            if (bestProbe is null || probe.Value.Waste < bestProbe.Value.Waste)
-            {
-                bestBlock = block;
-                bestProbe = probe;
-            }
+            
+            bestProbe = probe;
         }
 
-        if (bestBlock is not null && bestProbe is not null)
+        if (bestProbe.HasValue)
         {
-            return bestBlock.Commit(bestProbe.Value);
+            return bestProbe.Value.Block.Commit(bestProbe.Value);
         }
-
+        
         var blockSize = Math.Max(_defaultBlockSize, size);
         var blockId = _nextBlockId++;
-        var newBlock = new MemoryBlock(blockId, blockSize);
-        var allocFromNew = newBlock.Allocate(size, alignment)
-            ?? throw new InvalidOperationException("Newly created block could not satisfy the allocation.");
 
+        var handle = _allocationLayer.AllocatePage(blockSize);
+        var newBlock = new MemoryBlock<THandle>(blockId, blockSize, handle);
+        
         _blocks.Add(newBlock);
-        return allocFromNew;
+        _blocksById.Add(blockId, newBlock);
+
+        return newBlock.Allocate(size, alignment) ?? throw new InvalidOperationException("Newly created block could not satisfy the allocation.");
     }
 
-    public void Free(in Allocation allocation)
+    public void Free(Allocation allocation)
     {
-        var blockId = allocation.BlockId;
-        var block = _blocks.FirstOrDefault(b => b.Id == blockId);
+        var block = GetBlock(allocation.BlockId);
         
-        if (block == null)
+        block.Free(allocation);
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
         {
-            throw new ArgumentException("Allocation block not found", nameof(allocation));
+            return;
         }
 
-        block.Free(in allocation);
+        _disposed = true;
+
+        foreach (var block in _blocks)
+        {
+            _allocationLayer.FreePage(block.Handle, block.Capacity);
+        }
+
+        _blocks.Clear();
+        _blocksById.Clear();
     }
 }

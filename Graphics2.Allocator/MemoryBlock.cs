@@ -9,12 +9,13 @@ namespace Graphics2.Allocator;
 ///     The padding is returned to the free list as another free-range.
 ///     Freeing an allocation will coalesce the neighboring free-ranges into a larger final range. 
 /// </summary>
-public sealed class MemoryBlock
+public sealed class MemoryBlock<THandle>
 {
     private readonly List<FreeRange> _freeRanges = [];
 
     public readonly int Id;
     public readonly long Capacity;
+    public readonly THandle Handle;
 
     public long UsedBytes => Capacity - FreeBytes;
 
@@ -22,7 +23,7 @@ public sealed class MemoryBlock
 
     internal IReadOnlyList<FreeRange> FreeRanges => _freeRanges;
 
-    public MemoryBlock(int id, long capacity)
+    public MemoryBlock(int id, long capacity, THandle handle)
     {
         if (capacity <= 0)
         {
@@ -32,7 +33,8 @@ public sealed class MemoryBlock
         Id = id;
         Capacity = capacity;
         FreeBytes = capacity;
-        
+        Handle = handle;
+
         _freeRanges.Add(new FreeRange(0, capacity));
     }
 
@@ -45,7 +47,7 @@ public sealed class MemoryBlock
             : null;
     }
 
-    internal AllocationProbe? Probe(long size, long alignment)
+    internal AllocationProbe<THandle>? Probe(long size, long alignment)
     {
         if (size <= 0)
         {
@@ -92,10 +94,10 @@ public sealed class MemoryBlock
             return null;
         }
 
-        return new AllocationProbe(bestIndex, bestAlignedOffset, size, bestWaste);
+        return new AllocationProbe<THandle>(this, bestIndex, bestAlignedOffset, size, bestWaste);
     }
 
-    internal Allocation Commit(in AllocationProbe probe)
+    internal Allocation Commit(in AllocationProbe<THandle> probe)
     {
         var chosen = _freeRanges[probe.RangeIndex];
         var allocEnd = probe.Offset + probe.Size;
