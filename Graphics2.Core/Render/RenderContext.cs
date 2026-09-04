@@ -9,7 +9,7 @@ public sealed unsafe class RenderContext : IDisposable
     private readonly VkDevice _device;
     private readonly FrameSlot[] _slots;
     private Semaphore[] _renderFinishedSemaphores;
-    private Texture[] _swapchainTargets = [];
+    private VkTexture[] _swapchainTargets = [];
     private uint _frame;
     private int _disposed;
 
@@ -208,10 +208,10 @@ public sealed unsafe class RenderContext : IDisposable
 
     private void BuildSwapchainTargets()
     {
-        _swapchainTargets = new Texture[Swapchain.ImageCount];
+        _swapchainTargets = new VkTexture[Swapchain.ImageCount];
         for (var i = 0; i < _swapchainTargets.Length; i++)
         {
-            _swapchainTargets[i] = new Texture(Swapchain.Images[i], Swapchain.Views[i], ImageLayout.Undefined);
+            _swapchainTargets[i] = new VkTexture(Swapchain.Images[i], Swapchain.Views[i], ImageLayout.Undefined);
         }
     }
 

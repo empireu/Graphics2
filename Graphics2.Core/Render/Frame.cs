@@ -10,11 +10,11 @@ public sealed class Frame
     internal readonly CommandBuffer CommandBuffer;
     internal readonly uint ImageIndex;
 
-    public Texture SwapchainColorTarget { get; }
+    public VkTexture SwapchainColorTarget { get; }
 
     public Vector2D<int> Extent { get; }
 
-    internal Frame(VkDevice device, CommandBuffer commandBuffer, uint imageIndex, Texture swapchainColorTarget, Extent2D extent)
+    internal Frame(VkDevice device, CommandBuffer commandBuffer, uint imageIndex, VkTexture swapchainColorTarget, Extent2D extent)
     {
         Device = device;
         CommandBuffer = commandBuffer;
