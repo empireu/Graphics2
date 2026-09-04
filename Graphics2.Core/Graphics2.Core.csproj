@@ -15,4 +15,8 @@
       <PackageReference Include="Silk.NET.Vulkan.Extensions.KHR" Version="2.23.0" />
     </ItemGroup>
 
+    <ItemGroup>
+      <ProjectReference Include="..\Graphics2.Allocator\Graphics2.Allocator.csproj" />
+    </ItemGroup>
+
 </Project>
