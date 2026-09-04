@@ -20,6 +20,7 @@
 
     <ItemGroup>
         <ProjectReference Include="..\Graphics2.Allocator\Graphics2.Allocator.csproj"/>
+        <ProjectReference Include="..\Graphics2.Core\Graphics2.Core.csproj"/>
     </ItemGroup>
 
 </Project>
