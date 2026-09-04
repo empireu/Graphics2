@@ -9,6 +9,7 @@ public sealed unsafe class RenderContext : IDisposable
     private readonly VkDevice _device;
     private readonly FrameSlot[] _slots;
     private Semaphore[] _renderFinishedSemaphores;
+    private Texture[] _swapchainTargets = [];
     private uint _frame;
     private int _disposed;
 
@@ -54,7 +55,9 @@ public sealed unsafe class RenderContext : IDisposable
             try
             {
                 var semaphores = CreateRenderFinishedSemaphores(device, swapchain.ImageCount);
-                return new RenderContext(device, swapchain, slots, semaphores, extent, framesInFlight);
+                var context = new RenderContext(device, swapchain, slots, semaphores, extent, framesInFlight);
+                context.BuildSwapchainTargets();
+                return context;
             }
             catch
             {
@@ -112,7 +115,7 @@ public sealed unsafe class RenderContext : IDisposable
             throw new VkBootstrapException("Failed to begin command buffer");
         }
 
-        return new Frame(slot.CommandBuffer, imageIndex, Swapchain.Images[(int)imageIndex], Swapchain.Views[(int)imageIndex], Swapchain.Extent);
+        return new Frame(_device, slot.CommandBuffer, imageIndex, _swapchainTargets[imageIndex], Swapchain.Extent);
     }
 
     /// <summary>
@@ -167,6 +170,7 @@ public sealed unsafe class RenderContext : IDisposable
         DestroyRenderFinishedSemaphores();
         Swapchain.Recreate(extent);
         _renderFinishedSemaphores = CreateRenderFinishedSemaphores(_device, Swapchain.ImageCount);
+        BuildSwapchainTargets();
         Extent = extent;
     }
 
@@ -202,6 +206,15 @@ public sealed unsafe class RenderContext : IDisposable
         }
     }
 
+    private void BuildSwapchainTargets()
+    {
+        _swapchainTargets = new Texture[Swapchain.ImageCount];
+        for (var i = 0; i < _swapchainTargets.Length; i++)
+        {
+            _swapchainTargets[i] = new Texture(Swapchain.Images[i], Swapchain.Views[i], ImageLayout.Undefined);
+        }
+    }
+
     private static Semaphore[] CreateRenderFinishedSemaphores(VkDevice device, uint count)
     {
         var vk = device.Instance.Vk;
@@ -227,24 +240,5 @@ public sealed unsafe class RenderContext : IDisposable
         }
 
         return semaphores;
-    }
-}
-
-public readonly struct Frame
-{
-    public readonly CommandBuffer CommandBuffer;
-    public readonly uint ImageIndex;
-    public readonly Image Image;
-    public readonly ImageView ImageView;
-    public readonly Extent2D Extent;
-
-    // ReSharper disable once ConvertToPrimaryConstructor
-    public Frame(CommandBuffer commandBuffer, uint imageIndex, Image image, ImageView imageView, Extent2D extent)
-    {
-        CommandBuffer = commandBuffer;
-        ImageIndex = imageIndex;
-        Image = image;
-        ImageView = imageView;
-        Extent = extent;
     }
 }
