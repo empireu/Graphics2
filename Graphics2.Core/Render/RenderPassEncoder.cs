@@ -18,12 +18,13 @@ public sealed unsafe class RenderPassEncoder : IDisposable
     private readonly CommandBuffer _cmd;
     private readonly RenderPassDescriptor _descriptor;
     private readonly Vector2D<int> _defaultExtent;
+    private readonly HashSet<ulong> _pendingCopies;
     private Pipeline? _pipeline;
     private readonly List<PendingDescriptorWrite> _pendingWrites = [];
     private bool _descriptorsDirty;
     private bool _ended;
 
-    private RenderPassEncoder(VkDevice device, DescriptorPool descriptorPool, CommandBuffer cmd, RenderPassDescriptor descriptor, Vector2D<int> defaultExtent)
+    private RenderPassEncoder(VkDevice device, DescriptorPool descriptorPool, CommandBuffer cmd, RenderPassDescriptor descriptor, Vector2D<int> defaultExtent, HashSet<ulong> pendingCopies)
     {
         _device = device;
         _vk = device.Instance.Vk;
@@ -31,11 +32,12 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         _cmd = cmd;
         _descriptor = descriptor;
         _defaultExtent = defaultExtent;
+        _pendingCopies = pendingCopies;
     }
 
-    internal static RenderPassEncoder Begin(VkDevice device, DescriptorPool descriptorPool, CommandBuffer cmd, RenderPassDescriptor descriptor, Vector2D<int> defaultExtent)
+    internal static RenderPassEncoder Begin(VkDevice device, DescriptorPool descriptorPool, CommandBuffer cmd, RenderPassDescriptor descriptor, Vector2D<int> defaultExtent, HashSet<ulong> pendingCopies)
     {
-        var encoder = new RenderPassEncoder(device, descriptorPool, cmd, descriptor, defaultExtent);
+        var encoder = new RenderPassEncoder(device, descriptorPool, cmd, descriptor, defaultExtent, pendingCopies);
         encoder.BeginPass();
         return encoder;
     }
@@ -135,6 +137,8 @@ public sealed unsafe class RenderPassEncoder : IDisposable
 
             _vk.CmdPipelineBarrier2(_cmd, &dependencyInfo);
         }
+
+        FlushCopyBarriers();
 
         var attachments = stackalloc RenderingAttachmentInfo[colors.Length];
         for (var i = 0; i < colors.Length; i++)
@@ -610,6 +614,47 @@ public sealed unsafe class RenderPassEncoder : IDisposable
 
         _pendingWrites.Clear();
         _descriptorsDirty = false;
+    }
+
+    private void FlushCopyBarriers()
+    {
+        if (_pendingCopies.Count == 0)
+        {
+            return;
+        }
+
+        var barriers = new BufferMemoryBarrier2[_pendingCopies.Count];
+        var i = 0;
+        foreach (var handle in _pendingCopies)
+        {
+            barriers[i++] = new BufferMemoryBarrier2
+            {
+                SType = StructureType.BufferMemoryBarrier2,
+                SrcStageMask = PipelineStageFlags2.CopyBit,
+                SrcAccessMask = AccessFlags2.TransferWriteBit,
+                DstStageMask = PipelineStageFlags2.AllGraphicsBit,
+                DstAccessMask = AccessFlags2.VertexAttributeReadBit | AccessFlags2.IndexReadBit | AccessFlags2.UniformReadBit | AccessFlags2.ShaderStorageReadBit,
+                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                Buffer = new Silk.NET.Vulkan.Buffer { Handle = handle },
+                Offset = 0,
+                Size = Vk.WholeSize
+            };
+        }
+
+        fixed (BufferMemoryBarrier2* ptr = barriers)
+        {
+            var dependencyInfo = new DependencyInfo
+            {
+                SType = StructureType.DependencyInfo,
+                BufferMemoryBarrierCount = (uint)barriers.Length,
+                PBufferMemoryBarriers = ptr
+            };
+
+            _vk.CmdPipelineBarrier2(_cmd, &dependencyInfo);
+        }
+
+        _pendingCopies.Clear();
     }
 
     private static ImageLayout ToVkLayout(TextureLayout layout) => layout switch

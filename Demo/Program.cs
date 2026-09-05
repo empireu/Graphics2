@@ -89,6 +89,12 @@ class App(ApplicationDescription description) : Application(description)
     private Pipeline? _pipeline;
     private VkBuffer? _vertexBuffer;
     private VkBuffer? _indexBuffer;
+    private readonly Vertex[] _baseVertices =
+    [
+        new(new Vector2D<float>(-0.5f, -0.5f), new Vector3D<float>(1.0f, 0.0f, 0.0f)),
+        new(new Vector2D<float>(0.5f, -0.5f), new Vector3D<float>(0.0f, 1.0f, 0.0f)),
+        new(new Vector2D<float>(0.0f, 0.5f), new Vector3D<float>(0.0f, 0.0f, 1.0f))
+    ];
     private int _frames;
     private double _time;
 
@@ -127,15 +133,6 @@ class App(ApplicationDescription description) : Application(description)
             Usage = BufferUsage.Vertex | BufferUsage.TransferDestination
         });
 
-        var vertices = new ReadOnlySpan<Vertex>(
-        [
-            new(new Vector2D<float>(-0.5f, -0.5f), new Vector3D<float>(1.0f, 0.0f, 0.0f)),
-            new(new Vector2D<float>(0.5f, -0.5f), new Vector3D<float>(0.0f, 1.0f, 0.0f)),
-            new(new Vector2D<float>(0.0f, 0.5f), new Vector3D<float>(0.0f, 0.0f, 1.0f))
-        ]);
-
-        Factory.UpdateBuffer(_vertexBuffer, MemoryMarshal.AsBytes(vertices));
-
         _indexBuffer?.Dispose();
         _indexBuffer = Factory.CreateBuffer(new BufferDescription
         {
@@ -149,6 +146,17 @@ class App(ApplicationDescription description) : Application(description)
 
     protected override unsafe void OnFrame(double deltaTime, Frame frame)
     {
+        var scale = 0.5f + 0.5f * MathF.Sin((float)_time * 3.0f);
+        Span<Vertex> vertices = stackalloc Vertex[3];
+        for (var i = 0; i < 3; i++)
+        {
+            vertices[i] = new Vertex(_baseVertices[i].Position * scale, _baseVertices[i].Color);
+        }
+
+        var vertexAlloc = frame.Allocate((uint)(sizeof(Vertex) * 3), 4);
+        MemoryMarshal.AsBytes(vertices).CopyTo(vertexAlloc.Data);
+        frame.CopyBuffer(vertexAlloc, _vertexBuffer!);
+
         using var pass = frame.BeginRenderPass(new RenderPassDescriptor
         {
             ColorAttachments =

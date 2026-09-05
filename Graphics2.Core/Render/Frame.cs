@@ -1,16 +1,18 @@
 using Graphics2.Core.Bootstrap;
+using Graphics2.Core.Resources;
 using Silk.NET.Maths;
 using Silk.NET.Vulkan;
 
 namespace Graphics2.Core.Render;
 
-public sealed class Frame
+public sealed unsafe class Frame
 {
     internal readonly VkDevice Device;
     internal readonly DescriptorPool DescriptorPool;
     internal readonly CommandBuffer CommandBuffer;
     internal readonly uint ImageIndex;
     private readonly UploadRing _uploadRing;
+    private readonly HashSet<ulong> _pendingCopies = [];
 
     public VkTexture SwapchainColorTarget { get; }
 
@@ -31,5 +33,23 @@ public sealed class Frame
 
     public RingAllocation AllocateUniform(uint size) => _uploadRing.AllocateUniform(size);
 
-    public RenderPassEncoder BeginRenderPass(RenderPassDescriptor descriptor) => RenderPassEncoder.Begin(Device, DescriptorPool, CommandBuffer, descriptor, Extent);
+    public void CopyBuffer(VkBuffer src, ulong srcOffset, VkBuffer dst, ulong dstOffset, ulong size)
+    {
+        var region = new BufferCopy
+        {
+            SrcOffset = srcOffset,
+            DstOffset = dstOffset,
+            Size = size
+        };
+
+        Device.Instance.Vk.CmdCopyBuffer(CommandBuffer, src.Handle, dst.Handle, 1, &region);
+        _pendingCopies.Add((ulong)dst.Handle.Handle);
+    }
+
+    public void CopyBuffer(RingAllocation src, VkBuffer dst, ulong dstOffset = 0)
+    {
+        CopyBuffer(src.Buffer, src.Offset, dst, dstOffset, src.Size);
+    }
+
+    public RenderPassEncoder BeginRenderPass(RenderPassDescriptor descriptor) => RenderPassEncoder.Begin(Device, DescriptorPool, CommandBuffer, descriptor, Extent, _pendingCopies);
 }
