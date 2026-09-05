@@ -43,7 +43,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
     private void BeginPass()
     {
         var colors = _descriptor.ColorAttachments;
-        if (colors is null || colors.Length == 0)
+        if (colors == null || colors.Length == 0)
         {
             throw new ArgumentException("RenderPassDescriptor requires at least one color attachment for now", nameof(_descriptor));
         }
@@ -220,25 +220,25 @@ public sealed unsafe class RenderPassEncoder : IDisposable
 
     public void BindUniformBuffer(string name, VkBuffer buffer)
     {
-        if (_pipeline is null)
+        if (_pipeline == null)
         {
             throw new InvalidOperationException("SetPipeline must be called before binding resources.");
         }
 
-        if (!_pipeline.TryGetParameter(name, out var param))
+        if (!_pipeline.TryGetParameter(name, out var parameter))
         {
             throw new ArgumentException($"Shader parameter \"{name}\" not found in pipeline reflection.", nameof(name));
         }
 
-        if (param.Kind != ShaderParameterKind.UniformBuffer)
+        if (parameter.Kind != ShaderParameterKind.UniformBuffer)
         {
-            throw new ArgumentException($"Shader parameter \"{name}\" is {param.Kind}, not UniformBuffer.", nameof(name));
+            throw new ArgumentException($"Shader parameter \"{name}\" is {parameter.Kind}, not UniformBuffer.", nameof(name));
         }
 
         _pendingWrites.Add(new PendingDescriptorWrite
         {
-            Set = param.BindingSpace,
-            Binding = param.BindingIndex,
+            Set = parameter.BindingSpace,
+            Binding = parameter.BindingIndex,
             Type = DescriptorType.UniformBuffer,
             BufferHandle = buffer.Handle,
             Offset = 0,
@@ -248,8 +248,31 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         _descriptorsDirty = true;
     }
 
-    public void SetViewport(float x, float y, float width, float height, float minDepth = 0.0f, float maxDepth = 1.0f)
+    public void PushConstants<T>(in T data) where T : unmanaged
     {
+        if (_pipeline == null)
+        {
+            throw new InvalidOperationException("SetPipeline must be called before pushing constants.");
+        }
+
+        if (_pipeline.PushConstantSize == 0)
+        {
+            throw new InvalidOperationException("Pipeline has no push constants.");
+        }
+
+        var size = (uint)sizeof(T);
+        if (size != _pipeline.PushConstantSize)
+        {
+            throw new ArgumentException($"Push constant size mismatch: data is {size} bytes, pipeline expects {_pipeline.PushConstantSize} bytes.", nameof(data));
+        }
+
+        fixed (T* ptr = &data)
+        {
+            _vk.CmdPushConstants(_cmd, _pipeline.Layout, _pipeline.PushConstantStageFlags, 0, size, ptr);
+        }
+    }
+
+    public void SetViewport(float x, float y, float width, float height, float minDepth = 0.0f, float maxDepth = 1.0f)    {
         var viewport = new Viewport
         {
             X = x,
@@ -399,7 +422,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
 
     private void FlushDescriptors()
     {
-        if (!_descriptorsDirty || _pendingWrites.Count == 0 || _pipeline is null)
+        if (!_descriptorsDirty || _pendingWrites.Count == 0 || _pipeline == null)
         {
             return;
         }

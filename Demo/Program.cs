@@ -30,6 +30,11 @@ struct Vertex(Vector2D<float> position, Vector3D<float> color)
     public Vector3D<float> Color = color;
 }
 
+struct PushConstants(float rotation)
+{
+    public float Rotation = rotation;
+}
+
 class App(ApplicationDescription description) : Application(description)
 {
     private const string ShaderSource = """
@@ -43,14 +48,22 @@ class App(ApplicationDescription description) : Application(description)
             float3 color : COLOR;
         };
 
-        cbuffer Camera : register(b0) {
-            float2 offset;
+        struct PushConstants {
+            float rotation;
         };
+
+        [[vk::push_constant]] PushConstants pc;
 
         [shader("vertex")]
         VertexOutput vsMain(VertexInput input) {
             VertexOutput output;
-            output.position = float4(input.position + offset, 0.0, 1.0);
+            float c = cos(pc.rotation);
+            float s = sin(pc.rotation);
+            float2 rotated = float2(
+                input.position.x * c - input.position.y * s,
+                input.position.x * s + input.position.y * c
+            );
+            output.position = float4(rotated, 0.0, 1.0);
             output.color = input.color;
             return output;
         }
@@ -63,7 +76,6 @@ class App(ApplicationDescription description) : Application(description)
 
     private Texture? _depthTexture;
     private Pipeline? _pipeline;
-    private VkBuffer? _cameraBuffer;
     private VkBuffer? _vertexBuffer;
     private VkBuffer? _indexBuffer;
     private int _frames;
@@ -92,18 +104,9 @@ class App(ApplicationDescription description) : Application(description)
             DepthTest = false,
             DepthWrite = false,
             CullMode = CullMode.None,
-            VertexLayout = VertexLayout.FromStruct<Vertex>()
+            VertexLayout = VertexLayout.FromStruct<Vertex>(),
+            PushConstantLayout = PushConstantLayout.FromStruct<PushConstants>()
         });
-
-        _cameraBuffer?.Dispose();
-        _cameraBuffer = Factory.CreateBuffer(new BufferDescription
-        {
-            Size = 16,
-            Usage = BufferUsage.Uniform | BufferUsage.TransferDestination
-        });
-
-        var translation = new Vector2D<float>(1.0f, 0.0f);
-        Factory.UpdateBuffer(_cameraBuffer, new ReadOnlySpan<byte>(&translation, sizeof(Vector2D<float>)));
 
         _vertexBuffer?.Dispose();
         _vertexBuffer = Factory.CreateBuffer(new BufferDescription
@@ -160,7 +163,7 @@ class App(ApplicationDescription description) : Application(description)
         pass.SetPipeline(_pipeline!);
         pass.SetViewport(0, 0, frame.Extent.X, frame.Extent.Y);
         pass.SetScissor(0, 0, (uint)frame.Extent.X, (uint)frame.Extent.Y);
-        pass.BindUniformBuffer("Camera", _cameraBuffer!);
+        pass.PushConstants(new PushConstants((float)(_frames * deltaTime * 2.0)));
         pass.SetVertexBuffer(_vertexBuffer!);
         pass.SetIndexBuffer(_indexBuffer!, IndexType.UInt16);
         pass.DrawIndexed(3);
@@ -175,7 +178,6 @@ class App(ApplicationDescription description) : Application(description)
     {
         _pipeline?.Dispose();
         _depthTexture?.Dispose();
-        _cameraBuffer?.Dispose();
         _vertexBuffer?.Dispose();
         _indexBuffer?.Dispose();
     }

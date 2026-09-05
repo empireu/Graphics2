@@ -124,10 +124,21 @@ public sealed class ShaderCompiler : IDisposable
 
     private static ShaderReflection MapReflection(SlangShaderReflection slangReflection)
     {
-        var parameters = new ShaderParameterReflection[slangReflection.ParameterCount];
+        var parameters = new List<ShaderParameterReflection>();
+        var pushConstants = new List<PushConstantReflection>();
+
         for (uint i = 0; i < slangReflection.ParameterCount; i++)
         {
-            parameters[i] = MapParameter(slangReflection.GetParameterByIndex(i));
+            var parameter = slangReflection.GetParameterByIndex(i);
+
+            if (parameter.Category == SlangParameterCategory.PushConstantBuffer)
+            {
+                pushConstants.Add(MapPushConstant(parameter));
+            }
+            else
+            {
+                parameters.Add(MapParameter(parameter));
+            }
         }
 
         var entryPointCount = (int)slangReflection.EntryPointCount;
@@ -140,8 +151,29 @@ public sealed class ShaderCompiler : IDisposable
         return new ShaderReflection
         {
             EntryPoints = entryPoints,
-            Parameters = parameters
+            Parameters = parameters.ToArray(),
+            PushConstants = pushConstants.ToArray()
         };
+    }
+
+    private static PushConstantReflection MapPushConstant(VariableLayoutReflection parameter)
+    {
+        var name = parameter.Name;
+        var typeLayout = parameter.TypeLayout;
+        var elementLayout = typeLayout.ElementTypeLayout;
+        var size = (uint)elementLayout.GetSize(SlangParameterCategory.Uniform);
+
+        var fieldCount = (int)elementLayout.FieldCount;
+        var fields = new PushConstantFieldReflection[fieldCount];
+        for (var i = 0; i < fieldCount; i++)
+        {
+            var fieldLayout = elementLayout.GetFieldByIndex((uint)i);
+            var fieldName = fieldLayout.Name;
+            var fieldOffset = (uint)fieldLayout.GetOffset(SlangParameterCategory.Uniform);
+            fields[i] = new PushConstantFieldReflection(fieldName, fieldOffset);
+        }
+
+        return new PushConstantReflection(name, size, fields);
     }
 
     private static ShaderParameterReflection MapParameter(VariableLayoutReflection param)

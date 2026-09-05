@@ -236,11 +236,12 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         }
 
         var descriptorSetLayouts = CreateDescriptorSetLayouts(compiled.Reflection);
-        var pipelineLayout = CreatePipelineLayout(descriptorSetLayouts);
+        var (pushConstantSize, pushConstantStageFlags) = ValidatePushConstants(compiled.Reflection, description.PushConstantLayout);
+        var pipelineLayout = CreatePipelineLayout(descriptorSetLayouts, pushConstantSize, pushConstantStageFlags);
 
         var pipelineHandle = CreateGraphicsPipeline(description, vertexShader, fragmentShader, pipelineLayout, compiled.Reflection);
 
-        return new Pipeline(_device, pipelineHandle, pipelineLayout, descriptorSetLayouts, vertexShader, fragmentShader, compiled.Reflection);
+        return new Pipeline(_device, pipelineHandle, pipelineLayout, descriptorSetLayouts, vertexShader, fragmentShader, compiled.Reflection, pushConstantSize, pushConstantStageFlags);
     }
     
     // Temporary location for these methods
@@ -549,18 +550,37 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         return layouts;
     }
 
-    private PipelineLayout CreatePipelineLayout(DescriptorSetLayout[] descriptorSetLayouts)
+    private PipelineLayout CreatePipelineLayout(DescriptorSetLayout[] descriptorSetLayouts, uint pushConstantSize, ShaderStageFlags pushConstantStageFlags)
     {
         var vk = _device.Instance.Vk;
 
+        PushConstantRange[] pushConstantRanges = null!;
+        var pushConstantRangeCount = 0u;
+
+        if (pushConstantSize > 0)
+        {
+            pushConstantRanges =
+            [
+                new PushConstantRange
+                {
+                    StageFlags = pushConstantStageFlags,
+                    Offset = 0,
+                    Size = pushConstantSize
+                }
+            ];
+            pushConstantRangeCount = 1;
+        }
+
         fixed (DescriptorSetLayout* ptr = descriptorSetLayouts)
+        fixed (PushConstantRange* pcPtr = pushConstantRanges)
         {
             var createInfo = new PipelineLayoutCreateInfo
             {
                 SType = StructureType.PipelineLayoutCreateInfo,
                 SetLayoutCount = (uint)descriptorSetLayouts.Length,
                 PSetLayouts = ptr,
-                PushConstantRangeCount = 0
+                PushConstantRangeCount = pushConstantRangeCount,
+                PPushConstantRanges = pcPtr
             };
 
             if (vk.CreatePipelineLayout(_device.Device, in createInfo, null, out var layout) != Result.Success)
@@ -570,6 +590,69 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
 
             return layout;
         }
+    }
+
+    private static (uint size, ShaderStageFlags stageFlags) ValidatePushConstants(ShaderReflection reflection, PushConstantLayout? appLayout)
+    {
+        if (reflection.PushConstants.Length == 0)
+        {
+            if (appLayout != null)
+            {
+                throw new VkAllocationException("Pipeline description provides a PushConstantLayout but the shader declares no push constants.");
+            }
+
+            return (0, ShaderStageFlags.None);
+        }
+
+        if (reflection.PushConstants.Length > 1)
+        {
+            throw new VkAllocationException($"Multiple push constant blocks are not supported. Shader declares {reflection.PushConstants.Length}.");
+        }
+
+        if (appLayout == null)
+        {
+            throw new VkAllocationException("Shader declares push constants but PipelineDescription has no PushConstantLayout.");
+        }
+
+        var shaderPc = reflection.PushConstants[0];
+
+        if (appLayout.Size != shaderPc.Size)
+        {
+            throw new VkAllocationException($"Push constant size mismatch: app says {appLayout.Size} bytes, shader says {shaderPc.Size} bytes.");
+        }
+
+        if (appLayout.Fields.Length != shaderPc.Fields.Length)
+        {
+            throw new VkAllocationException($"Push constant field count mismatch: app says {appLayout.Fields.Length}, shader says {shaderPc.Fields.Length}.");
+        }
+
+        for (var i = 0; i < appLayout.Fields.Length; i++)
+        {
+            var appField = appLayout.Fields[i];
+            var found = false;
+
+            for (var j = 0; j < shaderPc.Fields.Length; j++)
+            {
+                if (string.Equals(shaderPc.Fields[j].Name, appField.Name, StringComparison.OrdinalIgnoreCase))
+                {
+                    found = true;
+
+                    if (shaderPc.Fields[j].Offset != appField.Offset)
+                    {
+                        throw new VkAllocationException($"Push constant field \"{appField.Name}\" offset mismatch: app says {appField.Offset}, shader says {shaderPc.Fields[j].Offset}.");
+                    }
+
+                    break;
+                }
+            }
+
+            if (!found)
+            {
+                throw new VkAllocationException($"Push constant field \"{appField.Name}\" not found in shader reflection.");
+            }
+        }
+
+        return (shaderPc.Size, ShaderStageFlags.VertexBit | ShaderStageFlags.FragmentBit);
     }
 
     private Silk.NET.Vulkan.Pipeline CreateGraphicsPipeline(

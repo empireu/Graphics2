@@ -48,9 +48,24 @@ public readonly struct ShaderParameterReflection(string name, uint bindingIndex,
     public readonly ShaderParameterKind Kind = kind;
 }
 
+public readonly struct PushConstantFieldReflection(string name, uint offset)
+{
+    public readonly string Name = name;
+    public readonly uint Offset = offset;
+}
+
+public readonly struct PushConstantReflection(string name, uint size, PushConstantFieldReflection[] fields)
+{
+    public readonly string Name = name;
+    public readonly uint Size = size;
+    public readonly PushConstantFieldReflection[] Fields = fields;
+}
+
 public sealed class ShaderReflection
 {
     public required EntryPointReflection[] EntryPoints { get; init; }
     
     public required ShaderParameterReflection[] Parameters { get; init; }
+
+    public required PushConstantReflection[] PushConstants { get; init; }
 }

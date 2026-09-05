@@ -84,6 +84,7 @@ public sealed class PipelineDescription
     public BlendState[]? Blends { get; init; }
 
     public VertexLayout? VertexLayout { get; init; }
+    public PushConstantLayout? PushConstantLayout { get; init; }
 }
 
 public sealed unsafe class Pipeline : IDisposable
@@ -97,6 +98,8 @@ public sealed unsafe class Pipeline : IDisposable
     internal Silk.NET.Vulkan.Pipeline Handle;
     internal PipelineLayout Layout;
     internal readonly DescriptorSetLayout[] DescriptorSetLayouts;
+    internal readonly uint PushConstantSize;
+    internal readonly ShaderStageFlags PushConstantStageFlags;
     public readonly ShaderReflection Reflection;
 
     internal Pipeline(
@@ -106,7 +109,9 @@ public sealed unsafe class Pipeline : IDisposable
         DescriptorSetLayout[] descriptorSetLayouts,
         VkShader vertexShader,
         VkShader? fragmentShader,
-        ShaderReflection reflection)
+        ShaderReflection reflection,
+        uint pushConstantSize,
+        ShaderStageFlags pushConstantStageFlags)
     {
         _device = device;
         Handle = handle;
@@ -115,6 +120,8 @@ public sealed unsafe class Pipeline : IDisposable
         _vertexShader = vertexShader;
         _fragmentShader = fragmentShader;
         Reflection = reflection;
+        PushConstantSize = pushConstantSize;
+        PushConstantStageFlags = pushConstantStageFlags;
 
         _parametersByName = new Dictionary<string, ShaderParameterReflection>(reflection.Parameters.Length);
         foreach (var parameter in reflection.Parameters)
