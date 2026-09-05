@@ -195,6 +195,8 @@ public sealed unsafe class VkDevice : IDisposable
         public PhysicalDeviceFeatures2 Features2 { get; init; }
         
         public ulong DeviceLocalMemory { get; init; }
+
+        public ulong MinUniformBufferOffsetAlignment { get; init; }
     }
     // ReSharper restore UnusedAutoPropertyAccessor.Global
 
@@ -288,7 +290,8 @@ public sealed unsafe class VkDevice : IDisposable
                 FeaturesVk12 = vk12Features,
                 FeaturesVk13 = vk13Features,
                 Features2 = features2,
-                DeviceLocalMemory = DeviceLocalMemoryBytes(instance.Vk, device)
+                DeviceLocalMemory = DeviceLocalMemoryBytes(instance.Vk, device),
+                MinUniformBufferOffsetAlignment = properties.Limits.MinUniformBufferOffsetAlignment
             };
         }).Where(x => x.HasValue).Select(x => x!.Value).ToList();
 

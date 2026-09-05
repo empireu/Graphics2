@@ -1,4 +1,5 @@
 using Graphics2.Core.Bootstrap;
+using Graphics2.Core.Resources;
 using Silk.NET.Vulkan;
 using Semaphore = Silk.NET.Vulkan.Semaphore;
 
@@ -43,8 +44,11 @@ public sealed unsafe class RenderContext : IDisposable
     
     public readonly uint FramesInFlight;
 
+    private const long RingCapacity = 4 * 1024 * 1024;
+
     public static RenderContext Create(
         VkDevice device,
+        VulkanResourceFactory factory,
         SurfaceKHR surface,
         Extent2D extent,
         VkSwapchainDescription swapchainDescription,
@@ -54,10 +58,17 @@ public sealed unsafe class RenderContext : IDisposable
 
         try
         {
+            var uniformAlignment = (uint)device.Info.MinUniformBufferOffsetAlignment;
+            if (uniformAlignment == 0)
+            {
+                uniformAlignment = 1;
+            }
+
             var slots = new FrameSlot[framesInFlight];
             for (var i = 0; i < framesInFlight; i++)
             {
-                slots[i] = FrameSlot.Create(device);
+                var ring = UploadRing.Create(factory, RingCapacity, uniformAlignment);
+                slots[i] = FrameSlot.Create(device, ring);
             }
 
             try
@@ -98,6 +109,7 @@ public sealed unsafe class RenderContext : IDisposable
         vk.ResetFences(_device.Device, 1, &fence);
 
         slot.Reset();
+        slot.UploadRing.Reset();
 
         var descriptorPool = _descriptorPools[_frame % FramesInFlight];
         vk.ResetDescriptorPool(_device.Device, descriptorPool, 0);
@@ -126,7 +138,7 @@ public sealed unsafe class RenderContext : IDisposable
             throw new VkBootstrapException("Failed to begin command buffer");
         }
 
-        return new Frame(_device, descriptorPool, slot.CommandBuffer, imageIndex, _swapchainTargets[imageIndex], Swapchain.Extent);
+        return new Frame(_device, descriptorPool, slot.CommandBuffer, imageIndex, _swapchainTargets[imageIndex], Swapchain.Extent, slot.UploadRing);
     }
 
     /// <summary>

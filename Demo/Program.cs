@@ -35,6 +35,11 @@ struct PushConstants(float rotation)
     public float Rotation = rotation;
 }
 
+struct Camera(float time)
+{
+    public float Time = time;
+}
+
 class App(ApplicationDescription description) : Application(description)
 {
     private const string ShaderSource = """
@@ -46,6 +51,10 @@ class App(ApplicationDescription description) : Application(description)
         struct VertexOutput {
             float4 position : SV_POSITION;
             float3 color : COLOR;
+        };
+
+        cbuffer Camera : register(b0) {
+            float time;
         };
 
         struct PushConstants {
@@ -70,7 +79,9 @@ class App(ApplicationDescription description) : Application(description)
 
         [shader("fragment")]
         float4 fsMain(VertexOutput input) : SV_TARGET {
-            return float4(input.color, 1.0);
+            float t = time * 2.0;
+            float3 animated = input.color * (0.5 + 0.5 * sin(float3(t, t + 2.0, t + 4.0)));
+            return float4(animated, 1.0);
         }
         """;
 
@@ -79,6 +90,7 @@ class App(ApplicationDescription description) : Application(description)
     private VkBuffer? _vertexBuffer;
     private VkBuffer? _indexBuffer;
     private int _frames;
+    private double _time;
 
     protected override unsafe void OnResize(Vector2D<int> framebufferSize)
     {
@@ -135,7 +147,7 @@ class App(ApplicationDescription description) : Application(description)
         Factory.UpdateBuffer(_indexBuffer, MemoryMarshal.AsBytes(indices));
     }
 
-    protected override void OnFrame(double deltaTime, Frame frame)
+    protected override unsafe void OnFrame(double deltaTime, Frame frame)
     {
         using var pass = frame.BeginRenderPass(new RenderPassDescriptor
         {
@@ -163,12 +175,19 @@ class App(ApplicationDescription description) : Application(description)
         pass.SetPipeline(_pipeline!);
         pass.SetViewport(0, 0, frame.Extent.X, frame.Extent.Y);
         pass.SetScissor(0, 0, (uint)frame.Extent.X, (uint)frame.Extent.Y);
-        pass.PushConstants(new PushConstants((float)(_frames * deltaTime * 2.0)));
+
+        var cameraAlloc = frame.AllocateUniform((uint)sizeof(Camera));
+        var camera = new Camera((float)_time);
+        MemoryMarshal.Write(cameraAlloc.Data, in camera);
+        pass.BindUniformBuffer("Camera", cameraAlloc);
+
+        pass.PushConstants(new PushConstants((float)(_time * 2.0)));
         pass.SetVertexBuffer(_vertexBuffer!);
         pass.SetIndexBuffer(_indexBuffer!, IndexType.UInt16);
         pass.DrawIndexed(3);
 
-        if (++_frames >= 30)
+        _time += deltaTime;
+        if (++_frames >= 100)
         {
             Window.Window.Close();
         }

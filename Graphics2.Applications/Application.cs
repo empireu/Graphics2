@@ -65,6 +65,7 @@ public abstract unsafe class Application : IDisposable
         {
             Context = RenderContext.Create(
                 Device,
+                Factory,
                 Surface,
                 ToExtent(initialSize),
                 description.Swapchain,
@@ -150,6 +151,7 @@ public abstract unsafe class Application : IDisposable
             {
                 Context = RenderContext.Create(
                     Device,
+                    Factory,
                     Surface,
                     extent,
                     new VkSwapchainDescription()

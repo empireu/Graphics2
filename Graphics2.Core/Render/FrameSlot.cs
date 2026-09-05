@@ -14,21 +14,24 @@ public sealed unsafe class FrameSlot : IDisposable
         CommandPool commandPool,
         CommandBuffer commandBuffer,
         Semaphore acquireSemaphore,
-        Fence fence)
+        Fence fence,
+        UploadRing uploadRing)
     {
         Device = device;
         _commandPool = commandPool;
         CommandBuffer = commandBuffer;
         AcquireSemaphore = acquireSemaphore;
         Fence = fence;
+        UploadRing = uploadRing;
     }
 
     public readonly VkDevice Device;
     public readonly CommandBuffer CommandBuffer;
     public readonly Semaphore AcquireSemaphore;
     public readonly Fence Fence;
+    public readonly UploadRing UploadRing;
 
-    public static FrameSlot Create(VkDevice device)
+    public static FrameSlot Create(VkDevice device, UploadRing uploadRing)
     {
         var vk = device.Instance.Vk;
 
@@ -87,7 +90,7 @@ public sealed unsafe class FrameSlot : IDisposable
             throw new VkBootstrapException("Failed to create fence");
         }
 
-        return new FrameSlot(device, commandPool, commandBuffer, acquireSemaphore, fence);
+        return new FrameSlot(device, commandPool, commandBuffer, acquireSemaphore, fence, uploadRing);
     }
 
     public void Reset()
@@ -105,9 +108,11 @@ public sealed unsafe class FrameSlot : IDisposable
         var vk = Device.Instance.Vk;
         vk.DestroyFence(Device.Device, Fence, null);
         vk.DestroySemaphore(Device.Device, AcquireSemaphore, null);
-      
+
         var commandBuffer = CommandBuffer;
         vk.FreeCommandBuffers(Device.Device, _commandPool, 1, &commandBuffer);
         vk.DestroyCommandPool(Device.Device, _commandPool, null);
+
+        UploadRing.Dispose();
     }
 }

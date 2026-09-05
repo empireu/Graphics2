@@ -248,6 +248,41 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         _descriptorsDirty = true;
     }
 
+    public void BindUniformBuffer(string name, VkBuffer buffer, ulong offset, ulong range)
+    {
+        if (_pipeline == null)
+        {
+            throw new InvalidOperationException("SetPipeline must be called before binding resources.");
+        }
+
+        if (!_pipeline.TryGetParameter(name, out var parameter))
+        {
+            throw new ArgumentException($"Shader parameter \"{name}\" not found in pipeline reflection.", nameof(name));
+        }
+
+        if (parameter.Kind != ShaderParameterKind.UniformBuffer)
+        {
+            throw new ArgumentException($"Shader parameter \"{name}\" is {parameter.Kind}, not UniformBuffer.", nameof(name));
+        }
+
+        _pendingWrites.Add(new PendingDescriptorWrite
+        {
+            Set = parameter.BindingSpace,
+            Binding = parameter.BindingIndex,
+            Type = DescriptorType.UniformBuffer,
+            BufferHandle = buffer.Handle,
+            Offset = offset,
+            Range = range
+        });
+
+        _descriptorsDirty = true;
+    }
+
+    public void BindUniformBuffer(string name, RingAllocation allocation)
+    {
+        BindUniformBuffer(name, allocation.Buffer, allocation.Offset, allocation.Size);
+    }
+
     public void PushConstants<T>(in T data) where T : unmanaged
     {
         if (_pipeline == null)
