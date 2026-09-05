@@ -15,6 +15,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
     private readonly BlockAllocator<VulkanMemory> _cpuToGpu;
     private readonly BlockAllocator<VulkanMemory> _gpuToCpu;
     private readonly ShaderCompiler _shaderCompiler;
+    private readonly CommandPool _transferPool;
     private int _disposed;
 
     public VulkanResourceFactory(VkDevice device)
@@ -29,6 +30,19 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         _cpuToGpu = new BlockAllocator<VulkanMemory>(DefaultBlockSize, cpuToGpuLayer);
         _gpuToCpu = new BlockAllocator<VulkanMemory>(DefaultBlockSize, gpuToCpuLayer);
         _shaderCompiler = new ShaderCompiler();
+
+        var vk = device.Instance.Vk;
+        var poolCreateInfo = new CommandPoolCreateInfo
+        {
+            SType = StructureType.CommandPoolCreateInfo,
+            Flags = CommandPoolCreateFlags.TransientBit,
+            QueueFamilyIndex = device.Info.ChosenGraphicsPresentFamily
+        };
+
+        if (vk.CreateCommandPool(device.Device, in poolCreateInfo, null, out _transferPool) != Result.Success)
+        {
+            throw new VkAllocationException("Failed to create transfer command pool.");
+        }
     }
 
     public VkBuffer CreateBuffer(BufferDescription description)
@@ -196,7 +210,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
             throw new VkAllocationException("Failed to create image view.");
         }
 
-        return new Texture(_device, _gpuOnly, imageHandle, viewHandle, allocation, description.Width, description.Height, description.Format, description.Usage);
+        return new Texture(_device, _gpuOnly, imageHandle, viewHandle, allocation, description.Width, description.Height, description.Depth, description.Format, description.Usage);
     }
 
     public Pipeline CreatePipeline(PipelineDescription description)
@@ -228,6 +242,235 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
 
         return new Pipeline(_device, pipelineHandle, pipelineLayout, descriptorSetLayouts, vertexShader, fragmentShader, compiled.Reflection);
     }
+    
+    // Temporary location for these methods
+
+    public void UpdateBuffer(VkBuffer dst, ReadOnlySpan<byte> data)
+    {
+        if (data.Length == 0)
+        {
+            return;
+        }
+
+        if (data.Length > dst.Size)
+        {
+            throw new ArgumentException($"Data ({data.Length} bytes) exceeds buffer size ({dst.Size} bytes).", nameof(data));
+        }
+
+        var staging = CreateBuffer(new BufferDescription
+        {
+            Size = data.Length,
+            Usage = BufferUsage.Staging
+        });
+
+        data.CopyTo(staging.MappedData);
+
+        var vk = _device.Instance.Vk;
+        var cmd = BeginOneTimeCommand();
+
+        var region = new BufferCopy
+        {
+            SrcOffset = 0,
+            DstOffset = 0,
+            Size = (ulong)data.Length
+        };
+
+        vk.CmdCopyBuffer(cmd, staging.Handle, dst.Handle, 1, &region);
+
+        EndOneTimeCommand(cmd);
+
+        staging.Dispose();
+    }
+
+    public void UpdateTexture(Texture dst, ReadOnlySpan<byte> data)
+    {
+        if (data.Length == 0)
+        {
+            return;
+        }
+
+        var pixelSize = TextureFormatPixelSize(dst.Format);
+        var expectedSize = (long)dst.Width * dst.Height * dst.Depth * pixelSize;
+        if (data.Length != expectedSize)
+        {
+            throw new ArgumentException($"Data ({data.Length} bytes) does not match texture size ({expectedSize} bytes: {dst.Width}x{dst.Height}x{dst.Depth}x{pixelSize}).", nameof(data));
+        }
+
+        var staging = CreateBuffer(new BufferDescription
+        {
+            Size = data.Length,
+            Usage = BufferUsage.Staging
+        });
+
+        data.CopyTo(staging.MappedData);
+
+        var vk = _device.Instance.Vk;
+        var cmd = BeginOneTimeCommand();
+
+        var aspectMask = FormatToAspectMask(TextureFormatToVk(dst.Format));
+
+        if (dst.CurrentLayout != ImageLayout.TransferDstOptimal)
+        {
+            var barrier = new ImageMemoryBarrier2
+            {
+                SType = StructureType.ImageMemoryBarrier2,
+                SrcStageMask = PipelineStageFlags2.None,
+                SrcAccessMask = AccessFlags2.None,
+                DstStageMask = PipelineStageFlags2.CopyBit,
+                DstAccessMask = AccessFlags2.TransferWriteBit,
+                OldLayout = dst.CurrentLayout,
+                NewLayout = ImageLayout.TransferDstOptimal,
+                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                Image = dst.Image,
+                SubresourceRange = new ImageSubresourceRange
+                {
+                    AspectMask = aspectMask,
+                    BaseMipLevel = 0,
+                    LevelCount = 1,
+                    BaseArrayLayer = 0,
+                    LayerCount = 1
+                }
+            };
+
+            var dependencyInfo = new DependencyInfo
+            {
+                SType = StructureType.DependencyInfo,
+                ImageMemoryBarrierCount = 1,
+                PImageMemoryBarriers = &barrier
+            };
+
+            vk.CmdPipelineBarrier2(cmd, &dependencyInfo);
+        }
+
+        var region = new BufferImageCopy
+        {
+            BufferOffset = 0,
+            BufferRowLength = 0,
+            BufferImageHeight = 0,
+            ImageSubresource = new ImageSubresourceLayers
+            {
+                AspectMask = aspectMask,
+                MipLevel = 0,
+                BaseArrayLayer = 0,
+                LayerCount = 1
+            },
+            ImageOffset = new Offset3D(0, 0, 0),
+            ImageExtent = new Extent3D(dst.Width, dst.Height, dst.Depth)
+        };
+
+        vk.CmdCopyBufferToImage(cmd, staging.Handle, dst.Image, ImageLayout.TransferDstOptimal, 1, &region);
+
+        {
+            var barrier = new ImageMemoryBarrier2
+            {
+                SType = StructureType.ImageMemoryBarrier2,
+                SrcStageMask = PipelineStageFlags2.CopyBit,
+                SrcAccessMask = AccessFlags2.TransferWriteBit,
+                DstStageMask = PipelineStageFlags2.AllGraphicsBit,
+                DstAccessMask = AccessFlags2.ShaderReadBit,
+                OldLayout = ImageLayout.TransferDstOptimal,
+                NewLayout = ImageLayout.ShaderReadOnlyOptimal,
+                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                Image = dst.Image,
+                SubresourceRange = new ImageSubresourceRange
+                {
+                    AspectMask = aspectMask,
+                    BaseMipLevel = 0,
+                    LevelCount = 1,
+                    BaseArrayLayer = 0,
+                    LayerCount = 1
+                }
+            };
+
+            var dependencyInfo = new DependencyInfo
+            {
+                SType = StructureType.DependencyInfo,
+                ImageMemoryBarrierCount = 1,
+                PImageMemoryBarriers = &barrier
+            };
+
+            vk.CmdPipelineBarrier2(cmd, &dependencyInfo);
+        }
+
+        dst.CurrentLayout = ImageLayout.ShaderReadOnlyOptimal;
+
+        EndOneTimeCommand(cmd);
+
+        staging.Dispose();
+    }
+
+    private CommandBuffer BeginOneTimeCommand()
+    {
+        var vk = _device.Instance.Vk;
+
+        var allocInfo = new CommandBufferAllocateInfo
+        {
+            SType = StructureType.CommandBufferAllocateInfo,
+            CommandPool = _transferPool,
+            Level = CommandBufferLevel.Primary,
+            CommandBufferCount = 1
+        };
+
+        if (vk.AllocateCommandBuffers(_device.Device, in allocInfo, out var cmd) != Result.Success)
+        {
+            throw new VkAllocationException("Failed to allocate one-time command buffer.");
+        }
+
+        var beginInfo = new CommandBufferBeginInfo
+        {
+            SType = StructureType.CommandBufferBeginInfo,
+            Flags = CommandBufferUsageFlags.OneTimeSubmitBit
+        };
+
+        if (vk.BeginCommandBuffer(cmd, in beginInfo) != Result.Success)
+        {
+            vk.FreeCommandBuffers(_device.Device, _transferPool, 1, &cmd);
+            throw new VkAllocationException("Failed to begin one-time command buffer.");
+        }
+
+        return cmd;
+    }
+
+    private void EndOneTimeCommand(CommandBuffer cmd)
+    {
+        var vk = _device.Instance.Vk;
+
+        if (vk.EndCommandBuffer(cmd) != Result.Success)
+        {
+            vk.FreeCommandBuffers(_device.Device, _transferPool, 1, &cmd);
+            throw new VkAllocationException("Failed to end one-time command buffer.");
+        }
+
+        var submitInfo = new SubmitInfo
+        {
+            SType = StructureType.SubmitInfo,
+            CommandBufferCount = 1,
+            PCommandBuffers = &cmd
+        };
+
+        if (vk.QueueSubmit(_device.Queue, 1, &submitInfo, default) != Result.Success)
+        {
+            vk.FreeCommandBuffers(_device.Device, _transferPool, 1, &cmd);
+            throw new VkAllocationException("Failed to submit one-time command buffer.");
+        }
+
+        vk.QueueWaitIdle(_device.Queue);
+
+        vk.FreeCommandBuffers(_device.Device, _transferPool, 1, &cmd);
+    }
+
+    private static uint TextureFormatPixelSize(TextureFormat format) => format switch
+    {
+        TextureFormat.R8G8B8A8Unorm => 4,
+        TextureFormat.R8G8B8A8Srgb => 4,
+        TextureFormat.B8G8R8A8Srgb => 4,
+        TextureFormat.R32G32B32A32Sfloat => 16,
+        TextureFormat.D32Sfloat => 4,
+        TextureFormat.D24UnormS8Uint => 4,
+        _ => throw new ArgumentOutOfRangeException(nameof(format))
+    };
 
     private DescriptorSetLayout[] CreateDescriptorSetLayouts(ShaderReflection reflection)
     {
@@ -590,6 +833,11 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
             flags |= BufferUsageFlags.IndirectBufferBit;
         }
 
+        if (usage.HasFlag(BufferUsage.TransferDestination))
+        {
+            flags |= BufferUsageFlags.TransferDstBit;
+        }
+
         return flags;
     }
 
@@ -728,6 +976,8 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
 
         var vk = _device.Instance.Vk;
         vk.DeviceWaitIdle(_device.Device);
+
+        vk.DestroyCommandPool(_device.Device, _transferPool, null);
 
         _gpuOnly.Dispose();
         _cpuToGpu.Dispose();

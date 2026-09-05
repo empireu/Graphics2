@@ -13,12 +13,34 @@ public enum MemoryUsage
 [Flags]
 public enum BufferUsage
 {
+    /// <summary>
+    ///     GPU-only device-local vertex data read by the vertex shader.
+    /// </summary>
     Vertex = 1 << 0,
+    /// <summary>
+    ///     GPU-only device-local index data read by indexed draw calls.
+    /// </summary>
     Index = 1 << 1,
+    /// <summary>
+    ///     CPU-to-GPU host-visible UBO updated frequently per-frame.
+    /// </summary>
     Uniform = 1 << 2,
+    /// <summary>
+    ///     GPU-only device-local SSBO read/written to by shaders.
+    /// </summary>
     Storage = 1 << 3,
+    /// <summary>
+    ///     CPU-to-GPU host-visible transfer source, mapped for CPU writes.
+    /// </summary>
     Staging = 1 << 4,
-    Indirect = 1 << 5
+    /// <summary>
+    ///     GPU-only device-local draw arguments consumed by indirect commands.
+    /// </summary>
+    Indirect = 1 << 5,
+    /// <summary>
+    ///     GPU-only device-local buffer that can receive copies.
+    /// </summary>
+    TransferDestination = 1 << 6
 }
 
 public sealed class BufferDescription

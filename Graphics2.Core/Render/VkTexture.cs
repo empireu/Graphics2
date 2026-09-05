@@ -52,6 +52,7 @@ public sealed unsafe class Texture : VkTexture, IDisposable
 
     public readonly uint Width;
     public readonly uint Height;
+    public readonly uint Depth;
     public readonly TextureFormat Format;
     public readonly TextureUsage Usage;
 
@@ -63,6 +64,7 @@ public sealed unsafe class Texture : VkTexture, IDisposable
         Allocation allocation,
         uint width,
         uint height,
+        uint depth,
         TextureFormat format,
         TextureUsage usage)
         : base(image, view, ImageLayout.Undefined)
@@ -72,6 +74,7 @@ public sealed unsafe class Texture : VkTexture, IDisposable
         _allocation = allocation;
         Width = width;
         Height = height;
+        Depth = depth;
         Format = format;
         Usage = usage;
     }
