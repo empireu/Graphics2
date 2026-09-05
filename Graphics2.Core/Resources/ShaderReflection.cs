@@ -13,7 +13,8 @@ public enum VertexAttributeFormat
     UInt,
     UInt2,
     UInt3,
-    UInt4
+    UInt4,
+    R8G8B8A8Unorm
 }
 
 public readonly struct VertexAttributeReflection(string name, uint location, VertexAttributeFormat format, uint offset)

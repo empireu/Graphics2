@@ -12,13 +12,14 @@ public sealed unsafe class Frame
     internal readonly CommandBuffer CommandBuffer;
     internal readonly uint ImageIndex;
     private readonly UploadRing _uploadRing;
+    private readonly UploadRing _vertexRing;
     private readonly HashSet<ulong> _pendingCopies = [];
 
     public VkTexture SwapchainColorTarget { get; }
 
     public Vector2D<int> Extent { get; }
 
-    internal Frame(VkDevice device, DescriptorPool descriptorPool, CommandBuffer commandBuffer, uint imageIndex, VkTexture swapchainColorTarget, Extent2D extent, UploadRing uploadRing)
+    internal Frame(VkDevice device, DescriptorPool descriptorPool, CommandBuffer commandBuffer, uint imageIndex, VkTexture swapchainColorTarget, Extent2D extent, UploadRing uploadRing, UploadRing vertexRing)
     {
         Device = device;
         DescriptorPool = descriptorPool;
@@ -27,11 +28,14 @@ public sealed unsafe class Frame
         SwapchainColorTarget = swapchainColorTarget;
         Extent = new Vector2D<int>((int)extent.Width, (int)extent.Height);
         _uploadRing = uploadRing;
+        _vertexRing = vertexRing;
     }
 
     public RingAllocation Allocate(uint size, uint alignment) => _uploadRing.Allocate(size, alignment);
 
     public RingAllocation AllocateUniform(uint size) => _uploadRing.AllocateUniform(size);
+
+    public RingAllocation AllocateVertex(uint size, uint alignment) => _vertexRing.Allocate(size, alignment);
 
     public void CopyBuffer(VkBuffer src, ulong srcOffset, VkBuffer dst, ulong dstOffset, ulong size)
     {

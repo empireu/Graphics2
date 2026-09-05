@@ -8,6 +8,8 @@ using Graphics2.Windowing;
 using Silk.NET.Maths;
 using System.Runtime.InteropServices;
 using Graphics2.Windowing.Input;
+using Graphics2.ImGui;
+using ImGuiNET;
 
 var description = new ApplicationDescription
 {
@@ -113,6 +115,7 @@ class App(ApplicationDescription description) : Application(description)
     ];
     private int _frames;
     private double _time;
+    private ImGuiRenderer? _imGui;
 
     protected override unsafe void OnResize(Vector2D<int> framebufferSize)
     {
@@ -178,19 +181,33 @@ class App(ApplicationDescription description) : Application(description)
         {
             AnisotropyEnabled = false
         });
+
+        _imGui = new ImGuiRenderer(Factory);
+        _imGui.Initialize(
+            Window.Window.FramebufferSize,
+            () => Window.ClipboardText,
+            text => Window.ClipboardText = text
+        );
     }
 
+    private string _text = string.Empty;
+    
     protected override unsafe void OnFrame(double deltaTime, Frame frame, InputSnapshot input)
     {
-        for (var index = 0; index < input.CurrentKeys.Count; index++)
+        _imGui!.Update((float)deltaTime, input, Window.Window.FramebufferSize);
+
+        ImGui.DockSpaceOverViewport();
+
+        if (ImGui.Begin("Info"))
         {
-            var inputCurrentKey = input.CurrentKeys[index];
-            
-            if (inputCurrentKey)
-            {
-                Console.WriteLine($"Key: {(G2Key)index}");
-            }
+            ImGui.Text($"Frames: {_frames}");
+            ImGui.Text($"Time: {_time:F2}");
+            ImGui.Text($"FPS: {1.0 / deltaTime:F1}");
+
+            ImGui.InputText("Text", ref _text, 128);
         }
+        
+        ImGui.End();
 
         var scale = 0.5f + 0.5f * MathF.Sin((float)_time * 3.0f);
         Span<Vertex> vertices = stackalloc Vertex[4];
@@ -244,6 +261,8 @@ class App(ApplicationDescription description) : Application(description)
         pass.SetIndexBuffer(_indexBuffer!, IndexType.UInt16);
         pass.DrawIndexed(6);
 
+        _imGui.Render(frame, pass);
+
         _time += deltaTime;
         if (++_frames >= 10000)
         {
@@ -253,6 +272,7 @@ class App(ApplicationDescription description) : Application(description)
 
     protected override void OnDispose()
     {
+        _imGui?.Dispose();
         _pipeline?.Dispose();
         _depthTexture?.Dispose();
         _texture?.Dispose();

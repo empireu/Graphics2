@@ -736,7 +736,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
                     throw new VkAllocationException($"Vertex layout attribute \"{appAttr.Name}\" not found in shader reflection.");
                 }
 
-                if (shaderFormat != appAttr.Format)
+                if (shaderFormat != appAttr.Format && !IsCompatibleFormat(shaderFormat, appAttr.Format))
                 {
                     throw new VkAllocationException($"Vertex layout attribute \"{appAttr.Name}\" format mismatch: app says {appAttr.Format}, shader says {shaderFormat}.");
                 }
@@ -1039,6 +1039,13 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         _ => ImageAspectFlags.ColorBit
     };
 
+    private static bool IsCompatibleFormat(VertexAttributeFormat shader, VertexAttributeFormat app) =>
+        (shader, app) switch
+        {
+            (VertexAttributeFormat.Float4, VertexAttributeFormat.R8G8B8A8Unorm) => true,
+            _ => false
+        };
+
     private static Format VertexAttributeFormatToVk(VertexAttributeFormat format) => format switch
     {
         VertexAttributeFormat.Float => Format.R32Sfloat,
@@ -1053,6 +1060,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         VertexAttributeFormat.UInt2 => Format.R32G32Uint,
         VertexAttributeFormat.UInt3 => Format.R32G32B32Uint,
         VertexAttributeFormat.UInt4 => Format.R32G32B32A32Uint,
+        VertexAttributeFormat.R8G8B8A8Unorm => Format.R8G8B8A8Unorm,
         _ => throw new ArgumentOutOfRangeException(nameof(format))
     };
 

@@ -14,6 +14,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Graphics2.Tests", "Graphics
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Graphics2.Assets", "Graphics2.Assets\Graphics2.Assets.csproj", "{29ACD98D-2FF1-4988-88DC-6A99DE80923E}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Graphics2.ImGui", "Graphics2.ImGui\Graphics2.ImGui.csproj", "{1F9AEB20-BD9F-4A5E-9532-3419E13B7700}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -48,5 +50,9 @@ Global
 		{29ACD98D-2FF1-4988-88DC-6A99DE80923E}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{29ACD98D-2FF1-4988-88DC-6A99DE80923E}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{29ACD98D-2FF1-4988-88DC-6A99DE80923E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1F9AEB20-BD9F-4A5E-9532-3419E13B7700}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1F9AEB20-BD9F-4A5E-9532-3419E13B7700}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1F9AEB20-BD9F-4A5E-9532-3419E13B7700}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1F9AEB20-BD9F-4A5E-9532-3419E13B7700}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

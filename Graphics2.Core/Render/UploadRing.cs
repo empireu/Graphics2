@@ -28,12 +28,12 @@ public sealed class UploadRing : IDisposable
         _offset = 0;
     }
 
-    public static UploadRing Create(VulkanResourceFactory factory, long capacity, uint uniformAlignment)
+    public static UploadRing Create(VulkanResourceFactory factory, long capacity, uint uniformAlignment, BufferUsage usage)
     {
         var buffer = factory.CreateBuffer(new BufferDescription
         {
             Size = capacity,
-            Usage = BufferUsage.Uniform | BufferUsage.Storage | BufferUsage.Staging
+            Usage = usage
         });
 
         return new UploadRing(buffer, (uint)capacity, uniformAlignment);

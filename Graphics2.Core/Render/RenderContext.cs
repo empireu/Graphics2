@@ -67,8 +67,9 @@ public sealed unsafe class RenderContext : IDisposable
             var slots = new FrameSlot[framesInFlight];
             for (var i = 0; i < framesInFlight; i++)
             {
-                var ring = UploadRing.Create(factory, RingCapacity, uniformAlignment);
-                slots[i] = FrameSlot.Create(device, ring);
+                var ring = UploadRing.Create(factory, RingCapacity, uniformAlignment, BufferUsage.Uniform | BufferUsage.Storage | BufferUsage.Staging);
+                var vertexRing = UploadRing.Create(factory, RingCapacity, uniformAlignment, BufferUsage.Vertex | BufferUsage.Index | BufferUsage.Staging);
+                slots[i] = FrameSlot.Create(device, ring, vertexRing);
             }
 
             try
@@ -110,6 +111,7 @@ public sealed unsafe class RenderContext : IDisposable
 
         slot.Reset();
         slot.UploadRing.Reset();
+        slot.VertexRing.Reset();
 
         var descriptorPool = _descriptorPools[_frame % FramesInFlight];
         vk.ResetDescriptorPool(_device.Device, descriptorPool, 0);
@@ -138,7 +140,7 @@ public sealed unsafe class RenderContext : IDisposable
             throw new VkBootstrapException("Failed to begin command buffer");
         }
 
-        return new Frame(_device, descriptorPool, slot.CommandBuffer, imageIndex, _swapchainTargets[imageIndex], Swapchain.Extent, slot.UploadRing);
+        return new Frame(_device, descriptorPool, slot.CommandBuffer, imageIndex, _swapchainTargets[imageIndex], Swapchain.Extent, slot.UploadRing, slot.VertexRing);
     }
 
     /// <summary>
