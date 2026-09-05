@@ -7,6 +7,7 @@ namespace Graphics2.Core.Render;
 public sealed class Frame
 {
     internal readonly VkDevice Device;
+    internal readonly DescriptorPool DescriptorPool;
     internal readonly CommandBuffer CommandBuffer;
     internal readonly uint ImageIndex;
 
@@ -14,14 +15,15 @@ public sealed class Frame
 
     public Vector2D<int> Extent { get; }
 
-    internal Frame(VkDevice device, CommandBuffer commandBuffer, uint imageIndex, VkTexture swapchainColorTarget, Extent2D extent)
+    internal Frame(VkDevice device, DescriptorPool descriptorPool, CommandBuffer commandBuffer, uint imageIndex, VkTexture swapchainColorTarget, Extent2D extent)
     {
         Device = device;
+        DescriptorPool = descriptorPool;
         CommandBuffer = commandBuffer;
         ImageIndex = imageIndex;
         SwapchainColorTarget = swapchainColorTarget;
         Extent = new Vector2D<int>((int)extent.Width, (int)extent.Height);
     }
 
-    public RenderPassEncoder BeginRenderPass(RenderPassDescriptor descriptor) => RenderPassEncoder.Begin(Device, CommandBuffer, descriptor, Extent);
+    public RenderPassEncoder BeginRenderPass(RenderPassDescriptor descriptor) => RenderPassEncoder.Begin(Device, DescriptorPool, CommandBuffer, descriptor, Extent);
 }

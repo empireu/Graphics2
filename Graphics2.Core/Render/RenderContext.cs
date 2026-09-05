@@ -10,6 +10,8 @@ public sealed unsafe class RenderContext : IDisposable
     private readonly FrameSlot[] _slots;
     private Semaphore[] _renderFinishedSemaphores;
     private VkTexture[] _swapchainTargets = [];
+    private readonly DescriptorPool[] _descriptorPools;
+    
     private uint _frame;
     private int _disposed;
 
@@ -27,6 +29,12 @@ public sealed unsafe class RenderContext : IDisposable
         _renderFinishedSemaphores = renderFinishedSemaphores;
         Extent = extent;
         FramesInFlight = framesInFlight;
+
+        _descriptorPools = new DescriptorPool[framesInFlight];
+        for (var i = 0; i < framesInFlight; i++)
+        {
+            _descriptorPools[i] = CreateDescriptorPool(device);
+        }
     }
 
     public readonly VkSwapchain Swapchain;
@@ -91,6 +99,9 @@ public sealed unsafe class RenderContext : IDisposable
 
         slot.Reset();
 
+        var descriptorPool = _descriptorPools[_frame % FramesInFlight];
+        vk.ResetDescriptorPool(_device.Device, descriptorPool, 0);
+
         var result = Swapchain.AcquireNextImage(slot.AcquireSemaphore, out var imageIndex);
         
         while (result == Result.ErrorOutOfDateKhr)
@@ -115,7 +126,7 @@ public sealed unsafe class RenderContext : IDisposable
             throw new VkBootstrapException("Failed to begin command buffer");
         }
 
-        return new Frame(_device, slot.CommandBuffer, imageIndex, _swapchainTargets[imageIndex], Swapchain.Extent);
+        return new Frame(_device, descriptorPool, slot.CommandBuffer, imageIndex, _swapchainTargets[imageIndex], Swapchain.Extent);
     }
 
     /// <summary>
@@ -184,6 +195,11 @@ public sealed unsafe class RenderContext : IDisposable
         var vk = _device.Instance.Vk;
         vk.DeviceWaitIdle(_device.Device);
 
+        foreach (var pool in _descriptorPools)
+        {
+            vk.DestroyDescriptorPool(_device.Device, pool, null);
+        }
+
         foreach (var sem in _renderFinishedSemaphores)
         {
             vk.DestroySemaphore(_device.Device, sem, null);
@@ -240,5 +256,37 @@ public sealed unsafe class RenderContext : IDisposable
         }
 
         return semaphores;
+    }
+
+    private static DescriptorPool CreateDescriptorPool(VkDevice device)
+    {
+        var vk = device.Instance.Vk;
+
+        const int descriptorCount = 128;
+        
+        var poolSizes = stackalloc DescriptorPoolSize[5]
+        {
+            new() { Type = DescriptorType.UniformBuffer, DescriptorCount = descriptorCount },
+            new() { Type = DescriptorType.StorageBuffer, DescriptorCount = descriptorCount },
+            new() { Type = DescriptorType.SampledImage, DescriptorCount = descriptorCount },
+            new() { Type = DescriptorType.Sampler, DescriptorCount = descriptorCount },
+            new() { Type = DescriptorType.StorageImage, DescriptorCount = descriptorCount }
+        };
+
+        var createInfo = new DescriptorPoolCreateInfo
+        {
+            SType = StructureType.DescriptorPoolCreateInfo,
+            Flags = DescriptorPoolCreateFlags.FreeDescriptorSetBit,
+            MaxSets = 256,
+            PoolSizeCount = 5,
+            PPoolSizes = poolSizes
+        };
+
+        if (vk.CreateDescriptorPool(device.Device, in createInfo, null, out var pool) != Result.Success)
+        {
+            throw new VkBootstrapException("Failed to create descriptor pool");
+        }
+
+        return pool;
     }
 }

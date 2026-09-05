@@ -3,6 +3,7 @@ using Graphics2.Core.Resources;
 using Silk.NET.Maths;
 using Silk.NET.Vulkan;
 using Pipeline = Graphics2.Core.Resources.Pipeline;
+// ReSharper disable LoopCanBeConvertedToQuery
 
 // ReSharper disable ForCanBeConvertedToForeach
 
@@ -10,24 +11,30 @@ namespace Graphics2.Core.Render;
 
 public sealed unsafe class RenderPassEncoder : IDisposable
 {
+    private readonly VkDevice _device;
     private readonly Vk _vk;
+    private readonly DescriptorPool _descriptorPool;
     private readonly CommandBuffer _cmd;
     private readonly RenderPassDescriptor _descriptor;
     private readonly Vector2D<int> _defaultExtent;
+    private Pipeline? _pipeline;
+    private readonly List<PendingDescriptorWrite> _pendingWrites = [];
+    private bool _descriptorsDirty;
     private bool _ended;
 
-    private RenderPassEncoder(Vk vk, CommandBuffer cmd, RenderPassDescriptor descriptor, Vector2D<int> defaultExtent)
+    private RenderPassEncoder(VkDevice device, DescriptorPool descriptorPool, CommandBuffer cmd, RenderPassDescriptor descriptor, Vector2D<int> defaultExtent)
     {
-        _vk = vk;
+        _device = device;
+        _vk = device.Instance.Vk;
+        _descriptorPool = descriptorPool;
         _cmd = cmd;
         _descriptor = descriptor;
         _defaultExtent = defaultExtent;
     }
 
-    internal static RenderPassEncoder Begin(VkDevice device, CommandBuffer cmd, RenderPassDescriptor descriptor, Vector2D<int> defaultExtent)
+    internal static RenderPassEncoder Begin(VkDevice device, DescriptorPool descriptorPool, CommandBuffer cmd, RenderPassDescriptor descriptor, Vector2D<int> defaultExtent)
     {
-        var vk = device.Instance.Vk;
-        var encoder = new RenderPassEncoder(vk, cmd, descriptor, defaultExtent);
+        var encoder = new RenderPassEncoder(device, descriptorPool, cmd, descriptor, defaultExtent);
         encoder.BeginPass();
         return encoder;
     }
@@ -204,7 +211,40 @@ public sealed unsafe class RenderPassEncoder : IDisposable
 
     public void SetPipeline(Pipeline pipeline)
     {
+        _pipeline = pipeline;
+        _pendingWrites.Clear();
+        _descriptorsDirty = false;
         _vk.CmdBindPipeline(_cmd, PipelineBindPoint.Graphics, pipeline.Handle);
+    }
+
+    public void BindUniformBuffer(string name, VkBuffer buffer)
+    {
+        if (_pipeline is null)
+        {
+            throw new InvalidOperationException("SetPipeline must be called before binding resources.");
+        }
+
+        if (!_pipeline.TryGetParameter(name, out var param))
+        {
+            throw new ArgumentException($"Shader parameter \"{name}\" not found in pipeline reflection.", nameof(name));
+        }
+
+        if (param.Kind != ShaderParameterKind.UniformBuffer)
+        {
+            throw new ArgumentException($"Shader parameter \"{name}\" is {param.Kind}, not UniformBuffer.", nameof(name));
+        }
+
+        _pendingWrites.Add(new PendingDescriptorWrite
+        {
+            Set = param.BindingSpace,
+            Binding = param.BindingIndex,
+            Type = DescriptorType.UniformBuffer,
+            BufferHandle = buffer.Handle,
+            Offset = 0,
+            Range = (ulong)buffer.Size
+        });
+
+        _descriptorsDirty = true;
     }
 
     public void SetViewport(float x, float y, float width, float height, float minDepth = 0.0f, float maxDepth = 1.0f)
@@ -235,6 +275,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
 
     public void Draw(uint vertexCount, uint instanceCount = 1, uint firstVertex = 0, uint firstInstance = 0)
     {
+        FlushDescriptors();
         _vk.CmdDraw(_cmd, vertexCount, instanceCount, firstVertex, firstInstance);
     }
 
@@ -338,6 +379,163 @@ public sealed unsafe class RenderPassEncoder : IDisposable
 
     public void Dispose() => End();
 
+    private void FlushDescriptors()
+    {
+        if (!_descriptorsDirty || _pendingWrites.Count == 0 || _pipeline is null)
+        {
+            return;
+        }
+
+        var setLayouts = _pipeline.DescriptorSetLayouts;
+        if (setLayouts.Length == 0)
+        {
+            _descriptorsDirty = false;
+            return;
+        }
+
+        // Pending writes are grouped by set (binding space).
+        // Each set gets its own descriptor set allocated from the pool, written, and bound separately.
+        // We need to find how many sets we need to touch. The highest set index referenced by any pending write, plus one.
+        var maxSet = 0u;
+        for (var pendingWriteIndex = 0; pendingWriteIndex < _pendingWrites.Count; pendingWriteIndex++)
+        {
+            var write = _pendingWrites[pendingWriteIndex];
+
+            if (write.Set > maxSet)
+            {
+                maxSet = write.Set;
+            }
+        }
+
+        var setCount = (int)(maxSet + 1);
+        var allocatedSets = new DescriptorSet[setCount];
+
+        // We will stackalloc the arrays once, with the maximum size needed.
+        // So, we need to find the set with the most pending writes so the arrays are big enough for any single set.
+        var maxWritesPerSet = 0;
+        for (var setIndex = 0; setIndex < setCount; setIndex++)
+        {
+            var count = 0;
+            for (var pendingWriteIndex = 0; pendingWriteIndex < _pendingWrites.Count; pendingWriteIndex++)
+            {
+                var write = _pendingWrites[pendingWriteIndex];
+
+                if (write.Set == setIndex)
+                {
+                    count++;
+                }
+            }
+
+            if (count > maxWritesPerSet)
+            {
+                maxWritesPerSet = count;
+            }
+        }
+
+        var writes = stackalloc WriteDescriptorSet[maxWritesPerSet];
+        var bufferInfos = stackalloc DescriptorBufferInfo[maxWritesPerSet];
+
+        // To process each set:
+        // - we allocate from the pool
+        // - fill the write array with this set's pending writes
+        // - update the set
+        // - then bind it to the command buffer
+        for (var setIndex = 0; setIndex < setCount; setIndex++)
+        {
+            // Count how many pending writes target this set:
+            var writeCount = 0;
+            for (var pendingWriteIndex = 0; pendingWriteIndex < _pendingWrites.Count; pendingWriteIndex++)
+            {
+                var write = _pendingWrites[pendingWriteIndex];
+                if (write.Set == setIndex)
+                {
+                    writeCount++;
+                }
+            }
+
+            if (writeCount == 0)
+            {
+                continue;
+            }
+
+            if (setIndex >= setLayouts.Length || setLayouts[setIndex].Handle == 0)
+            {
+                throw new InvalidOperationException($"Pipeline has no descriptor set layout for set {setIndex}.");
+            }
+
+            // Allocate one descriptor set from the pool, matching this set's layout.
+            var layout = setLayouts[setIndex];
+            var allocInfo = new DescriptorSetAllocateInfo
+            {
+                SType = StructureType.DescriptorSetAllocateInfo,
+                DescriptorPool = _descriptorPool,
+                DescriptorSetCount = 1,
+                PSetLayouts = &layout
+            };
+
+            if (_vk.AllocateDescriptorSets(_device.Device, in allocInfo, out allocatedSets[setIndex]) != Result.Success)
+            {
+                throw new VkException("Failed to allocate descriptor set.");
+            }
+
+            // We need to build the write array.
+            // One WriteDescriptorSet per pending write for this set.
+            var idx = 0;
+            for (var pendingWriteIndex = 0; pendingWriteIndex < _pendingWrites.Count; pendingWriteIndex++)
+            {
+                var write = _pendingWrites[pendingWriteIndex];
+                if (write.Set != setIndex)
+                {
+                    continue;
+                }
+
+                bufferInfos[idx] = new DescriptorBufferInfo
+                {
+                    Buffer = write.BufferHandle,
+                    Offset = write.Offset,
+                    Range = write.Range
+                };
+
+                writes[idx] = new WriteDescriptorSet
+                {
+                    SType = StructureType.WriteDescriptorSet,
+                    DstSet = allocatedSets[setIndex],
+                    DstBinding = write.Binding,
+                    DstArrayElement = 0,
+                    DescriptorCount = 1,
+                    DescriptorType = write.Type,
+                    PBufferInfo = &bufferInfos[idx]
+                };
+
+                idx++;
+            }
+            
+            _vk.UpdateDescriptorSets(
+                _device.Device,
+                (uint)writeCount,
+                writes, 
+                0,
+                null
+            );
+           
+            var setHandle = allocatedSets[setIndex];
+            
+            _vk.CmdBindDescriptorSets(
+                _cmd, 
+                PipelineBindPoint.Graphics,
+                _pipeline.Layout,
+                (uint)setIndex,
+                1,
+                &setHandle, 
+                0,
+                null
+            );
+        }
+
+        _pendingWrites.Clear();
+        _descriptorsDirty = false;
+    }
+
     private static ImageLayout ToVkLayout(TextureLayout layout) => layout switch
     {
         TextureLayout.ColorAttachment => ImageLayout.ColorAttachmentOptimal,
@@ -347,4 +545,14 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         TextureLayout.DepthAttachment => ImageLayout.DepthAttachmentOptimal,
         _ => ImageLayout.ColorAttachmentOptimal
     };
+
+    private struct PendingDescriptorWrite
+    {
+        public uint Set;
+        public uint Binding;
+        public DescriptorType Type;
+        public Silk.NET.Vulkan.Buffer BufferHandle;
+        public ulong Offset;
+        public ulong Range;
+    }
 }

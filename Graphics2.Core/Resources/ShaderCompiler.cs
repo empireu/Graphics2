@@ -63,12 +63,12 @@ public sealed class ShaderCompiler : IDisposable
         var module = session.LoadModuleFromSource("shader", "shader.slang", Slang.CreateBlob(source), out var moduleDiagnostics);
         if (module == null)
         {
-            throw new VkException($"Failed to load Slang module: {moduleDiagnostics?.AsString}");
+            throw new VkException($"Failed to load Slang module: \"{moduleDiagnostics?.AsString}\"");
         }
 
         if (!module.FindEntryPointByName(vertexEntryPoint, out var vsEntryPoint).Succeeded)
         {
-            throw new VkException($"Failed to find vertex entry point '{vertexEntryPoint}'.");
+            throw new VkException($"Failed to find vertex entry point \"{vertexEntryPoint}\".");
         }
 
         IEntryPoint? fsEntryPoint = null;
@@ -76,7 +76,7 @@ public sealed class ShaderCompiler : IDisposable
         {
             if (!module.FindEntryPointByName(fragmentEntryPoint, out fsEntryPoint).Succeeded)
             {
-                throw new VkException($"Failed to find fragment entry point '{fragmentEntryPoint}'.");
+                throw new VkException($"Failed to find fragment entry point \"{fragmentEntryPoint}\".");
             }
         }
 

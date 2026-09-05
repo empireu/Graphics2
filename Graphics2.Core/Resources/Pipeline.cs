@@ -89,13 +89,13 @@ public sealed unsafe class Pipeline : IDisposable
     private readonly VkDevice _device;
     private readonly VkShader _vertexShader;
     private readonly VkShader? _fragmentShader;
-    private readonly DescriptorSetLayout[] _descriptorSetLayouts;
+    private readonly Dictionary<string, ShaderParameterReflection> _parametersByName;
     private int _disposed;
 
     internal Silk.NET.Vulkan.Pipeline Handle;
     internal PipelineLayout Layout;
-
-    public ShaderReflection Reflection { get; }
+    internal readonly DescriptorSetLayout[] DescriptorSetLayouts;
+    public readonly ShaderReflection Reflection;
 
     internal Pipeline(
         VkDevice device,
@@ -109,11 +109,19 @@ public sealed unsafe class Pipeline : IDisposable
         _device = device;
         Handle = handle;
         Layout = layout;
-        _descriptorSetLayouts = descriptorSetLayouts;
+        DescriptorSetLayouts = descriptorSetLayouts;
         _vertexShader = vertexShader;
         _fragmentShader = fragmentShader;
         Reflection = reflection;
+
+        _parametersByName = new Dictionary<string, ShaderParameterReflection>(reflection.Parameters.Length);
+        foreach (var parameter in reflection.Parameters)
+        {
+            _parametersByName[parameter.Name] = parameter;
+        }
     }
+
+    internal bool TryGetParameter(string name, out ShaderParameterReflection parameter) => _parametersByName.TryGetValue(name, out parameter);
 
     public void Dispose()
     {
@@ -128,7 +136,7 @@ public sealed unsafe class Pipeline : IDisposable
         vk.DestroyPipeline(_device.Device, Handle, null);
         vk.DestroyPipelineLayout(_device.Device, Layout, null);
 
-        foreach (var setLayout in _descriptorSetLayouts)
+        foreach (var setLayout in DescriptorSetLayouts)
         {
             vk.DestroyDescriptorSetLayout(_device.Device, setLayout, null);
         }

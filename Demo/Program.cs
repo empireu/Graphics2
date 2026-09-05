@@ -31,6 +31,10 @@ class App(ApplicationDescription description) : Application(description)
             float3 color : COLOR;
         };
 
+        cbuffer Camera : register(b0) {
+            float2 offset;
+        };
+
         [shader("vertex")]
         VertexOutput vsMain(uint vertexId : SV_VertexID) {
             VertexOutput output;
@@ -44,7 +48,7 @@ class App(ApplicationDescription description) : Application(description)
                 float3(0.0, 1.0, 0.0),
                 float3(0.0, 0.0, 1.0)
             };
-            output.position = float4(positions[vertexId], 0.0, 1.0);
+            output.position = float4(positions[vertexId] + offset, 0.0, 1.0);
             output.color = colors[vertexId];
             return output;
         }
@@ -57,9 +61,10 @@ class App(ApplicationDescription description) : Application(description)
 
     private Texture? _depthTexture;
     private Pipeline? _pipeline;
+    private VkBuffer? _cameraBuffer;
     private int _frames;
 
-    protected override void OnResize(Vector2D<int> framebufferSize)
+    protected override unsafe void OnResize(Vector2D<int> framebufferSize)
     {
         Console.WriteLine($"On resize: {framebufferSize}");
 
@@ -84,6 +89,18 @@ class App(ApplicationDescription description) : Application(description)
             DepthWrite = false,
             CullMode = CullMode.None
         });
+
+        _cameraBuffer?.Dispose();
+        _cameraBuffer = Factory.CreateBuffer(new BufferDescription
+        {
+            Size = 16,
+            Usage = BufferUsage.Uniform | BufferUsage.TransferDestination
+        });
+
+
+        var translation = new Vector2D<float>(1.0f, 0.0f);
+        
+        Factory.UpdateBuffer(_cameraBuffer, new ReadOnlySpan<byte>(&translation, sizeof(Vector2D<float>)));
     }
 
     protected override void OnFrame(double deltaTime, Frame frame)
@@ -114,6 +131,7 @@ class App(ApplicationDescription description) : Application(description)
         pass.SetPipeline(_pipeline!);
         pass.SetViewport(0, 0, frame.Extent.X, frame.Extent.Y);
         pass.SetScissor(0, 0, (uint)frame.Extent.X, (uint)frame.Extent.Y);
+        pass.BindUniformBuffer("Camera", _cameraBuffer!);
         pass.Draw(3);
 
         if (++_frames >= 30)
@@ -126,5 +144,6 @@ class App(ApplicationDescription description) : Application(description)
     {
         _pipeline?.Dispose();
         _depthTexture?.Dispose();
+        _cameraBuffer?.Dispose();
     }
 }
