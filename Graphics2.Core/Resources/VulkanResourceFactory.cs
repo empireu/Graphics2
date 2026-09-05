@@ -225,7 +225,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         });
 
         VkShader? fragmentShader = null;
-        if (compiled.FragmentSpirV is not null && description.FragmentEntryPoint is not null)
+        if (compiled.FragmentSpirV != null && description.FragmentEntryPoint != null)
         {
             fragmentShader = CreateShader(new ShaderDescription
             {
@@ -581,7 +581,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
     {
         var vk = _device.Instance.Vk;
 
-        var stageCount = fragmentShader is not null ? 2u : 1u;
+        var stageCount = fragmentShader != null ? 2u : 1u;
         var stages = stackalloc PipelineShaderStageCreateInfo[(int)stageCount];
 
         var vertName = SilkMarshal.StringToPtr("main", NativeStringEncoding.UTF8);
@@ -594,7 +594,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         };
 
         nint fragName = 0;
-        if (fragmentShader is not null)
+        if (fragmentShader != null)
         {
             fragName = SilkMarshal.StringToPtr("main", NativeStringEncoding.UTF8);
             stages[1] = new PipelineShaderStageCreateInfo
@@ -606,175 +606,230 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
             };
         }
 
-        var vertexInputs = Array.Empty<VertexAttributeReflection>();
         var vsEntry = Array.Find(reflection.EntryPoints, ep => ep.Stage == ShaderStage.Vertex);
-        if (vsEntry.VertexInputs.Length > 0)
-        {
-            vertexInputs = vsEntry.VertexInputs;
-        }
+        var shaderVertexInputs = vsEntry.VertexInputs;
 
-        var bindingDescription = new VertexInputBindingDescription
-        {
-            Binding = 0,
-            Stride = 0,
-            InputRate = VertexInputRate.Vertex
-        };
+        VertexInputBindingDescription bindingDescription;
+        VertexInputAttributeDescription[] attributeDescriptions;
 
-        var attributeDescriptions = stackalloc VertexInputAttributeDescription[vertexInputs.Length];
-        for (var i = 0; i < vertexInputs.Length; i++)
+        if (description.VertexLayout != null)
         {
-            attributeDescriptions[i] = new VertexInputAttributeDescription
+            var layout = description.VertexLayout;
+            bindingDescription = new VertexInputBindingDescription
             {
                 Binding = 0,
-                Location = vertexInputs[i].Location,
-                Format = VertexAttributeFormatToVk(vertexInputs[i].Format),
-                Offset = 0
+                Stride = layout.Stride,
+                InputRate = VertexInputRate.Vertex
             };
-        }
 
-        var vertexInputInfo = new PipelineVertexInputStateCreateInfo
-        {
-            SType = StructureType.PipelineVertexInputStateCreateInfo,
-            VertexBindingDescriptionCount = 1,
-            PVertexBindingDescriptions = &bindingDescription,
-            VertexAttributeDescriptionCount = (uint)vertexInputs.Length,
-            PVertexAttributeDescriptions = attributeDescriptions
-        };
+            attributeDescriptions = new VertexInputAttributeDescription[layout.Attributes.Length];
 
-        var inputAssembly = new PipelineInputAssemblyStateCreateInfo
-        {
-            SType = StructureType.PipelineInputAssemblyStateCreateInfo,
-            Topology = PrimitiveTopologyToVk(description.Topology),
-            PrimitiveRestartEnable = false
-        };
-
-        var viewportState = new PipelineViewportStateCreateInfo
-        {
-            SType = StructureType.PipelineViewportStateCreateInfo,
-            ViewportCount = 1,
-            ScissorCount = 1
-        };
-
-        var rasterizer = new PipelineRasterizationStateCreateInfo
-        {
-            SType = StructureType.PipelineRasterizationStateCreateInfo,
-            DepthClampEnable = false,
-            RasterizerDiscardEnable = false,
-            PolygonMode = description.Wireframe ? PolygonMode.Line : PolygonMode.Fill,
-            CullMode = CullModeToVk(description.CullMode),
-            FrontFace = FrontFaceToVk(description.FrontFace),
-            DepthBiasEnable = false,
-            LineWidth = 1.0f
-        };
-
-        var multisampling = new PipelineMultisampleStateCreateInfo
-        {
-            SType = StructureType.PipelineMultisampleStateCreateInfo,
-            RasterizationSamples = SampleCountFlags.Count1Bit,
-            SampleShadingEnable = false
-        };
-
-        var colorBlendAttachments = stackalloc PipelineColorBlendAttachmentState[description.ColorAttachments.Length];
-        for (var i = 0; i < description.ColorAttachments.Length; i++)
-        {
-            var blend = description.Blends is not null && i < description.Blends.Length
-                ? description.Blends[i]
-                : BlendState.None;
-
-            colorBlendAttachments[i] = new PipelineColorBlendAttachmentState
+            for (var i = 0; i < layout.Attributes.Length; i++)
             {
-                BlendEnable = blend.Enabled,
-                SrcColorBlendFactor = BlendFactorToVk(blend.SrcFactor),
-                DstColorBlendFactor = BlendFactorToVk(blend.DstFactor),
-                ColorBlendOp = BlendOp.Add,
-                SrcAlphaBlendFactor = BlendFactorToVk(blend.SrcFactor),
-                DstAlphaBlendFactor = BlendFactorToVk(blend.DstFactor),
-                AlphaBlendOp = BlendOp.Add,
-                ColorWriteMask = ColorComponentFlags.RBit | ColorComponentFlags.GBit | ColorComponentFlags.BBit | ColorComponentFlags.ABit
+                var appAttr = layout.Attributes[i];
+
+                var found = false;
+                var shaderFormat = VertexAttributeFormat.Float;
+                var location = 0u;
+
+                for (var j = 0; j < shaderVertexInputs.Length; j++)
+                {
+                    if (string.Equals(shaderVertexInputs[j].Name, appAttr.Name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        found = true;
+                        shaderFormat = shaderVertexInputs[j].Format;
+                        location = shaderVertexInputs[j].Location;
+                        break;
+                    }
+                }
+
+                if (!found)
+                {
+                    throw new VkAllocationException($"Vertex layout attribute \"{appAttr.Name}\" not found in shader reflection.");
+                }
+
+                if (shaderFormat != appAttr.Format)
+                {
+                    throw new VkAllocationException($"Vertex layout attribute \"{appAttr.Name}\" format mismatch: app says {appAttr.Format}, shader says {shaderFormat}.");
+                }
+
+                attributeDescriptions[i] = new VertexInputAttributeDescription
+                {
+                    Binding = 0,
+                    Location = location,
+                    Format = VertexAttributeFormatToVk(appAttr.Format),
+                    Offset = appAttr.Offset
+                };
+            }
+        }
+        else
+        {
+            bindingDescription = new VertexInputBindingDescription
+            {
+                Binding = 0,
+                Stride = 0,
+                InputRate = VertexInputRate.Vertex
             };
+
+            attributeDescriptions = new VertexInputAttributeDescription[shaderVertexInputs.Length];
+            for (var i = 0; i < shaderVertexInputs.Length; i++)
+            {
+                attributeDescriptions[i] = new VertexInputAttributeDescription
+                {
+                    Binding = 0,
+                    Location = shaderVertexInputs[i].Location,
+                    Format = VertexAttributeFormatToVk(shaderVertexInputs[i].Format),
+                    Offset = 0
+                };
+            }
         }
 
-        var colorBlending = new PipelineColorBlendStateCreateInfo
+        fixed (VertexInputAttributeDescription* attributeDescriptionsPtr = attributeDescriptions)
         {
-            SType = StructureType.PipelineColorBlendStateCreateInfo,
-            LogicOpEnable = false,
-            LogicOp = LogicOp.Copy,
-            AttachmentCount = (uint)description.ColorAttachments.Length,
-            PAttachments = colorBlendAttachments
-        };
+            var vertexInputInfo = new PipelineVertexInputStateCreateInfo
+            {
+                SType = StructureType.PipelineVertexInputStateCreateInfo,
+                VertexBindingDescriptionCount = 1,
+                PVertexBindingDescriptions = &bindingDescription,
+                VertexAttributeDescriptionCount = (uint)attributeDescriptions.Length,
+                PVertexAttributeDescriptions = attributeDescriptionsPtr
+            };
 
-        var depthStencil = new PipelineDepthStencilStateCreateInfo
-        {
-            SType = StructureType.PipelineDepthStencilStateCreateInfo,
-            DepthTestEnable = description.DepthTest,
-            DepthWriteEnable = description.DepthWrite,
-            DepthCompareOp = CompareOpToVk(description.DepthCompare),
-            DepthBoundsTestEnable = false,
-            StencilTestEnable = false
-        };
+            var inputAssembly = new PipelineInputAssemblyStateCreateInfo
+            {
+                SType = StructureType.PipelineInputAssemblyStateCreateInfo,
+                Topology = PrimitiveTopologyToVk(description.Topology),
+                PrimitiveRestartEnable = false
+            };
 
-        var dynamicStates = stackalloc DynamicState[2]
-        {
-            DynamicState.Viewport,
-            DynamicState.Scissor
-        };
+            var viewportState = new PipelineViewportStateCreateInfo
+            {
+                SType = StructureType.PipelineViewportStateCreateInfo,
+                ViewportCount = 1,
+                ScissorCount = 1
+            };
 
-        var dynamicState = new PipelineDynamicStateCreateInfo
-        {
-            SType = StructureType.PipelineDynamicStateCreateInfo,
-            DynamicStateCount = 2,
-            PDynamicStates = dynamicStates
-        };
+            var rasterizer = new PipelineRasterizationStateCreateInfo
+            {
+                SType = StructureType.PipelineRasterizationStateCreateInfo,
+                DepthClampEnable = false,
+                RasterizerDiscardEnable = false,
+                PolygonMode = description.Wireframe ? PolygonMode.Line : PolygonMode.Fill,
+                CullMode = CullModeToVk(description.CullMode),
+                FrontFace = FrontFaceToVk(description.FrontFace),
+                DepthBiasEnable = false,
+                LineWidth = 1.0f
+            };
 
-        var colorFormats = stackalloc Format[description.ColorAttachments.Length];
-        for (var i = 0; i < description.ColorAttachments.Length; i++)
-        {
-            colorFormats[i] = TextureFormatToVk(description.ColorAttachments[i]);
+            var multisampling = new PipelineMultisampleStateCreateInfo
+            {
+                SType = StructureType.PipelineMultisampleStateCreateInfo,
+                RasterizationSamples = SampleCountFlags.Count1Bit,
+                SampleShadingEnable = false
+            };
+
+            var colorBlendAttachments = stackalloc PipelineColorBlendAttachmentState[description.ColorAttachments.Length];
+            for (var i = 0; i < description.ColorAttachments.Length; i++)
+            {
+                var blend = description.Blends != null && i < description.Blends.Length
+                    ? description.Blends[i]
+                    : BlendState.None;
+
+                colorBlendAttachments[i] = new PipelineColorBlendAttachmentState
+                {
+                    BlendEnable = blend.Enabled,
+                    SrcColorBlendFactor = BlendFactorToVk(blend.SrcFactor),
+                    DstColorBlendFactor = BlendFactorToVk(blend.DstFactor),
+                    ColorBlendOp = BlendOp.Add,
+                    SrcAlphaBlendFactor = BlendFactorToVk(blend.SrcFactor),
+                    DstAlphaBlendFactor = BlendFactorToVk(blend.DstFactor),
+                    AlphaBlendOp = BlendOp.Add,
+                    ColorWriteMask = ColorComponentFlags.RBit | ColorComponentFlags.GBit | ColorComponentFlags.BBit | ColorComponentFlags.ABit
+                };
+            }
+
+            var colorBlending = new PipelineColorBlendStateCreateInfo
+            {
+                SType = StructureType.PipelineColorBlendStateCreateInfo,
+                LogicOpEnable = false,
+                LogicOp = LogicOp.Copy,
+                AttachmentCount = (uint)description.ColorAttachments.Length,
+                PAttachments = colorBlendAttachments
+            };
+
+            var depthStencil = new PipelineDepthStencilStateCreateInfo
+            {
+                SType = StructureType.PipelineDepthStencilStateCreateInfo,
+                DepthTestEnable = description.DepthTest,
+                DepthWriteEnable = description.DepthWrite,
+                DepthCompareOp = CompareOpToVk(description.DepthCompare),
+                DepthBoundsTestEnable = false,
+                StencilTestEnable = false
+            };
+
+            var dynamicStates = stackalloc DynamicState[2]
+            {
+                DynamicState.Viewport,
+                DynamicState.Scissor
+            };
+
+            var dynamicState = new PipelineDynamicStateCreateInfo
+            {
+                SType = StructureType.PipelineDynamicStateCreateInfo,
+                DynamicStateCount = 2,
+                PDynamicStates = dynamicStates
+            };
+
+            var colorFormats = stackalloc Format[description.ColorAttachments.Length];
+            for (var i = 0; i < description.ColorAttachments.Length; i++)
+            {
+                colorFormats[i] = TextureFormatToVk(description.ColorAttachments[i]);
+            }
+
+            var renderingInfo = new PipelineRenderingCreateInfo
+            {
+                SType = StructureType.PipelineRenderingCreateInfo,
+                ColorAttachmentCount = (uint)description.ColorAttachments.Length,
+                PColorAttachmentFormats = colorFormats,
+                DepthAttachmentFormat = description.DepthAttachment != null
+                    ? TextureFormatToVk(description.DepthAttachment.Value)
+                    : Format.Undefined
+            };
+
+            var pipelineInfo = new GraphicsPipelineCreateInfo
+            {
+                SType = StructureType.GraphicsPipelineCreateInfo,
+                StageCount = stageCount,
+                PStages = stages,
+                PVertexInputState = &vertexInputInfo,
+                PInputAssemblyState = &inputAssembly,
+                PViewportState = &viewportState,
+                PRasterizationState = &rasterizer,
+                PMultisampleState = &multisampling,
+                PColorBlendState = &colorBlending,
+                PDepthStencilState = &depthStencil,
+                PDynamicState = &dynamicState,
+                Layout = pipelineLayout,
+                RenderPass = default,
+                PNext = &renderingInfo
+            };
+
+            Silk.NET.Vulkan.Pipeline pipelineHandle;
+            var result = vk.CreateGraphicsPipelines(_device.Device, default, 1, in pipelineInfo, null, out pipelineHandle);
+
+            SilkMarshal.Free(vertName);
+            if (fragName != 0)
+            {
+                SilkMarshal.Free(fragName);
+            }
+
+            if (result != Result.Success)
+            {
+                throw new VkAllocationException("Failed to create graphics pipeline.");
+            }
+
+            return pipelineHandle;
         }
-
-        var renderingInfo = new PipelineRenderingCreateInfo
-        {
-            SType = StructureType.PipelineRenderingCreateInfo,
-            ColorAttachmentCount = (uint)description.ColorAttachments.Length,
-            PColorAttachmentFormats = colorFormats,
-            DepthAttachmentFormat = description.DepthAttachment is not null
-                ? TextureFormatToVk(description.DepthAttachment.Value)
-                : Format.Undefined
-        };
-
-        var pipelineInfo = new GraphicsPipelineCreateInfo
-        {
-            SType = StructureType.GraphicsPipelineCreateInfo,
-            StageCount = stageCount,
-            PStages = stages,
-            PVertexInputState = &vertexInputInfo,
-            PInputAssemblyState = &inputAssembly,
-            PViewportState = &viewportState,
-            PRasterizationState = &rasterizer,
-            PMultisampleState = &multisampling,
-            PColorBlendState = &colorBlending,
-            PDepthStencilState = &depthStencil,
-            PDynamicState = &dynamicState,
-            Layout = pipelineLayout,
-            RenderPass = default,
-            PNext = &renderingInfo
-        };
-
-        Silk.NET.Vulkan.Pipeline pipelineHandle;
-        var result = vk.CreateGraphicsPipelines(_device.Device, default, 1, in pipelineInfo, null, out pipelineHandle);
-
-        SilkMarshal.Free(vertName);
-        if (fragName != 0)
-        {
-            SilkMarshal.Free(fragName);
-        }
-
-        if (result != Result.Success)
-        {
-            throw new VkAllocationException("Failed to create graphics pipeline.");
-        }
-
-        return pipelineHandle;
     }
 
     private BlockAllocator<VulkanMemory> BufferUsageToAllocator(BufferUsage usage)

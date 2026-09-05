@@ -5,6 +5,7 @@ using Graphics2.Core.Render;
 using Graphics2.Core.Resources;
 using Graphics2.Windowing;
 using Silk.NET.Maths;
+using System.Runtime.InteropServices;
 
 var description = new ApplicationDescription
 {
@@ -23,9 +24,20 @@ using var app = new App(description);
 
 app.Run();
 
+struct Vertex(Vector2D<float> position, Vector3D<float> color)
+{
+    public Vector2D<float> Position = position;
+    public Vector3D<float> Color = color;
+}
+
 class App(ApplicationDescription description) : Application(description)
 {
     private const string ShaderSource = """
+        struct VertexInput {
+            float2 position : POSITION;
+            float3 color : COLOR;
+        };
+
         struct VertexOutput {
             float4 position : SV_POSITION;
             float3 color : COLOR;
@@ -36,20 +48,10 @@ class App(ApplicationDescription description) : Application(description)
         };
 
         [shader("vertex")]
-        VertexOutput vsMain(uint vertexId : SV_VertexID) {
+        VertexOutput vsMain(VertexInput input) {
             VertexOutput output;
-            float2 positions[3] = {
-                float2(-0.5, -0.5),
-                float2(0.5, -0.5),
-                float2(0.0, 0.5)
-            };
-            float3 colors[3] = {
-                float3(1.0, 0.0, 0.0),
-                float3(0.0, 1.0, 0.0),
-                float3(0.0, 0.0, 1.0)
-            };
-            output.position = float4(positions[vertexId] + offset, 0.0, 1.0);
-            output.color = colors[vertexId];
+            output.position = float4(input.position + offset, 0.0, 1.0);
+            output.color = input.color;
             return output;
         }
 
@@ -62,6 +64,8 @@ class App(ApplicationDescription description) : Application(description)
     private Texture? _depthTexture;
     private Pipeline? _pipeline;
     private VkBuffer? _cameraBuffer;
+    private VkBuffer? _vertexBuffer;
+    private VkBuffer? _indexBuffer;
     private int _frames;
 
     protected override unsafe void OnResize(Vector2D<int> framebufferSize)
@@ -87,7 +91,8 @@ class App(ApplicationDescription description) : Application(description)
             DepthAttachment = TextureFormat.D32Sfloat,
             DepthTest = false,
             DepthWrite = false,
-            CullMode = CullMode.None
+            CullMode = CullMode.None,
+            VertexLayout = VertexLayout.FromStruct<Vertex>()
         });
 
         _cameraBuffer?.Dispose();
@@ -97,10 +102,34 @@ class App(ApplicationDescription description) : Application(description)
             Usage = BufferUsage.Uniform | BufferUsage.TransferDestination
         });
 
-
         var translation = new Vector2D<float>(1.0f, 0.0f);
-        
         Factory.UpdateBuffer(_cameraBuffer, new ReadOnlySpan<byte>(&translation, sizeof(Vector2D<float>)));
+
+        _vertexBuffer?.Dispose();
+        _vertexBuffer = Factory.CreateBuffer(new BufferDescription
+        {
+            Size = sizeof(Vertex) * 3,
+            Usage = BufferUsage.Vertex | BufferUsage.TransferDestination
+        });
+
+        var vertices = new ReadOnlySpan<Vertex>(
+        [
+            new(new Vector2D<float>(-0.5f, -0.5f), new Vector3D<float>(1.0f, 0.0f, 0.0f)),
+            new(new Vector2D<float>(0.5f, -0.5f), new Vector3D<float>(0.0f, 1.0f, 0.0f)),
+            new(new Vector2D<float>(0.0f, 0.5f), new Vector3D<float>(0.0f, 0.0f, 1.0f))
+        ]);
+
+        Factory.UpdateBuffer(_vertexBuffer, MemoryMarshal.AsBytes(vertices));
+
+        _indexBuffer?.Dispose();
+        _indexBuffer = Factory.CreateBuffer(new BufferDescription
+        {
+            Size = sizeof(ushort) * 3,
+            Usage = BufferUsage.Index | BufferUsage.TransferDestination
+        });
+
+        var indices = new ReadOnlySpan<ushort>([0, 1, 2]);
+        Factory.UpdateBuffer(_indexBuffer, MemoryMarshal.AsBytes(indices));
     }
 
     protected override void OnFrame(double deltaTime, Frame frame)
@@ -132,7 +161,9 @@ class App(ApplicationDescription description) : Application(description)
         pass.SetViewport(0, 0, frame.Extent.X, frame.Extent.Y);
         pass.SetScissor(0, 0, (uint)frame.Extent.X, (uint)frame.Extent.Y);
         pass.BindUniformBuffer("Camera", _cameraBuffer!);
-        pass.Draw(3);
+        pass.SetVertexBuffer(_vertexBuffer!);
+        pass.SetIndexBuffer(_indexBuffer!, IndexType.UInt16);
+        pass.DrawIndexed(3);
 
         if (++_frames >= 30)
         {
@@ -145,5 +176,7 @@ class App(ApplicationDescription description) : Application(description)
         _pipeline?.Dispose();
         _depthTexture?.Dispose();
         _cameraBuffer?.Dispose();
+        _vertexBuffer?.Dispose();
+        _indexBuffer?.Dispose();
     }
 }

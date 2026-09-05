@@ -2,6 +2,7 @@ using Graphics2.Core.Bootstrap;
 using Graphics2.Core.Resources;
 using Silk.NET.Maths;
 using Silk.NET.Vulkan;
+using IndexType = Graphics2.Core.Resources.IndexType;
 using Pipeline = Graphics2.Core.Resources.Pipeline;
 // ReSharper disable LoopCanBeConvertedToQuery
 
@@ -53,7 +54,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         var offset = new Offset2D(area.Min.X, area.Min.Y);
         var extent = new Extent2D((uint)(area.Max.X - area.Min.X), (uint)(area.Max.Y - area.Min.Y));
 
-        var barrierCount = colors.Length + (depth is not null ? 1 : 0);
+        var barrierCount = colors.Length + (depth != null ? 1 : 0);
         var preBarriers = stackalloc ImageMemoryBarrier2[barrierCount];
         var preCount = 0;
         for (var i = 0; i < colors.Length; i++)
@@ -91,7 +92,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
             };
         }
 
-        if (depth is not null)
+        if (depth != null)
         {
             var oldLayout = depth.LoadOp == LoadOp.Load
                 ? depth.Target.CurrentLayout
@@ -277,6 +278,23 @@ public sealed unsafe class RenderPassEncoder : IDisposable
     {
         FlushDescriptors();
         _vk.CmdDraw(_cmd, vertexCount, instanceCount, firstVertex, firstInstance);
+    }
+
+    public void SetVertexBuffer(VkBuffer buffer, ulong offset = 0)
+    {
+        var handle = buffer.Handle;
+        _vk.CmdBindVertexBuffers(_cmd, 0, 1, &handle, &offset);
+    }
+
+    public void SetIndexBuffer(VkBuffer buffer, IndexType indexType, ulong offset = 0)
+    {
+        _vk.CmdBindIndexBuffer(_cmd, buffer.Handle, offset, IndexTypeToVk(indexType));
+    }
+
+    public void DrawIndexed(uint indexCount, uint instanceCount = 1, uint firstIndex = 0, int vertexOffset = 0, uint firstInstance = 0)
+    {
+        FlushDescriptors();
+        _vk.CmdDrawIndexed(_cmd, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
     }
 
     public void End()
@@ -544,6 +562,13 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         TextureLayout.None => ImageLayout.Undefined,
         TextureLayout.DepthAttachment => ImageLayout.DepthAttachmentOptimal,
         _ => ImageLayout.ColorAttachmentOptimal
+    };
+
+    private static Silk.NET.Vulkan.IndexType IndexTypeToVk(IndexType indexType) => indexType switch
+    {
+        IndexType.UInt16 => Silk.NET.Vulkan.IndexType.Uint16,
+        IndexType.UInt32 => Silk.NET.Vulkan.IndexType.Uint32,
+        _ => throw new ArgumentOutOfRangeException(nameof(indexType))
     };
 
     private struct PendingDescriptorWrite

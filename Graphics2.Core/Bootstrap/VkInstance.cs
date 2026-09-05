@@ -29,7 +29,7 @@ public sealed record VkInstanceDescription
     // ReSharper disable once CollectionNeverUpdated.Global
     public List<string> AdditionalExtensions { get; init; } = [];
 
-    public bool ValidationShowVerboseSeverity { get; init; } = false;
+    public bool ValidationShowVerboseSeverity { get; init; }
     public bool ValidationShowWarningSeverity { get; init; } = true;
     public bool ValidationShowErrorSeverity { get; init; } = true;
     
@@ -219,7 +219,7 @@ public sealed unsafe class VkInstance : IDisposable
         var availableLayers = new LayerProperties[layerCount];
         fixed (LayerProperties* availableLayersPtr = availableLayers)
         {
-            vk!.EnumerateInstanceLayerProperties(ref layerCount, availableLayersPtr);
+            vk.EnumerateInstanceLayerProperties(ref layerCount, availableLayersPtr);
         }
 
         availableLayerNames = availableLayers.Select(layer => SilkMarshal.PtrToString((IntPtr)layer.LayerName)).ToHashSet();
@@ -272,6 +272,7 @@ public sealed unsafe class VkInstance : IDisposable
         public readonly DebugUtilsMessengerEXT DebugMessenger = debugMessenger;
        
         // Prevents GC on this.
+        // ReSharper disable once UnusedMember.Local
         private readonly DebugUtilsMessengerCallbackFunctionEXT _callback = callback;
     }
 }

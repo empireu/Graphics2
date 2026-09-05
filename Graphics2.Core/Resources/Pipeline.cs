@@ -82,6 +82,8 @@ public sealed class PipelineDescription
     public bool Wireframe { get; init; }
 
     public BlendState[]? Blends { get; init; }
+
+    public VertexLayout? VertexLayout { get; init; }
 }
 
 public sealed unsafe class Pipeline : IDisposable
