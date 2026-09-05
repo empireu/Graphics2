@@ -287,6 +287,157 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         BindUniformBuffer(name, allocation.Buffer, allocation.Offset, allocation.Size);
     }
 
+    public void BindStorageBuffer(string name, VkBuffer buffer)
+    {
+        if (_pipeline == null)
+        {
+            throw new InvalidOperationException("SetPipeline must be called before binding resources.");
+        }
+
+        if (!_pipeline.TryGetParameter(name, out var parameter))
+        {
+            throw new ArgumentException($"Shader parameter \"{name}\" not found in pipeline reflection.", nameof(name));
+        }
+
+        if (parameter.Kind != ShaderParameterKind.StorageBuffer)
+        {
+            throw new ArgumentException($"Shader parameter \"{name}\" is {parameter.Kind}, not StorageBuffer.", nameof(name));
+        }
+
+        _pendingWrites.Add(new PendingDescriptorWrite
+        {
+            Set = parameter.BindingSpace,
+            Binding = parameter.BindingIndex,
+            Type = DescriptorType.StorageBuffer,
+            BufferHandle = buffer.Handle,
+            Offset = 0,
+            Range = (ulong)buffer.Size
+        });
+
+        _descriptorsDirty = true;
+    }
+
+    public void BindStorageBuffer(string name, VkBuffer buffer, ulong offset, ulong range)
+    {
+        if (_pipeline == null)
+        {
+            throw new InvalidOperationException("SetPipeline must be called before binding resources.");
+        }
+
+        if (!_pipeline.TryGetParameter(name, out var parameter))
+        {
+            throw new ArgumentException($"Shader parameter \"{name}\" not found in pipeline reflection.", nameof(name));
+        }
+
+        if (parameter.Kind != ShaderParameterKind.StorageBuffer)
+        {
+            throw new ArgumentException($"Shader parameter \"{name}\" is {parameter.Kind}, not StorageBuffer.", nameof(name));
+        }
+
+        _pendingWrites.Add(new PendingDescriptorWrite
+        {
+            Set = parameter.BindingSpace,
+            Binding = parameter.BindingIndex,
+            Type = DescriptorType.StorageBuffer,
+            BufferHandle = buffer.Handle,
+            Offset = offset,
+            Range = range
+        });
+
+        _descriptorsDirty = true;
+    }
+
+    public void BindStorageBuffer(string name, RingAllocation allocation)
+    {
+        BindStorageBuffer(name, allocation.Buffer, allocation.Offset, allocation.Size);
+    }
+
+    public void BindTexture(string name, VkTexture texture)
+    {
+        if (_pipeline == null)
+        {
+            throw new InvalidOperationException("SetPipeline must be called before binding resources.");
+        }
+
+        if (!_pipeline.TryGetParameter(name, out var parameter))
+        {
+            throw new ArgumentException($"Shader parameter \"{name}\" not found in pipeline reflection.", nameof(name));
+        }
+
+        if (parameter.Kind != ShaderParameterKind.SampledImage)
+        {
+            throw new ArgumentException($"Shader parameter \"{name}\" is {parameter.Kind}, not SampledImage.", nameof(name));
+        }
+
+        _pendingWrites.Add(new PendingDescriptorWrite
+        {
+            Set = parameter.BindingSpace,
+            Binding = parameter.BindingIndex,
+            Type = DescriptorType.SampledImage,
+            ImageView = texture.View,
+            ImageLayout = texture.CurrentLayout
+        });
+
+        _descriptorsDirty = true;
+    }
+
+    public void BindSampler(string name, VkSampler sampler)
+    {
+        if (_pipeline == null)
+        {
+            throw new InvalidOperationException("SetPipeline must be called before binding resources.");
+        }
+
+        if (!_pipeline.TryGetParameter(name, out var parameter))
+        {
+            throw new ArgumentException($"Shader parameter \"{name}\" not found in pipeline reflection.", nameof(name));
+        }
+
+        if (parameter.Kind != ShaderParameterKind.Sampler)
+        {
+            throw new ArgumentException($"Shader parameter \"{name}\" is {parameter.Kind}, not Sampler.", nameof(name));
+        }
+
+        _pendingWrites.Add(new PendingDescriptorWrite
+        {
+            Set = parameter.BindingSpace,
+            Binding = parameter.BindingIndex,
+            Type = DescriptorType.Sampler,
+            Sampler = sampler.Handle
+        });
+
+        _descriptorsDirty = true;
+    }
+
+    public void BindStorageImage(string name, VkTexture texture)
+    {
+        if (_pipeline == null)
+        {
+            throw new InvalidOperationException("SetPipeline must be called before binding resources.");
+        }
+
+        if (!_pipeline.TryGetParameter(name, out var parameter))
+        {
+            throw new ArgumentException($"Shader parameter \"{name}\" not found in pipeline reflection.", nameof(name));
+        }
+
+        if (parameter.Kind != ShaderParameterKind.StorageImage)
+        {
+            throw new ArgumentException($"Shader parameter \"{name}\" is {parameter.Kind}, not StorageImage.", nameof(name));
+        }
+
+        _pendingWrites.Add(new PendingDescriptorWrite
+        {
+            Set = parameter.BindingSpace,
+            Binding = parameter.BindingIndex,
+            Type = DescriptorType.StorageImage,
+            ImageView = texture.View,
+            ImageLayout = texture.CurrentLayout
+        });
+
+        _descriptorsDirty = true;
+    }
+
     public void PushConstants<T>(in T data) where T : unmanaged
     {
         if (_pipeline == null)
@@ -514,6 +665,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
 
         var writes = stackalloc WriteDescriptorSet[maxWritesPerSet];
         var bufferInfos = stackalloc DescriptorBufferInfo[maxWritesPerSet];
+        var imageInfos = stackalloc DescriptorImageInfo[maxWritesPerSet];
 
         // To process each set:
         // - we allocate from the pool
@@ -569,23 +721,46 @@ public sealed unsafe class RenderPassEncoder : IDisposable
                     continue;
                 }
 
-                bufferInfos[idx] = new DescriptorBufferInfo
+                if (write.Type is DescriptorType.UniformBuffer or DescriptorType.StorageBuffer)
                 {
-                    Buffer = write.BufferHandle,
-                    Offset = write.Offset,
-                    Range = write.Range
-                };
+                    bufferInfos[idx] = new DescriptorBufferInfo
+                    {
+                        Buffer = write.BufferHandle,
+                        Offset = write.Offset,
+                        Range = write.Range
+                    };
 
-                writes[idx] = new WriteDescriptorSet
+                    writes[idx] = new WriteDescriptorSet
+                    {
+                        SType = StructureType.WriteDescriptorSet,
+                        DstSet = allocatedSets[setIndex],
+                        DstBinding = write.Binding,
+                        DstArrayElement = 0,
+                        DescriptorCount = 1,
+                        DescriptorType = write.Type,
+                        PBufferInfo = &bufferInfos[idx]
+                    };
+                }
+                else
                 {
-                    SType = StructureType.WriteDescriptorSet,
-                    DstSet = allocatedSets[setIndex],
-                    DstBinding = write.Binding,
-                    DstArrayElement = 0,
-                    DescriptorCount = 1,
-                    DescriptorType = write.Type,
-                    PBufferInfo = &bufferInfos[idx]
-                };
+                    imageInfos[idx] = new DescriptorImageInfo
+                    {
+                        Sampler = write.Sampler,
+                        ImageView = write.ImageView,
+                        ImageLayout = write.ImageLayout
+                    };
+
+                    writes[idx] = new WriteDescriptorSet
+                    {
+                        SType = StructureType.WriteDescriptorSet,
+                        DstSet = allocatedSets[setIndex],
+                        DstBinding = write.Binding,
+                        DstArrayElement = 0,
+                        DescriptorCount = 1,
+                        DescriptorType = write.Type,
+                        PImageInfo = &imageInfos[idx]
+                    };
+                }
 
                 idx++;
             }
@@ -682,5 +857,8 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         public Silk.NET.Vulkan.Buffer BufferHandle;
         public ulong Offset;
         public ulong Range;
+        public ImageView ImageView;
+        public Silk.NET.Vulkan.Sampler Sampler;
+        public ImageLayout ImageLayout;
     }
 }

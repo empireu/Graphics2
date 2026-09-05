@@ -43,7 +43,7 @@ public sealed unsafe class Frame
         };
 
         Device.Instance.Vk.CmdCopyBuffer(CommandBuffer, src.Handle, dst.Handle, 1, &region);
-        _pendingCopies.Add((ulong)dst.Handle.Handle);
+        _pendingCopies.Add(dst.Handle.Handle);
     }
 
     public void CopyBuffer(RingAllocation src, VkBuffer dst, ulong dstOffset = 0)

@@ -1,4 +1,5 @@
 using Graphics2.Applications;
+using Graphics2.Assets;
 using Graphics2.Core;
 using Graphics2.Core.Bootstrap;
 using Graphics2.Core.Render;
@@ -24,10 +25,9 @@ using var app = new App(description);
 
 app.Run();
 
-struct Vertex(Vector2D<float> position, Vector3D<float> color)
+struct Vertex(Vector2D<float> position)
 {
     public Vector2D<float> Position = position;
-    public Vector3D<float> Color = color;
 }
 
 struct PushConstants(float rotation)
@@ -45,12 +45,12 @@ class App(ApplicationDescription description) : Application(description)
     private const string ShaderSource = """
         struct VertexInput {
             float2 position : POSITION;
-            float3 color : COLOR;
+            uint vertexId : SV_VertexID;
         };
 
         struct VertexOutput {
             float4 position : SV_POSITION;
-            float3 color : COLOR;
+            float2 uv : TEXCOORD0;
         };
 
         cbuffer Camera : register(b0) {
@@ -63,6 +63,10 @@ class App(ApplicationDescription description) : Application(description)
 
         [[vk::push_constant]] PushConstants pc;
 
+        StructuredBuffer<float2> uvs;
+        Texture2D<float4> tex;
+        SamplerState samp;
+
         [shader("vertex")]
         VertexOutput vsMain(VertexInput input) {
             VertexOutput output;
@@ -73,27 +77,38 @@ class App(ApplicationDescription description) : Application(description)
                 input.position.x * s + input.position.y * c
             );
             output.position = float4(rotated, 0.0, 1.0);
-            output.color = input.color;
+            output.uv = uvs[input.vertexId];
             return output;
         }
 
         [shader("fragment")]
         float4 fsMain(VertexOutput input) : SV_TARGET {
-            float t = time * 2.0;
-            float3 animated = input.color * (0.5 + 0.5 * sin(float3(t, t + 2.0, t + 4.0)));
-            return float4(animated, 1.0);
+            float4 color = tex.Sample(samp, input.uv);
+            float pulse = 0.5 + 0.5 * sin(time * 3.0);
+            return float4(color.rgb * pulse, 1.0);
         }
         """;
 
     private Texture? _depthTexture;
+    private Texture? _texture;
+    private VkSampler? _sampler;
     private Pipeline? _pipeline;
     private VkBuffer? _vertexBuffer;
     private VkBuffer? _indexBuffer;
+    private VkBuffer? _uvBuffer;
     private readonly Vertex[] _baseVertices =
     [
-        new(new Vector2D<float>(-0.5f, -0.5f), new Vector3D<float>(1.0f, 0.0f, 0.0f)),
-        new(new Vector2D<float>(0.5f, -0.5f), new Vector3D<float>(0.0f, 1.0f, 0.0f)),
-        new(new Vector2D<float>(0.0f, 0.5f), new Vector3D<float>(0.0f, 0.0f, 1.0f))
+        new(new Vector2D<float>(-0.5f, -0.5f)),
+        new(new Vector2D<float>(0.5f, -0.5f)),
+        new(new Vector2D<float>(-0.5f, 0.5f)),
+        new(new Vector2D<float>(0.5f, 0.5f))
+    ];
+    private readonly Vector2D<float>[] _uvs =
+    [
+        new(0.0f, 1.0f),
+        new(1.0f, 1.0f),
+        new(0.0f, 0.0f),
+        new(1.0f, 0.0f)
     ];
     private int _frames;
     private double _time;
@@ -129,31 +144,51 @@ class App(ApplicationDescription description) : Application(description)
         _vertexBuffer?.Dispose();
         _vertexBuffer = Factory.CreateBuffer(new BufferDescription
         {
-            Size = sizeof(Vertex) * 3,
+            Size = sizeof(Vertex) * 4,
             Usage = BufferUsage.Vertex | BufferUsage.TransferDestination
         });
 
         _indexBuffer?.Dispose();
         _indexBuffer = Factory.CreateBuffer(new BufferDescription
         {
-            Size = sizeof(ushort) * 3,
+            Size = sizeof(ushort) * 6,
             Usage = BufferUsage.Index | BufferUsage.TransferDestination
         });
 
-        var indices = new ReadOnlySpan<ushort>([0, 1, 2]);
+        var indices = new ReadOnlySpan<ushort>([0, 1, 2, 2, 1, 3]);
         Factory.UpdateBuffer(_indexBuffer, MemoryMarshal.AsBytes(indices));
+
+        _uvBuffer?.Dispose();
+        _uvBuffer = Factory.CreateBuffer(new BufferDescription
+        {
+            Size = sizeof(Vector2D<float>) * 4,
+            Usage = BufferUsage.Storage | BufferUsage.TransferDestination
+        });
+
+        Factory.UpdateBuffer(_uvBuffer, MemoryMarshal.AsBytes(new ReadOnlySpan<Vector2D<float>>(_uvs)));
+    }
+
+    protected override void OnStart()
+    {
+        using var stream = File.OpenRead(@"C:\Users\alioth\Desktop\image.png");
+        _texture = Factory.LoadTexture(stream);
+
+        _sampler = Factory.CreateSampler(new SamplerDescription
+        {
+            AnisotropyEnabled = false
+        });
     }
 
     protected override unsafe void OnFrame(double deltaTime, Frame frame)
     {
         var scale = 0.5f + 0.5f * MathF.Sin((float)_time * 3.0f);
-        Span<Vertex> vertices = stackalloc Vertex[3];
-        for (var i = 0; i < 3; i++)
+        Span<Vertex> vertices = stackalloc Vertex[4];
+        for (var i = 0; i < 4; i++)
         {
-            vertices[i] = new Vertex(_baseVertices[i].Position * scale, _baseVertices[i].Color);
+            vertices[i] = new Vertex(_baseVertices[i].Position * scale);
         }
 
-        var vertexAlloc = frame.Allocate((uint)(sizeof(Vertex) * 3), 4);
+        var vertexAlloc = frame.Allocate((uint)(sizeof(Vertex) * 4), 4);
         MemoryMarshal.AsBytes(vertices).CopyTo(vertexAlloc.Data);
         frame.CopyBuffer(vertexAlloc, _vertexBuffer!);
 
@@ -189,13 +224,17 @@ class App(ApplicationDescription description) : Application(description)
         MemoryMarshal.Write(cameraAlloc.Data, in camera);
         pass.BindUniformBuffer("Camera", cameraAlloc);
 
+        pass.BindStorageBuffer("uvs", _uvBuffer!);
+        pass.BindTexture("tex", _texture!);
+        pass.BindSampler("samp", _sampler!);
+
         pass.PushConstants(new PushConstants((float)(_time * 2.0)));
         pass.SetVertexBuffer(_vertexBuffer!);
         pass.SetIndexBuffer(_indexBuffer!, IndexType.UInt16);
-        pass.DrawIndexed(3);
+        pass.DrawIndexed(6);
 
         _time += deltaTime;
-        if (++_frames >= 100)
+        if (++_frames >= 10000)
         {
             Window.Window.Close();
         }
@@ -205,7 +244,10 @@ class App(ApplicationDescription description) : Application(description)
     {
         _pipeline?.Dispose();
         _depthTexture?.Dispose();
+        _texture?.Dispose();
+        _sampler?.Dispose();
         _vertexBuffer?.Dispose();
         _indexBuffer?.Dispose();
+        _uvBuffer?.Dispose();
     }
 }

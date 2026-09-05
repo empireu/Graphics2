@@ -85,6 +85,8 @@ public abstract unsafe class Application : IDisposable
 
     protected abstract void OnFrame(double deltaTime, Frame frame);
 
+    protected virtual void OnStart() { }
+
     protected virtual void OnDispose() { }
 
     public void Run()
@@ -93,6 +95,8 @@ public abstract unsafe class Application : IDisposable
         {
             OnResize(_lastFramebufferSize);
         }
+
+        OnStart();
 
         _lastTime = Window.Window.Time;
 

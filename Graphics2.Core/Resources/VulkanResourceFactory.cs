@@ -213,6 +213,11 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         return new Texture(_device, _gpuOnly, imageHandle, viewHandle, allocation, description.Width, description.Height, description.Depth, description.Format, description.Usage);
     }
 
+    public VkSampler CreateSampler(SamplerDescription description)
+    {
+        return VkSampler.Create(_device, description);
+    }
+
     public Pipeline CreatePipeline(PipelineDescription description)
     {
         var compiled = _shaderCompiler.Compile(description.Source, description.VertexEntryPoint, description.FragmentEntryPoint);

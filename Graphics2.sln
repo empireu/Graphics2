@@ -12,6 +12,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Graphics2.Allocator", "Grap
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Graphics2.Tests", "Graphics2.Tests\Graphics2.Tests.csproj", "{CA5048A8-4916-44E9-8081-B03B33608D5A}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Graphics2.Assets", "Graphics2.Assets\Graphics2.Assets.csproj", "{29ACD98D-2FF1-4988-88DC-6A99DE80923E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -42,5 +44,9 @@ Global
 		{CA5048A8-4916-44E9-8081-B03B33608D5A}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{CA5048A8-4916-44E9-8081-B03B33608D5A}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{CA5048A8-4916-44E9-8081-B03B33608D5A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{29ACD98D-2FF1-4988-88DC-6A99DE80923E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{29ACD98D-2FF1-4988-88DC-6A99DE80923E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{29ACD98D-2FF1-4988-88DC-6A99DE80923E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{29ACD98D-2FF1-4988-88DC-6A99DE80923E}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
