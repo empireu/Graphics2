@@ -7,6 +7,7 @@ using Graphics2.Core.Resources;
 using Graphics2.Windowing;
 using Silk.NET.Maths;
 using System.Runtime.InteropServices;
+using Graphics2.Windowing.Input;
 
 var description = new ApplicationDescription
 {
@@ -179,8 +180,18 @@ class App(ApplicationDescription description) : Application(description)
         });
     }
 
-    protected override unsafe void OnFrame(double deltaTime, Frame frame)
+    protected override unsafe void OnFrame(double deltaTime, Frame frame, InputSnapshot input)
     {
+        for (var index = 0; index < input.CurrentKeys.Count; index++)
+        {
+            var inputCurrentKey = input.CurrentKeys[index];
+            
+            if (inputCurrentKey)
+            {
+                Console.WriteLine($"Key: {(G2Key)index}");
+            }
+        }
+
         var scale = 0.5f + 0.5f * MathF.Sin((float)_time * 3.0f);
         Span<Vertex> vertices = stackalloc Vertex[4];
         for (var i = 0; i < 4; i++)

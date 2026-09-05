@@ -2,6 +2,7 @@ using Graphics2.Core.Bootstrap;
 using Graphics2.Core.Render;
 using Graphics2.Core.Resources;
 using Graphics2.Windowing;
+using Graphics2.Windowing.Input;
 using Silk.NET.Core.Contexts;
 using Silk.NET.Core.Native;
 using Silk.NET.Maths;
@@ -83,7 +84,7 @@ public abstract unsafe class Application : IDisposable
     /// </summary>
     protected abstract void OnResize(Vector2D<int> framebufferSize);
 
-    protected abstract void OnFrame(double deltaTime, Frame frame);
+    protected abstract void OnFrame(double deltaTime, Frame frame, InputSnapshot input);
 
     protected virtual void OnStart() { }
 
@@ -111,8 +112,9 @@ public abstract unsafe class Application : IDisposable
             }
 
             var frame = Context.BeginFrame();
+            var input = Window.BuildInputSnapshot();
             var now = Window.Window.Time;
-            OnFrame(now - _lastTime, frame);
+            OnFrame(now - _lastTime, frame, input);
             _lastTime = now;
             Context.EndFrame(frame);
         }

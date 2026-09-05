@@ -1,3 +1,4 @@
+using Graphics2.Windowing.Input;
 using Silk.NET.Core.Contexts;
 using Silk.NET.Maths;
 using Silk.NET.Windowing;
@@ -15,12 +16,28 @@ public sealed class G2Window : IDisposable
 {
     public readonly IWindow Window;
     public readonly IVkSurface Surface;
-    
+    private readonly InputState _input;
+
     private G2Window(IWindow window, IVkSurface surface)
     {
         Window = window;
         Surface = surface;
+        _input = new InputState(window);
     }
+
+    public G2CursorMode CursorMode
+    {
+        get => _input.CursorMode;
+        set => _input.CursorMode = value;
+    }
+
+    public string? ClipboardText
+    {
+        get => _input.ClipboardText;
+        set => _input.ClipboardText = value;
+    }
+
+    public InputSnapshot BuildInputSnapshot() => _input.BuildSnapshot();
 
     public static G2Window Create(G2WindowDescription description)
     {
@@ -45,6 +62,7 @@ public sealed class G2Window : IDisposable
 
     public void Dispose()
     {
+        _input.Dispose();
         Window.Dispose();
     }
 }
