@@ -1,7 +1,6 @@
 using Graphics2.Core.Render;
 using Graphics2.Core.Resources;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
+using StbImageSharp;
 
 namespace Graphics2.Assets;
 
@@ -9,7 +8,7 @@ public static class ResourceFactoryExtensions
 {
     public static Texture LoadTexture(this VulkanResourceFactory factory, Stream stream)
     {
-        using var image = Image.Load<Rgba32>(stream);
+        var image = ImageResult.FromStream(stream, ColorComponents.RedGreenBlueAlpha);
 
         var texture = factory.CreateTexture(new TextureDescription
         {
@@ -19,10 +18,7 @@ public static class ResourceFactoryExtensions
             Usage = TextureUsage.Sampled | TextureUsage.TransferDestination
         });
 
-        var pixelData = new byte[image.Width * image.Height * 4];
-        image.CopyPixelDataTo(pixelData);
-
-        factory.UpdateTexture(texture, pixelData);
+        factory.UpdateTexture(texture, image.Data);
 
         return texture;
     }

@@ -1,3 +1,4 @@
+using System.Numerics;
 using Graphics2.Applications;
 using Graphics2.Assets;
 using Graphics2.Core;
@@ -174,7 +175,7 @@ class App(ApplicationDescription description) : Application(description)
 
     protected override void OnStart()
     {
-        using var stream = File.OpenRead(@"C:\Users\alioth\Desktop\image.png");
+        using var stream = File.OpenRead("image.png");
         _texture = Factory.LoadTexture(stream);
 
         _sampler = Factory.CreateSampler(new SamplerDescription
@@ -196,7 +197,9 @@ class App(ApplicationDescription description) : Application(description)
     {
         _imGui!.Update((float)deltaTime, input, Window.Window.FramebufferSize);
 
-        ImGui.DockSpaceOverViewport();
+        ImGui.PushStyleColor(ImGuiCol.WindowBg, new Vector4(0, 0, 0, 0));
+        ImGui.DockSpaceOverViewport(0U, (ImGuiViewport*) null, ImGuiDockNodeFlags.PassthruCentralNode, (ImGuiWindowClass*) null);
+        ImGui.PopStyleColor();
 
         if (ImGui.Begin("Info"))
         {

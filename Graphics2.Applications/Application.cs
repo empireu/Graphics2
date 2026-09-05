@@ -8,6 +8,7 @@ using Silk.NET.Core.Native;
 using Silk.NET.Maths;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.KHR;
+using System.Threading;
 
 namespace Graphics2.Applications;
 
@@ -106,14 +107,17 @@ public abstract unsafe class Application : IDisposable
             Window.Window.DoEvents();
             PollResize();
 
-            if (Context == null)
+            var now = Window.Window.Time;
+
+            if (Context == null || _lastFramebufferSize is not { X: > 0, Y: > 0 })
             {
+                _lastTime = now;
+                Thread.Sleep(1);
                 continue;
             }
 
             var frame = Context.BeginFrame();
             var input = Window.BuildInputSnapshot();
-            var now = Window.Window.Time;
             OnFrame(now - _lastTime, frame, input);
             _lastTime = now;
             Context.EndFrame(frame);
