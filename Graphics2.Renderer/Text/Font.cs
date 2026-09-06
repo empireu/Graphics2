@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Graphics2.Core;
 using StbTrueTypeSharp;
 
 namespace Graphics2.Renderer.Text;
@@ -14,7 +15,7 @@ public sealed unsafe class Font : IDisposable
     public float PixelSize { get; }
     public RasterizationMode Mode { get; }
     public int SdfSpread { get; }
-
+    
     public Font(byte[] data, float pixelSize, RasterizationMode mode, int sdfSpread = 8)
     {
         if (data == null || data.Length == 0)
@@ -32,8 +33,7 @@ public sealed unsafe class Font : IDisposable
             throw new ArgumentOutOfRangeException(nameof(sdfSpread), "SDF spread must be positive.");
         }
 
-        _info = StbTrueType.CreateFont(data, 0)
-            ?? throw new ArgumentException("Failed to parse font data.", nameof(data));
+        _info = StbTrueType.CreateFont(data, 0) ?? throw new ArgumentException("Failed to parse font data.", nameof(data));
 
         _scale = StbTrueType.stbtt_ScaleForPixelHeight(_info, pixelSize);
         Mode = mode;
@@ -47,7 +47,8 @@ public sealed unsafe class Font : IDisposable
         Metrics = new FontMetrics(
             ascent * _scale,
             descent * _scale,
-            lineGap * _scale);
+            lineGap * _scale
+        );
     }
 
     /// <summary>
@@ -164,5 +165,10 @@ public sealed unsafe class Font : IDisposable
         }
 
         _info.Dispose();
+    }
+
+    public static Font CreateDefault(float pixelSize, RasterizationMode mode, int sdfSpread = 8)
+    {
+        return new Font(Helpers.GetResourceBytes(typeof(Font).Assembly, "Graphics2.Renderer.Fonts.Inter.ttf"), pixelSize, mode, sdfSpread);
     }
 }

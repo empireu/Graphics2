@@ -85,6 +85,7 @@ public sealed class PipelineDescription
 
     public VertexLayout? VertexLayout { get; init; }
     public PushConstantLayout? PushConstantLayout { get; init; }
+    public Dictionary<string, SsboLayout>? SsboLayouts { get; init; }
 }
 
 public sealed unsafe class Pipeline : IDisposable

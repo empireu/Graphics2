@@ -41,7 +41,20 @@ public enum ShaderParameterKind
     StorageImage
 }
 
-public readonly struct ShaderParameterReflection(string name, uint bindingIndex, uint bindingSpace, ShaderParameterKind kind, uint elementCount)
+public readonly struct SsboFieldReflection(string name, uint offset)
+{
+    public readonly string Name = name;
+    public readonly uint Offset = offset;
+}
+
+public readonly struct ShaderParameterReflection(
+    string name,
+    uint bindingIndex,
+    uint bindingSpace,
+    ShaderParameterKind kind,
+    uint elementCount,
+    uint elementStride,
+    SsboFieldReflection[]? elementFields)
 {
     public readonly string Name = name;
     public readonly uint BindingIndex = bindingIndex;
@@ -53,6 +66,18 @@ public readonly struct ShaderParameterReflection(string name, uint bindingIndex,
     ///     <c>1</c> for non-array parameters, <c>N</c> for fixed-size arrays (e.g. <c>Texture2D textures[1024]</c>), <c>0</c> for unsized arrays (unsupported by the pipeline creation).
     /// </summary>
     public readonly uint ElementCount = elementCount;
+
+    /// <summary>
+    ///     For storage buffers: the per-element stride in bytes as the shader sees it (std430 layout).
+    ///     <c>0</c> for non-storage-buffer parameters.
+    /// </summary>
+    public readonly uint ElementStride = elementStride;
+
+    /// <summary>
+    ///     For storage buffers: the fields of the element struct with their offsets as the shader sees it.
+    ///     <c>null</c> for non-storage-buffer parameters or scalar element types.
+    /// </summary>
+    public readonly SsboFieldReflection[]? ElementFields = elementFields;
 }
 
 public readonly struct PushConstantFieldReflection(string name, uint offset)

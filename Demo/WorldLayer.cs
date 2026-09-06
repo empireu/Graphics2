@@ -5,6 +5,7 @@ using Graphics2.Core;
 using Graphics2.Core.Render;
 using Graphics2.Core.Resources;
 using Graphics2.ImGui;
+using Graphics2.Renderer.Text;
 using Graphics2.Windowing.Input;
 using ImGuiNET;
 using Silk.NET.Maths;
@@ -24,9 +25,9 @@ struct PushConstants(float rotation, float time, uint textureIndex2, uint textur
     public uint TextureIndex3 = textureIndex3;
 }
 
-struct Camera(Matrix4X4<float> viewProj)
+struct Camera(Matrix4x4 viewProj)
 {
-    public Matrix4X4<float> ViewProj = viewProj;
+    public Matrix4x4 ViewProj = viewProj;
 }
 
 internal sealed unsafe class WorldLayer : IDisposable
@@ -41,6 +42,10 @@ internal sealed unsafe class WorldLayer : IDisposable
     private readonly uint _textureIndex3;
     private readonly VkSampler _sampler;
     private readonly ImGuiRenderer _imGui;
+    private readonly VkSampler _textSampler;
+    private readonly GlyphAtlas _glyphAtlas;
+    private readonly TextRenderer _textRenderer;
+    private bool _textInitialized;
 
     private Texture? _depthTexture;
 
@@ -102,7 +107,26 @@ internal sealed unsafe class WorldLayer : IDisposable
             () => app.G2Wnd.ClipboardText,
             text => app.G2Wnd.ClipboardText = text
         );
+
+        var font = Font.CreateDefault(48.0f, RasterizationMode.Sdf);
+        _textSampler = factory.CreateSampler(new SamplerDescription
+        {
+            AnisotropyEnabled = false
+        });
         
+        _glyphAtlas = new GlyphAtlas(font, factory);
+        
+        _textRenderer = new TextRenderer(
+            factory,
+            _glyphAtlas,
+            _textSampler,
+            new TextRendererDescription
+            {
+                ColorFormat = TextureFormat.B8G8R8A8Srgb,
+                DepthFormat = TextureFormat.D32Sfloat,
+                SdfSmoothing = 0.015f
+            });
+
         #endregion
 
         #region Resources
@@ -209,17 +233,28 @@ internal sealed unsafe class WorldLayer : IDisposable
 
         ImGui.End();
 
-        var scale = 0.5f + 0.5f * MathF.Sin((float)_time * 3.0f);
         Span<Vertex> vertices = stackalloc Vertex[4];
         for (var i = 0; i < 4; i++)
         {
-            vertices[i] = new Vertex(BaseVertices[i].Position * scale);
+            vertices[i] = new Vertex(new Vector2D<float>(1.0f, 1.0f) + BaseVertices[i].Position * 0.1f);
         }
 
         var vertexAlloc = frame.Allocate((uint)(sizeof(Vertex) * 4), 4);
         MemoryMarshal.AsBytes(vertices).CopyTo(vertexAlloc.Data);
         frame.CopyBuffer(vertexAlloc, _vertexBuffer);
 
+        if (!_textInitialized)
+        {
+            _glyphAtlas.PrepopulateCommons(frame);
+            _textInitialized = true;
+        }
+
+        var extent = frame.Extent;
+        var ortho = Matrix4x4.CreateOrthographicOffCenter(0, extent.X, 0, extent.Y, -1, 1);
+        _textRenderer.SetCamera(ortho);
+        _textRenderer.DrawString2D(frame, "Hello, World!", new Vector2(0, 0), new Vector4(1, 1, 1, 1));
+        _textRenderer.DrawString2D(frame, $"FPS: {1.0 / (_averageTime.Sum() / _averageTime.Count):F2}", new Vector2(50, 110), new Vector4(0, 1, 0, 1));
+        
         using var pass = frame.BeginRenderPass(new RenderPassDescriptor
         {
             ColorAttachments =
@@ -257,19 +292,50 @@ internal sealed unsafe class WorldLayer : IDisposable
         pass.BindSampler("samp", _sampler);
         pass.BindTextureArray("textures", _textureArray);
 
-        pass.PushConstants(new PushConstants((float)(_time * 2.0), (float)_time, _textureIndex2, _textureIndex3));
+        pass.PushConstants(new PushConstants(0.0f, (float)_time, _textureIndex2, _textureIndex3));
         pass.SetVertexBuffer(_vertexBuffer);
         pass.SetIndexBuffer(_indexBuffer, IndexType.UInt16);
         pass.DrawIndexed(6);
 
-        _imGui.Render(frame, pass);
+        _textRenderer.Flush(frame, pass);
+
+        _textRenderer.SetCamera(_camera.ViewProj);
+        _textRenderer.DrawString3DOriented(
+            frame,
+            "DrawString3D A",
+            new Vector3(1, 1, 0),
+            -new Vector3(1, 0, 0),
+            new Vector3(0, 1, 0),
+            1.0f, new Vector4(1, 0, 0, 1)
+        );
         
+        _textRenderer.DrawString3DBillboard(
+            frame,
+            "DrawString3D A\nDrawString3D B",
+            new Vector3(1, 1, 0),
+            _camera.Position,
+            _camera.Forward,
+            _camera.Fov,
+            _app.G2Wnd.Window.FramebufferSize.Y,
+            100.0f,
+            new Vector4(0, 1, 0, 1),
+            anchor: TextAnchor.Center,
+            maxWidth: 100
+        );
+        
+        _textRenderer.Flush(frame, pass);
+        
+        _imGui.Render(frame, pass);
+
         _time += deltaTime;
     }
 
     public void Dispose()
     {
         _imGui.Dispose();
+        _textRenderer.Dispose();
+        _glyphAtlas.Dispose();
+        _textSampler.Dispose();
         _pipeline.Dispose();
         _depthTexture?.Dispose();
         _textureArray.Dispose();

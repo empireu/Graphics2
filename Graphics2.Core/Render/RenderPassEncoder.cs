@@ -19,12 +19,13 @@ public sealed unsafe class RenderPassEncoder : IDisposable
     private readonly RenderPassDescriptor _descriptor;
     private readonly Vector2D<int> _defaultExtent;
     private readonly HashSet<ulong> _pendingCopies;
+    private readonly HashSet<VkTexture> _pendingImageCopies;
     private Pipeline? _pipeline;
     private readonly List<PendingDescriptorWrite> _pendingWrites = [];
     private bool _descriptorsDirty;
     private bool _ended;
 
-    private RenderPassEncoder(VkDevice device, DescriptorPool descriptorPool, CommandBuffer cmd, RenderPassDescriptor descriptor, Vector2D<int> defaultExtent, HashSet<ulong> pendingCopies)
+    private RenderPassEncoder(VkDevice device, DescriptorPool descriptorPool, CommandBuffer cmd, RenderPassDescriptor descriptor, Vector2D<int> defaultExtent, HashSet<ulong> pendingCopies, HashSet<VkTexture> pendingImageCopies)
     {
         _device = device;
         _vk = device.Instance.Vk;
@@ -33,11 +34,12 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         _descriptor = descriptor;
         _defaultExtent = defaultExtent;
         _pendingCopies = pendingCopies;
+        _pendingImageCopies = pendingImageCopies;
     }
 
-    internal static RenderPassEncoder Begin(VkDevice device, DescriptorPool descriptorPool, CommandBuffer cmd, RenderPassDescriptor descriptor, Vector2D<int> defaultExtent, HashSet<ulong> pendingCopies)
+    internal static RenderPassEncoder Begin(VkDevice device, DescriptorPool descriptorPool, CommandBuffer cmd, RenderPassDescriptor descriptor, Vector2D<int> defaultExtent, HashSet<ulong> pendingCopies, HashSet<VkTexture> pendingImageCopies)
     {
-        var encoder = new RenderPassEncoder(device, descriptorPool, cmd, descriptor, defaultExtent, pendingCopies);
+        var encoder = new RenderPassEncoder(device, descriptorPool, cmd, descriptor, defaultExtent, pendingCopies, pendingImageCopies);
         encoder.BeginPass();
         return encoder;
     }
@@ -840,16 +842,18 @@ public sealed unsafe class RenderPassEncoder : IDisposable
 
     private void FlushCopyBarriers()
     {
-        if (_pendingCopies.Count == 0)
+        if (_pendingCopies.Count == 0 && _pendingImageCopies.Count == 0)
         {
             return;
         }
 
-        var barriers = new BufferMemoryBarrier2[_pendingCopies.Count];
+        Span<BufferMemoryBarrier2> bufferBarriers = _pendingCopies.Count > 0
+            ? stackalloc BufferMemoryBarrier2[_pendingCopies.Count]
+            : [];
         var i = 0;
         foreach (var handle in _pendingCopies)
         {
-            barriers[i++] = new BufferMemoryBarrier2
+            bufferBarriers[i++] = new BufferMemoryBarrier2
             {
                 SType = StructureType.BufferMemoryBarrier2,
                 SrcStageMask = PipelineStageFlags2.CopyBit,
@@ -864,19 +868,55 @@ public sealed unsafe class RenderPassEncoder : IDisposable
             };
         }
 
-        fixed (BufferMemoryBarrier2* ptr = barriers)
+        Span<ImageMemoryBarrier2> imageBarriers = _pendingImageCopies.Count > 0
+            ? stackalloc ImageMemoryBarrier2[_pendingImageCopies.Count]
+            : [];
+            
+        var j = 0;
+        foreach (var tex in _pendingImageCopies)
+        {
+            imageBarriers[j] = new ImageMemoryBarrier2
+            {
+                SType = StructureType.ImageMemoryBarrier2,
+                SrcStageMask = PipelineStageFlags2.CopyBit,
+                SrcAccessMask = AccessFlags2.TransferWriteBit,
+                DstStageMask = PipelineStageFlags2.AllGraphicsBit,
+                DstAccessMask = AccessFlags2.ShaderReadBit,
+                OldLayout = ImageLayout.TransferDstOptimal,
+                NewLayout = ImageLayout.ShaderReadOnlyOptimal,
+                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                Image = tex.Image,
+                SubresourceRange = new ImageSubresourceRange
+                {
+                    AspectMask = ImageAspectFlags.ColorBit,
+                    BaseMipLevel = 0,
+                    LevelCount = 1,
+                    BaseArrayLayer = 0,
+                    LayerCount = 1
+                }
+            };
+            tex.CurrentLayout = ImageLayout.ShaderReadOnlyOptimal;
+            j++;
+        }
+
+        fixed (BufferMemoryBarrier2* bufferPtr = bufferBarriers)
+        fixed (ImageMemoryBarrier2* imagePtr = imageBarriers)
         {
             var dependencyInfo = new DependencyInfo
             {
                 SType = StructureType.DependencyInfo,
-                BufferMemoryBarrierCount = (uint)barriers.Length,
-                PBufferMemoryBarriers = ptr
+                BufferMemoryBarrierCount = (uint)bufferBarriers.Length,
+                PBufferMemoryBarriers = bufferPtr,
+                ImageMemoryBarrierCount = (uint)imageBarriers.Length,
+                PImageMemoryBarriers = imagePtr
             };
 
             _vk.CmdPipelineBarrier2(_cmd, &dependencyInfo);
         }
 
         _pendingCopies.Clear();
+        _pendingImageCopies.Clear();
     }
 
     private static ImageLayout ToVkLayout(TextureLayout layout) => layout switch

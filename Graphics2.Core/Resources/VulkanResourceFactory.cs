@@ -251,8 +251,8 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
 
         var descriptorSetLayouts = CreateDescriptorSetLayouts(compiled.Reflection);
         var (pushConstantSize, pushConstantStageFlags) = ValidatePushConstants(compiled.Reflection, description.PushConstantLayout);
+        ValidateSsbos(compiled.Reflection, description.SsboLayouts);
         var pipelineLayout = CreatePipelineLayout(descriptorSetLayouts, pushConstantSize, pushConstantStageFlags);
-
         var pipelineHandle = CreateGraphicsPipeline(description, vertexShader, fragmentShader, pipelineLayout, compiled.Reflection);
 
         return new Pipeline(_device, pipelineHandle, pipelineLayout, descriptorSetLayouts, vertexShader, fragmentShader, compiled.Reflection, pushConstantSize, pushConstantStageFlags);
@@ -478,6 +478,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
 
     private static uint TextureFormatPixelSize(TextureFormat format) => format switch
     {
+        TextureFormat.R8Unorm => 1,
         TextureFormat.R8G8B8A8Unorm => 4,
         TextureFormat.R8G8B8A8Srgb => 4,
         TextureFormat.B8G8R8A8Srgb => 4,
@@ -715,6 +716,62 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         return (shaderPc.Size, ShaderStageFlags.VertexBit | ShaderStageFlags.FragmentBit);
     }
 
+    private static void ValidateSsbos(ShaderReflection reflection, Dictionary<string, SsboLayout>? ssboLayouts)
+    {
+        if (ssboLayouts == null)
+        {
+            return;
+        }
+
+        foreach (var param in reflection.Parameters)
+        {
+            if (param.Kind != ShaderParameterKind.StorageBuffer)
+            {
+                continue;
+            }
+
+            if (!ssboLayouts.TryGetValue(param.Name, out var appLayout))
+            {
+                continue;
+            }
+
+            if (appLayout.Stride != param.ElementStride)
+            {
+                throw new VkAllocationException($"SSBO \"{param.Name}\" element stride mismatch: app says {appLayout.Stride} bytes, shader says {param.ElementStride} bytes.");
+            }
+
+            if (param.ElementFields == null || param.ElementFields.Length == 0)
+            {
+                continue;
+            }
+
+            foreach (var appField in appLayout.Fields)
+            {
+                var found = false;
+
+                for (var j = 0; j < param.ElementFields.Length; j++)
+                {
+                    if (string.Equals(param.ElementFields[j].Name, appField.Name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        found = true;
+
+                        if (param.ElementFields[j].Offset != appField.Offset)
+                        {
+                            throw new VkAllocationException($"SSBO \"{param.Name}\" field \"{appField.Name}\" offset mismatch: app says {appField.Offset}, shader says {param.ElementFields[j].Offset}.");
+                        }
+
+                        break;
+                    }
+                }
+
+                if (!found)
+                {
+                    throw new VkAllocationException($"SSBO \"{param.Name}\" field \"{appField.Name}\" not found in shader reflection.");
+                }
+            }
+        }
+    }
+
     private Silk.NET.Vulkan.Pipeline CreateGraphicsPipeline(
         PipelineDescription description,
         VkShader vertexShader,
@@ -845,7 +902,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
                 VertexBindingDescriptionCount = hasVertexBindings ? 1u : 0u,
                 PVertexBindingDescriptions = hasVertexBindings ? &bindingDescription : null,
                 VertexAttributeDescriptionCount = (uint)attributeDescriptions.Length,
-                PVertexAttributeDescriptions = attributeDescriptionsPtr
+                PVertexAttributeDescriptions = attributeDescriptions.Length > 0 ? attributeDescriptionsPtr : null
             };
 
             var inputAssembly = new PipelineInputAssemblyStateCreateInfo
@@ -1051,6 +1108,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
 
     private static Format TextureFormatToVk(TextureFormat format) => format switch
     {
+        TextureFormat.R8Unorm => Format.R8Unorm,
         TextureFormat.R8G8B8A8Unorm => Format.R8G8B8A8Unorm,
         TextureFormat.R8G8B8A8Srgb => Format.R8G8B8A8Srgb,
         TextureFormat.B8G8R8A8Srgb => Format.B8G8R8A8Srgb,

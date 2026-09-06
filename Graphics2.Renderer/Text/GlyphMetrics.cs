@@ -46,8 +46,7 @@ public readonly struct GlyphMetrics(
 
     /// <summary>
     ///     Vertical offset from the pen position (baseline) to the top edge of the glyph bitmap, in integer pixels.
-    ///     Positive means above the baseline (most glyphs).
-    ///     Negative means below (descenders like g, p, y).
+    ///     stb_truetype uses a y-down convention. Negative means above the baseline (most glyphs), positive means below (descenders like g, p, y).
     ///     The bitmap's top row sits at <c>baseline + YOffset</c>.
     /// </summary>
     public readonly int YOffset = yOffset;

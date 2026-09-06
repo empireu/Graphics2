@@ -15,4 +15,9 @@
       <PackageReference Include="StbTrueTypeSharp" Version="1.26.13" />
     </ItemGroup>
 
+    <ItemGroup>
+        <EmbeddedResource Include="Shaders\Text.slang" />
+        <EmbeddedResource Include="Fonts\Inter.ttf" />
+    </ItemGroup>
+
 </Project>

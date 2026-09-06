@@ -180,7 +180,49 @@ public sealed class ShaderCompiler : IDisposable
     {
         var kind = MapParameterKind(param);
         var elementCount = GetElementCount(param);
-        return new ShaderParameterReflection(param.Name, param.BindingIndex, param.BindingSpace, kind, elementCount);
+
+        uint elementStride = 0;
+        SsboFieldReflection[]? elementFields = null;
+
+        if (kind == ShaderParameterKind.StorageBuffer)
+        {
+            (elementStride, elementFields) = GetSsboElementLayout(param);
+        }
+
+        return new ShaderParameterReflection(
+            param.Name,
+            param.BindingIndex,
+            param.BindingSpace,
+            kind,
+            elementCount,
+            elementStride,
+            elementFields
+        );
+    }
+
+    private static (uint stride, SsboFieldReflection[]? fields) GetSsboElementLayout(VariableLayoutReflection param)
+    {
+        var elementTypeLayout = param.TypeLayout.ElementTypeLayout;
+        const SlangParameterCategory category = SlangParameterCategory.Uniform;
+
+        var stride = (uint)elementTypeLayout.GetSize(category);
+
+        var fieldCount = (int)elementTypeLayout.FieldCount;
+        if (fieldCount == 0)
+        {
+            return (stride, null);
+        }
+
+        var fields = new SsboFieldReflection[fieldCount];
+        for (var i = 0; i < fieldCount; i++)
+        {
+            var fieldLayout = elementTypeLayout.GetFieldByIndex((uint)i);
+            var fieldName = fieldLayout.Name;
+            var fieldOffset = (uint)fieldLayout.GetOffset(category);
+            fields[i] = new SsboFieldReflection(fieldName, fieldOffset);
+        }
+
+        return (stride, fields);
     }
 
     private static uint GetElementCount(VariableLayoutReflection param)
