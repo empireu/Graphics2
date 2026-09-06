@@ -7,16 +7,15 @@ using Silk.NET.Maths;
 
 namespace Graphics2.ImGui;
 
-public struct ImGuiPushConstants(Vector2D<float> scale, Vector2D<float> translate)
+[StructLayout(LayoutKind.Explicit)]
+public struct ImGuiPushConstants(Vector2D<float> scale, Vector2D<float> translate, uint textureIndex)
 {
-    public Vector2D<float> Scale = scale;
-    public Vector2D<float> Translate = translate;
+    [FieldOffset(0)] public Vector2D<float> Scale = scale;
+    [FieldOffset(8)] public Vector2D<float> Translate = translate;
+    [FieldOffset(16)] public uint TextureIndex = textureIndex;
+    [FieldOffset(20)] private readonly uint _padding;
 }
 
-/// <summary>
-///     Texture id is a placeholder. We may have issues with the strings as well, have to check on another system.
-/// </summary>
-/// <param name="factory"></param>
 public sealed unsafe class ImGuiRenderer(VulkanResourceFactory factory) : IDisposable
 {
     private const string ShaderSource = """
@@ -35,12 +34,14 @@ public sealed unsafe class ImGuiRenderer(VulkanResourceFactory factory) : IDispo
         struct PushConstants {
             float2 scale;
             float2 translate;
+            uint textureIndex;
         };
 
         [[vk::push_constant]] PushConstants pc;
 
-        Texture2D<float4> fontTexture;
         SamplerState fontSampler;
+
+        [[vk::binding(0, 1)]] Texture2D<float4> textures[64];
 
         [shader("vertex")]
         VertexOutput vsMain(VertexInput input) {
@@ -54,13 +55,14 @@ public sealed unsafe class ImGuiRenderer(VulkanResourceFactory factory) : IDispo
 
         [shader("fragment")]
         float4 fsMain(VertexOutput input) : SV_TARGET {
-            float4 texColor = fontTexture.Sample(fontSampler, input.uv);
+            float4 texColor = textures[pc.textureIndex].Sample(fontSampler, input.uv);
             return input.color * texColor;
         }
         """;
 
     private Pipeline? _pipeline;
     private Texture? _fontTexture;
+    private TextureArray? _textureArray;
     private VkSampler? _sampler;
     private IntPtr _context;
     private int _disposed;
@@ -114,6 +116,9 @@ public sealed unsafe class ImGuiRenderer(VulkanResourceFactory factory) : IDispo
         var pixelSpan = new Span<byte>((void*)pixelPtr, width * height * 4);
         factory.UpdateTexture(_fontTexture, pixelSpan);
 
+        _textureArray = factory.CreateTextureArray(64);
+        _textureArray.Add(_fontTexture);
+
         _sampler = factory.CreateSampler(new SamplerDescription
         {
             AnisotropyEnabled = false
@@ -143,7 +148,12 @@ public sealed unsafe class ImGuiRenderer(VulkanResourceFactory factory) : IDispo
             PushConstantLayout = PushConstantLayout.FromStruct<ImGuiPushConstants>()
         });
 
-        io.Fonts.SetTexID(new IntPtr(_fontTexture.GetHashCode()));
+        io.Fonts.SetTexID(IntPtr.Zero);
+    }
+
+    public IntPtr AddTexture(VkTexture texture)
+    {
+        return new IntPtr(_textureArray!.Add(texture));
     }
 
     public void Update(float deltaTime, InputSnapshot input, Vector2D<int> displaySize)
@@ -201,9 +211,8 @@ public sealed unsafe class ImGuiRenderer(VulkanResourceFactory factory) : IDispo
 
         var scale = new Vector2D<float>(2.0f / drawData.DisplaySize.X, 2.0f / drawData.DisplaySize.Y);
         var translate = new Vector2D<float>(-1.0f - drawData.DisplayPos.X * scale.X, -1.0f - drawData.DisplayPos.Y * scale.Y);
-        pass.PushConstants(new ImGuiPushConstants(scale, translate));
 
-        pass.BindTexture("fontTexture", _fontTexture!);
+        pass.BindTextureArray("textures", _textureArray!);
         pass.BindSampler("fontSampler", _sampler!);
 
         for (var n = 0; n < drawData.CmdListsCount; n++)
@@ -242,6 +251,8 @@ public sealed unsafe class ImGuiRenderer(VulkanResourceFactory factory) : IDispo
 
                 if (clipW > 0 && clipH > 0)
                 {
+                    var textureIndex = (uint)cmd.TextureId.ToInt64();
+                    pass.PushConstants(new ImGuiPushConstants(scale, translate, textureIndex));
                     pass.SetScissor(clipX, clipY, clipW, clipH);
                     pass.DrawIndexed(cmd.ElemCount, 1, cmd.IdxOffset, (int)cmd.VtxOffset);
                 }
@@ -389,6 +400,7 @@ public sealed unsafe class ImGuiRenderer(VulkanResourceFactory factory) : IDispo
         }
 
         _pipeline?.Dispose();
+        _textureArray?.Dispose();
         _fontTexture?.Dispose();
         _sampler?.Dispose();
 
