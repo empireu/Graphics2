@@ -1,4 +1,4 @@
-namespace Graphics2.Renderer;
+namespace Graphics2.Renderer.Text;
 
 /// <summary>
 ///     Font-wide vertical metrics, all in pixels at the font's configured pixel size.

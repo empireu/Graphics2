@@ -807,33 +807,43 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         }
         else
         {
-            bindingDescription = new VertexInputBindingDescription
+            if (shaderVertexInputs.Length == 0)
             {
-                Binding = 0,
-                Stride = 0,
-                InputRate = VertexInputRate.Vertex
-            };
-
-            attributeDescriptions = new VertexInputAttributeDescription[shaderVertexInputs.Length];
-            for (var i = 0; i < shaderVertexInputs.Length; i++)
+                bindingDescription = default;
+                attributeDescriptions = [];
+            }
+            else
             {
-                attributeDescriptions[i] = new VertexInputAttributeDescription
+                bindingDescription = new VertexInputBindingDescription
                 {
                     Binding = 0,
-                    Location = shaderVertexInputs[i].Location,
-                    Format = VertexAttributeFormatToVk(shaderVertexInputs[i].Format),
-                    Offset = 0
+                    Stride = 0,
+                    InputRate = VertexInputRate.Vertex
                 };
+
+                attributeDescriptions = new VertexInputAttributeDescription[shaderVertexInputs.Length];
+                for (var i = 0; i < shaderVertexInputs.Length; i++)
+                {
+                    attributeDescriptions[i] = new VertexInputAttributeDescription
+                    {
+                        Binding = 0,
+                        Location = shaderVertexInputs[i].Location,
+                        Format = VertexAttributeFormatToVk(shaderVertexInputs[i].Format),
+                        Offset = 0
+                    };
+                }
             }
         }
+
+        var hasVertexBindings = description.VertexLayout != null || shaderVertexInputs.Length > 0;
 
         fixed (VertexInputAttributeDescription* attributeDescriptionsPtr = attributeDescriptions)
         {
             var vertexInputInfo = new PipelineVertexInputStateCreateInfo
             {
                 SType = StructureType.PipelineVertexInputStateCreateInfo,
-                VertexBindingDescriptionCount = 1,
-                PVertexBindingDescriptions = &bindingDescription,
+                VertexBindingDescriptionCount = hasVertexBindings ? 1u : 0u,
+                PVertexBindingDescriptions = hasVertexBindings ? &bindingDescription : null,
                 VertexAttributeDescriptionCount = (uint)attributeDescriptions.Length,
                 PVertexAttributeDescriptions = attributeDescriptionsPtr
             };

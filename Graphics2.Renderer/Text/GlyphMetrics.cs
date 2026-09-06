@@ -1,4 +1,4 @@
-namespace Graphics2.Renderer;
+namespace Graphics2.Renderer.Text;
 
 /// <summary>
 ///     Per-glyph metrics for horizontal layout and bitmap placement.
