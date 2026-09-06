@@ -41,12 +41,18 @@ public enum ShaderParameterKind
     StorageImage
 }
 
-public readonly struct ShaderParameterReflection(string name, uint bindingIndex, uint bindingSpace, ShaderParameterKind kind)
+public readonly struct ShaderParameterReflection(string name, uint bindingIndex, uint bindingSpace, ShaderParameterKind kind, uint elementCount)
 {
     public readonly string Name = name;
     public readonly uint BindingIndex = bindingIndex;
     public readonly uint BindingSpace = bindingSpace;
     public readonly ShaderParameterKind Kind = kind;
+
+    /// <summary>
+    ///     Number of elements in the parameter's array.
+    ///     <c>1</c> for non-array parameters, <c>N</c> for fixed-size arrays (e.g. <c>Texture2D textures[1024]</c>), <c>0</c> for unsized arrays (unsupported by the pipeline creation).
+    /// </summary>
+    public readonly uint ElementCount = elementCount;
 }
 
 public readonly struct PushConstantFieldReflection(string name, uint offset)

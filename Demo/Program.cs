@@ -34,9 +34,11 @@ struct Vertex(Vector2D<float> position)
     public Vector2D<float> Position = position;
 }
 
-struct PushConstants(float rotation)
+struct PushConstants(float rotation, uint textureIndex2, uint textureIndex3)
 {
     public float Rotation = rotation;
+    public uint TextureIndex2 = textureIndex2;
+    public uint TextureIndex3 = textureIndex3;
 }
 
 struct Camera(float time)
@@ -63,6 +65,8 @@ class App(ApplicationDescription description) : Application(description)
 
         struct PushConstants {
             float rotation;
+            uint textureIndex2;
+            uint textureIndex3;
         };
 
         [[vk::push_constant]] PushConstants pc;
@@ -70,6 +74,8 @@ class App(ApplicationDescription description) : Application(description)
         StructuredBuffer<float2> uvs;
         Texture2D<float4> tex;
         SamplerState samp;
+
+        [[vk::binding(0, 1)]] Texture2D<float4> textures[1024];
 
         [shader("vertex")]
         VertexOutput vsMain(VertexInput input) {
@@ -87,14 +93,22 @@ class App(ApplicationDescription description) : Application(description)
 
         [shader("fragment")]
         float4 fsMain(VertexOutput input) : SV_TARGET {
-            float4 color = tex.Sample(samp, input.uv);
+            float4 c1 = tex.Sample(samp, input.uv);
+            float4 c2 = textures[pc.textureIndex2].Sample(samp, input.uv);
+            float4 c3 = textures[pc.textureIndex3].Sample(samp, input.uv);
+            float4 blended = (c1 + c2 + c3) / 3.0;
             float pulse = 0.5 + 0.5 * sin(time * 3.0);
-            return float4(color.rgb * pulse, 1.0);
+            return float4(blended.rgb * pulse, 1.0);
         }
         """;
 
     private Texture? _depthTexture;
     private Texture? _texture;
+    private Texture? _texture2;
+    private Texture? _texture3;
+    private TextureArray? _textureArray;
+    private uint _textureIndex2;
+    private uint _textureIndex3;
     private VkSampler? _sampler;
     private Pipeline? _pipeline;
     private VkBuffer? _vertexBuffer;
@@ -175,8 +189,19 @@ class App(ApplicationDescription description) : Application(description)
 
     protected override void OnStart()
     {
-        using var stream = File.OpenRead("image.png");
-        _texture = Factory.LoadTexture(stream);
+        var dir = AppContext.BaseDirectory;
+        using var stream1 = File.OpenRead(Path.Combine(dir, "image1.png"));
+        _texture = Factory.LoadTexture(stream1);
+
+        _textureArray = Factory.CreateTextureArray(1024);
+
+        using var stream2 = File.OpenRead(Path.Combine(dir, "image2.png"));
+        _texture2 = Factory.LoadTexture(stream2);
+        _textureIndex2 = _textureArray.Add(_texture2);
+
+        using var stream3 = File.OpenRead(Path.Combine(dir, "image3.png"));
+        _texture3 = Factory.LoadTexture(stream3);
+        _textureIndex3 = _textureArray.Add(_texture3);
 
         _sampler = Factory.CreateSampler(new SamplerDescription
         {
@@ -192,6 +217,7 @@ class App(ApplicationDescription description) : Application(description)
     }
 
     private string _text = string.Empty;
+    private readonly List<double> _averageTime = new();
     
     protected override unsafe void OnFrame(double deltaTime, Frame frame, InputSnapshot input)
     {
@@ -200,13 +226,18 @@ class App(ApplicationDescription description) : Application(description)
         ImGui.PushStyleColor(ImGuiCol.WindowBg, new Vector4(0, 0, 0, 0));
         ImGui.DockSpaceOverViewport(0U, (ImGuiViewport*) null, ImGuiDockNodeFlags.PassthruCentralNode, (ImGuiWindowClass*) null);
         ImGui.PopStyleColor();
+        
+        if (_averageTime.Count > 30)
+        {
+            _averageTime.RemoveAt(0);
+        }
+        
+        _averageTime.Add(deltaTime);
 
         if (ImGui.Begin("Info"))
         {
             ImGui.Text($"Frames: {_frames}");
-            ImGui.Text($"Time: {_time:F2}");
-            ImGui.Text($"FPS: {1.0 / deltaTime:F1}");
-
+            ImGui.Text($"FPS: {1.0 / (_averageTime.Sum() / _averageTime.Count):F2}");
             ImGui.InputText("Text", ref _text, 128);
         }
         
@@ -258,16 +289,18 @@ class App(ApplicationDescription description) : Application(description)
         pass.BindStorageBuffer("uvs", _uvBuffer!);
         pass.BindTexture("tex", _texture!);
         pass.BindSampler("samp", _sampler!);
+        pass.BindTextureArray("textures", _textureArray!);
 
-        pass.PushConstants(new PushConstants((float)(_time * 2.0)));
+        pass.PushConstants(new PushConstants((float)(_time * 2.0), _textureIndex2, _textureIndex3));
         pass.SetVertexBuffer(_vertexBuffer!);
         pass.SetIndexBuffer(_indexBuffer!, IndexType.UInt16);
         pass.DrawIndexed(6);
 
         _imGui.Render(frame, pass);
-
+        
         _time += deltaTime;
-        if (++_frames >= 10000)
+        
+        if (++_frames >= 1000)
         {
             Window.Window.Close();
         }
@@ -278,7 +311,10 @@ class App(ApplicationDescription description) : Application(description)
         _imGui?.Dispose();
         _pipeline?.Dispose();
         _depthTexture?.Dispose();
+        _textureArray?.Dispose();
         _texture?.Dispose();
+        _texture2?.Dispose();
+        _texture3?.Dispose();
         _sampler?.Dispose();
         _vertexBuffer?.Dispose();
         _indexBuffer?.Dispose();

@@ -381,6 +381,53 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         _descriptorsDirty = true;
     }
 
+    /// <summary>
+    ///     Binds a <see cref="TextureArray" /> to the pipeline by name.
+    ///     The shader parameter must be a fixed-size <c>SampledImage</c> array in its own descriptor set (no other parameters in the same set).
+    ///     The registry's capacity must match the shader's declared array size.
+    ///     This is a separate path from the per-draw descriptor allocation path.
+    ///     The registry's pre-built descriptor set is bound directly.
+    ///     Call once per pipeline setup; the set stays bound until another set is bound to the same slot.
+    /// </summary>
+    public void BindTextureArray(string name, TextureArray array)
+    {
+        if (_pipeline == null)
+        {
+            throw new InvalidOperationException("SetPipeline must be called before binding resources.");
+        }
+
+        if (!_pipeline.TryGetParameter(name, out var parameter))
+        {
+            throw new ArgumentException($"Shader parameter \"{name}\" not found in pipeline reflection.", nameof(name));
+        }
+
+        if (parameter.Kind != ShaderParameterKind.SampledImage)
+        {
+            throw new ArgumentException($"Shader parameter \"{name}\" is {parameter.Kind}, not SampledImage.", nameof(name));
+        }
+
+        if (parameter.ElementCount <= 1)
+        {
+            throw new ArgumentException($"Shader parameter \"{name}\" is not an array. Use BindTexture for single textures.", nameof(name));
+        }
+
+        if (parameter.ElementCount != array.Capacity)
+        {
+            throw new ArgumentException($"Texture registry capacity ({array.Capacity}) does not match shader array size ({parameter.ElementCount}).", nameof(array));
+        }
+
+        foreach (var param in _pipeline.Reflection.Parameters)
+        {
+            if (param.BindingSpace == parameter.BindingSpace && param.Name != name)
+            {
+                throw new InvalidOperationException($"Set {parameter.BindingSpace} contains other parameters besides \"{name}\". The bindless texture set must be its own set.");
+            }
+        }
+
+        var set = array.Set;
+        _vk.CmdBindDescriptorSets(_cmd, PipelineBindPoint.Graphics, _pipeline.Layout, parameter.BindingSpace, 1, &set, 0, null);
+    }
+
     public void BindSampler(string name, VkSampler sampler)
     {
         if (_pipeline == null)

@@ -218,6 +218,15 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         return VkSampler.Create(_device, description);
     }
 
+    /// <summary>
+    ///     Creates a bindless texture registry with the given capacity.
+    ///     The capacity must match the array size declared in the shader (e.g. <c>Texture2D textures[1024]</c> requires capacity 1024).
+    /// </summary>
+    public TextureArray CreateTextureArray(uint capacity)
+    {
+        return TextureArray.Create(_device, capacity);
+    }
+
     public Pipeline CreatePipeline(PipelineDescription description)
     {
         var compiled = _shaderCompiler.Compile(description.Source, description.VertexEntryPoint, description.FragmentEntryPoint);
@@ -498,9 +507,11 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
 
         var setCount = maxSet + 1;
         var bindingsBySet = new List<DescriptorSetLayoutBinding>[(int)setCount];
+        var bindingFlagsBySet = new List<DescriptorBindingFlags>[(int)setCount];
         for (var i = 0; i < setCount; i++)
         {
             bindingsBySet[i] = [];
+            bindingFlagsBySet[i] = [];
         }
 
         foreach (var param in reflection.Parameters)
@@ -515,14 +526,29 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
                 _ => throw new NotSupportedException($"Unsupported shader parameter kind: {param.Kind}")
             };
 
+            if (param.ElementCount == 0)
+            {
+                throw new NotSupportedException($"Shader parameter \"{param.Name}\" is an unsized array. Use a fixed-size array (e.g. textures[1024]) for bindless resources.");
+            }
+
+            var isBindless = param.ElementCount > 1;
+            var descriptorCount = isBindless ? param.ElementCount : 1u;
+            var flags = isBindless
+                ? DescriptorBindingFlags.PartiallyBoundBit
+                  | DescriptorBindingFlags.UpdateAfterBindBit
+                  | DescriptorBindingFlags.UpdateUnusedWhilePendingBit
+                : DescriptorBindingFlags.None;
+
             bindingsBySet[(int)param.BindingSpace].Add(new DescriptorSetLayoutBinding
             {
                 Binding = param.BindingIndex,
                 DescriptorType = descriptorType,
-                DescriptorCount = 1,
+                DescriptorCount = descriptorCount,
                 StageFlags = ShaderStageFlags.VertexBit | ShaderStageFlags.FragmentBit,
                 PImmutableSamplers = null
             });
+            
+            bindingFlagsBySet[(int)param.BindingSpace].Add(flags);
         }
 
         var layouts = new DescriptorSetLayout[setCount];
@@ -536,11 +562,40 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
             }
 
             var bindingsArray = bindings.ToArray();
-            fixed (DescriptorSetLayoutBinding* ptr = bindingsArray)
+            var flagsArray = bindingFlagsBySet[i].ToArray();
+
+            var hasBindless = false;
+            for (var j = 0; j < flagsArray.Length; j++)
             {
+                if (flagsArray[j] != DescriptorBindingFlags.None)
+                {
+                    hasBindless = true;
+                    break;
+                }
+            }
+
+            fixed (DescriptorSetLayoutBinding* ptr = bindingsArray)
+            fixed (DescriptorBindingFlags* flagsPtr = flagsArray)
+            {
+                DescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo = default;
+                void* pNext = null;
+
+                if (hasBindless)
+                {
+                    bindingFlagsInfo = new DescriptorSetLayoutBindingFlagsCreateInfo
+                    {
+                        SType = StructureType.DescriptorSetLayoutBindingFlagsCreateInfo,
+                        BindingCount = (uint)flagsArray.Length,
+                        PBindingFlags = flagsPtr
+                    };
+                    pNext = &bindingFlagsInfo;
+                }
+
                 var createInfo = new DescriptorSetLayoutCreateInfo
                 {
                     SType = StructureType.DescriptorSetLayoutCreateInfo,
+                    PNext = pNext,
+                    Flags = hasBindless ? DescriptorSetLayoutCreateFlags.UpdateAfterBindPoolBit : DescriptorSetLayoutCreateFlags.None,
                     BindingCount = (uint)bindingsArray.Length,
                     PBindings = ptr
                 };

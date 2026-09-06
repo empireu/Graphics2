@@ -76,7 +76,10 @@ public sealed unsafe class VkDevice : IDisposable
             SType = StructureType.PhysicalDeviceVulkan12Features,
             DescriptorIndexing = true,
             ShaderSampledImageArrayNonUniformIndexing = true,
-            RuntimeDescriptorArray = true
+            RuntimeDescriptorArray = true,
+            DescriptorBindingSampledImageUpdateAfterBind = true,
+            DescriptorBindingPartiallyBound = true,
+            DescriptorBindingUpdateUnusedWhilePending = true
         };
         
         PhysicalDeviceVulkan13Features vk13Features = new()
@@ -275,6 +278,9 @@ public sealed unsafe class VkDevice : IDisposable
                   && vk12Features.DescriptorIndexing
                   && vk12Features.ShaderSampledImageArrayNonUniformIndexing
                   && vk12Features.RuntimeDescriptorArray
+                  && vk12Features.DescriptorBindingSampledImageUpdateAfterBind
+                  && vk12Features.DescriptorBindingPartiallyBound
+                  && vk12Features.DescriptorBindingUpdateUnusedWhilePending
                   && vk13Features.DynamicRendering
                   && features2.Features.SamplerAnisotropy))
             {

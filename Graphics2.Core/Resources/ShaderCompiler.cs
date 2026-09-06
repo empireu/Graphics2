@@ -81,7 +81,7 @@ public sealed class ShaderCompiler : IDisposable
         }
 
         var components = fsEntryPoint != null
-            ? new IComponentType[] { module, vsEntryPoint, fsEntryPoint! }
+            ? new IComponentType[] { module, vsEntryPoint, fsEntryPoint }
             : new IComponentType[] { module, vsEntryPoint };
 
         if (!session.CreateCompositeComponentType(components, out var composedProgram, out var composeDiagnostic).Succeeded)
@@ -169,7 +169,7 @@ public sealed class ShaderCompiler : IDisposable
         {
             var fieldLayout = elementLayout.GetFieldByIndex((uint)i);
             var fieldName = fieldLayout.Name;
-            var fieldOffset = (uint)fieldLayout.GetOffset(SlangParameterCategory.Uniform);
+            var fieldOffset = (uint)fieldLayout.GetOffset();
             fields[i] = new PushConstantFieldReflection(fieldName, fieldOffset);
         }
 
@@ -179,12 +179,35 @@ public sealed class ShaderCompiler : IDisposable
     private static ShaderParameterReflection MapParameter(VariableLayoutReflection param)
     {
         var kind = MapParameterKind(param);
-        return new ShaderParameterReflection(param.Name, param.BindingIndex, param.BindingSpace, kind);
+        var elementCount = GetElementCount(param);
+        return new ShaderParameterReflection(param.Name, param.BindingIndex, param.BindingSpace, kind, elementCount);
+    }
+
+    private static uint GetElementCount(VariableLayoutReflection param)
+    {
+        var type = param.Type;
+        if (!type.IsArray)
+        {
+            return 1;
+        }
+
+        var count = type.ElementCount;
+        if (count == Slang.UnboundedSize || count == Slang.UnknownSize)
+        {
+            return 0;
+        }
+
+        return (uint)count;
     }
 
     private static ShaderParameterKind MapParameterKind(VariableLayoutReflection param)
     {
         var type = param.Type;
+
+        if (type.IsArray)
+        {
+            type = type.ElementType;
+        }
 
         return type.Kind switch
         {
@@ -317,7 +340,7 @@ public sealed class ShaderCompiler : IDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
-            return;
+            
         }
 
         // Empty for now

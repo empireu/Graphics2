@@ -65,16 +65,19 @@ public class ShaderCompilerTests
         Assert.Equal(0u, camera.BindingIndex);
         Assert.Equal(0u, camera.BindingSpace);
         Assert.Equal(ShaderParameterKind.UniformBuffer, camera.Kind);
+        Assert.Equal(1u, camera.ElementCount);
 
         var tex = compiled.Reflection.Parameters[1];
         Assert.Equal("tex", tex.Name);
         Assert.Equal(1u, tex.BindingIndex);
         Assert.Equal(ShaderParameterKind.SampledImage, tex.Kind);
+        Assert.Equal(1u, tex.ElementCount);
 
         var samp = compiled.Reflection.Parameters[2];
         Assert.Equal("samp", samp.Name);
         Assert.Equal(2u, samp.BindingIndex);
         Assert.Equal(ShaderParameterKind.Sampler, samp.Kind);
+        Assert.Equal(1u, samp.ElementCount);
     }
 
     [Fact]
@@ -105,5 +108,49 @@ public class ShaderCompilerTests
         var fs = compiled.Reflection.EntryPoints.Single(ep => ep.Stage == ShaderStage.Fragment);
         Assert.Equal("fsMain", fs.Name);
         Assert.Empty(fs.VertexInputs);
+    }
+
+    [Fact]
+    public void ShaderCompiler_ReflectsBindlessTextureArray()
+    {
+        const string bindlessShader = """
+        struct VertexInput {
+            float3 position : POSITION;
+        };
+
+        struct VertexOutput {
+            float4 position : SV_POSITION;
+        };
+
+        Texture2D<float4> textures[];
+        SamplerState samp;
+
+        [shader("vertex")]
+        VertexOutput vsMain(VertexInput input) {
+            VertexOutput output;
+            output.position = float4(input.position, 1.0);
+            return output;
+        }
+
+        [shader("fragment")]
+        float4 fsMain(VertexOutput input) : SV_TARGET {
+            return textures[0].Sample(samp, float2(0.0, 0.0));
+        }
+        """;
+
+        using var compiler = new ShaderCompiler();
+        var compiled = compiler.Compile(bindlessShader, "vsMain", "fsMain");
+
+        Assert.Equal(2, compiled.Reflection.Parameters.Length);
+
+        var textures = compiled.Reflection.Parameters[0];
+        Assert.Equal("textures", textures.Name);
+        Assert.Equal(ShaderParameterKind.SampledImage, textures.Kind);
+        Assert.Equal(0u, textures.ElementCount);
+
+        var samp = compiled.Reflection.Parameters[1];
+        Assert.Equal("samp", samp.Name);
+        Assert.Equal(ShaderParameterKind.Sampler, samp.Kind);
+        Assert.Equal(1u, samp.ElementCount);
     }
 }
