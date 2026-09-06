@@ -26,7 +26,7 @@ public sealed class ApplicationDescription
 public abstract unsafe class Application : IDisposable
 {
     public readonly VkInstance Instance;
-    public readonly G2Window Window;
+    public readonly G2Window G2Wnd;
     public readonly SurfaceKHR Surface;
     public readonly VkDevice Device;
     public readonly VulkanResourceFactory Factory;
@@ -38,8 +38,8 @@ public abstract unsafe class Application : IDisposable
 
     protected Application(ApplicationDescription description)
     {
-        Window = G2Window.Create(description.Window);
-        IReadOnlyList<string> requiredExtensions = ReadRequiredExtensions(Window.Surface);
+        G2Wnd = G2Window.Create(description.Window);
+        IReadOnlyList<string> requiredExtensions = ReadRequiredExtensions(G2Wnd.Surface);
 
         Instance = VkInstance.Create(description.Instance with
         {
@@ -48,7 +48,7 @@ public abstract unsafe class Application : IDisposable
             .ToList()
         });
 
-        var surfaceHandle = Window.Surface.Create<AllocationCallbacks>(new VkHandle(Instance.Handle.Handle), null);
+        var surfaceHandle = G2Wnd.Surface.Create<AllocationCallbacks>(new VkHandle(Instance.Handle.Handle), null);
         Surface = new SurfaceKHR(surfaceHandle.Handle);
         Device = VkDevice.Create(Instance, Surface, new VkDeviceDescription());
         Factory = new VulkanResourceFactory(Device);
@@ -60,7 +60,7 @@ public abstract unsafe class Application : IDisposable
 
         _khrSurface = khrSurface;
 
-        var initialSize = Window.Window.FramebufferSize;
+        var initialSize = G2Wnd.Window.FramebufferSize;
         _lastFramebufferSize = initialSize;
 
         if (initialSize is { X: > 0, Y: > 0 })
@@ -87,12 +87,16 @@ public abstract unsafe class Application : IDisposable
 
     protected abstract void OnFrame(double deltaTime, Frame frame, InputSnapshot input);
 
+    protected virtual void BeforeStart() { }
+    
     protected virtual void OnStart() { }
 
     protected virtual void OnDispose() { }
 
     public void Run()
     {
+        BeforeStart();
+        
         if (_lastFramebufferSize is { X: > 0, Y: > 0 })
         {
             OnResize(_lastFramebufferSize);
@@ -100,14 +104,14 @@ public abstract unsafe class Application : IDisposable
 
         OnStart();
 
-        _lastTime = Window.Window.Time;
+        _lastTime = G2Wnd.Window.Time;
 
-        while (!Window.Window.IsClosing)
+        while (!G2Wnd.Window.IsClosing)
         {
-            Window.Window.DoEvents();
+            G2Wnd.Window.DoEvents();
             PollResize();
 
-            var now = Window.Window.Time;
+            var now = G2Wnd.Window.Time;
 
             if (Context == null || _lastFramebufferSize is not { X: > 0, Y: > 0 })
             {
@@ -117,7 +121,7 @@ public abstract unsafe class Application : IDisposable
             }
 
             var frame = Context.BeginFrame();
-            var input = Window.BuildInputSnapshot();
+            var input = G2Wnd.BuildInputSnapshot();
             OnFrame(now - _lastTime, frame, input);
             _lastTime = now;
             Context.EndFrame(frame);
@@ -135,7 +139,7 @@ public abstract unsafe class Application : IDisposable
         OnDispose();
         Context?.Dispose();
         Factory.Dispose();
-        Window.Dispose();
+        G2Wnd.Dispose();
         Device.Dispose();
         _khrSurface.DestroySurface(Instance.Handle, Surface, null);
         Instance.Dispose();
@@ -145,7 +149,7 @@ public abstract unsafe class Application : IDisposable
 
     private void PollResize()
     {
-        var size = Window.Window.FramebufferSize;
+        var size = G2Wnd.Window.FramebufferSize;
         if (size == _lastFramebufferSize)
         {
             return;

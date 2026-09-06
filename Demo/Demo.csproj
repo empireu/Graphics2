@@ -13,5 +13,9 @@
       <ProjectReference Include="..\Graphics2.Assets\Graphics2.Assets.csproj" />
       <ProjectReference Include="..\Graphics2.ImGui\Graphics2.ImGui.csproj" />
     </ItemGroup>
-
+    
+    <ItemGroup>
+        <EmbeddedResource Include="Shaders\Shader.slang"/>
+    </ItemGroup>
+    
 </Project>
