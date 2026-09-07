@@ -174,7 +174,7 @@ internal sealed unsafe class WorldLayer : IDisposable
                     Target = frame.SwapchainColorTarget,
                     LoadOp = LoadOp.Clear,
                     StoreOp = StoreOp.Store,
-                    ClearValue = new RgbaFloat(0f, 0f, 0f, 1f),
+                    ClearValue = new Vector4(0f, 0f, 0f, 1f),
                     FinalLayout = TextureLayout.Present
                 }
             ]
@@ -285,7 +285,7 @@ internal sealed unsafe class WorldLayer : IDisposable
                     Target = frame.SwapchainColorTarget,
                     LoadOp = LoadOp.Load,
                     StoreOp = StoreOp.Store,
-                    ClearValue = new RgbaFloat(0f, 0f, 0f, 1f),
+                    ClearValue = new Vector4(0f, 0f, 0f, 1f),
                     FinalLayout = TextureLayout.Present
                 }
             ],

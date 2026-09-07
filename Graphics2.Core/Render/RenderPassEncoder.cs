@@ -166,7 +166,12 @@ public sealed unsafe class RenderPassEncoder : IDisposable
                 },
                 ClearValue = new ClearValue
                 {
-                    Color = new ClearColorValue(colorAttachment.ClearValue.R, colorAttachment.ClearValue.G, colorAttachment.ClearValue.B, colorAttachment.ClearValue.A)
+                    Color = new ClearColorValue(
+                        colorAttachment.ClearValue.X, 
+                        colorAttachment.ClearValue.Y,
+                        colorAttachment.ClearValue.Z,
+                        colorAttachment.ClearValue.W
+                    )
                 }
             };
         }
