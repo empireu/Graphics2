@@ -19,6 +19,7 @@
         <EmbeddedResource Include="Shaders\Text.slang" />
         <EmbeddedResource Include="Shaders\Quad2D.slang" />
         <EmbeddedResource Include="Shaders\Quad3D.slang" />
+        <EmbeddedResource Include="Shaders\Line3D.slang" />
         <EmbeddedResource Include="Fonts\Inter.ttf" />
     </ItemGroup>
 

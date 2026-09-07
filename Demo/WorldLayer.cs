@@ -6,6 +6,7 @@ using Graphics2.Core.Render;
 using Graphics2.Core.Resources;
 using Graphics2.ImGui;
 using Graphics2.Renderer.Quads;
+using Graphics2.Renderer.Lines;
 using Graphics2.Renderer.Text;
 using Graphics2.Windowing.Input;
 using ImGuiNET;
@@ -57,6 +58,7 @@ internal sealed unsafe class WorldLayer : IDisposable
 
     private readonly QuadRenderer2D _quadRenderer2D;
     private readonly QuadRenderer3D _quadRenderer3D;
+    private readonly LineRenderer3D _lineRenderer3D;
     
     private static readonly Vertex[] BaseVertices =
     [
@@ -181,6 +183,14 @@ internal sealed unsafe class WorldLayer : IDisposable
         });
 
         _quadRenderer3D = new QuadRenderer3D(factory, _textureArray, _sampler, new QuadRendererDescription
+        {
+            ColorFormat = TextureFormat.B8G8R8A8Srgb,
+            DepthFormat = TextureFormat.D32Sfloat,
+            DepthTest = true,
+            DepthWrite = true
+        });
+
+        _lineRenderer3D = new LineRenderer3D(factory, new QuadRendererDescription
         {
             ColorFormat = TextureFormat.B8G8R8A8Srgb,
             DepthFormat = TextureFormat.D32Sfloat,
@@ -421,7 +431,31 @@ internal sealed unsafe class WorldLayer : IDisposable
         );
         
         _quadRenderer3D.Flush(frame, pass);
-        
+
+        _lineRenderer3D.SetCamera(_camera.ViewProj, _camera.Position);
+        _lineRenderer3D.DrawLine3D(
+            new Vector3(-2, 0, 0),
+            new Vector3(2, 0, 0),
+            0.05f,
+            new Vector4(1, 0, 0, 1),
+            new Vector4(0.5f, 0, 0, 1)
+        );
+        _lineRenderer3D.DrawLine3D(
+            new Vector3(0, 0, -2),
+            new Vector3(0, 0, 2),
+            0.05f,
+            new Vector4(0, 0, 1, 1),
+            new Vector4(0, 0, 0.5f, 1)
+        );
+        _lineRenderer3D.DrawLine3D(
+            new Vector3(0, 0, 0),
+            new Vector3(0, 3, 0),
+            0.05f,
+            new Vector4(0, 1, 0, 1),
+            new Vector4(0, 0.5f, 0, 1)
+        );
+        _lineRenderer3D.Flush(frame, pass);
+
         _textRenderer.Flush(frame, pass);
         
         _imGui.Render(frame, pass);
@@ -447,5 +481,6 @@ internal sealed unsafe class WorldLayer : IDisposable
         _uvBuffer.Dispose();
         _quadRenderer2D.Dispose();
         _quadRenderer3D.Dispose();
+        _lineRenderer3D.Dispose();
     }
 }
