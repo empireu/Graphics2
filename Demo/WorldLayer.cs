@@ -5,6 +5,7 @@ using Graphics2.Core;
 using Graphics2.Core.Render;
 using Graphics2.Core.Resources;
 using Graphics2.ImGui;
+using Graphics2.Renderer.Quads;
 using Graphics2.Renderer.Text;
 using Graphics2.Windowing.Input;
 using ImGuiNET;
@@ -53,6 +54,8 @@ internal sealed unsafe class WorldLayer : IDisposable
     private readonly VkBuffer _vertexBuffer;
     private readonly VkBuffer _indexBuffer;
     private readonly VkBuffer _uvBuffer;
+
+    private readonly QuadRenderer _quadRenderer;
     
     private static readonly Vertex[] BaseVertices =
     [
@@ -169,6 +172,12 @@ internal sealed unsafe class WorldLayer : IDisposable
         factory.UpdateBuffer(_uvBuffer, MemoryMarshal.AsBytes(new ReadOnlySpan<Vector2D<float>>(Uvs)));
 
         #endregion
+
+        _quadRenderer = new QuadRenderer(factory, _textureArray, _sampler, new QuadRendererDescription
+        {
+            ColorFormat = TextureFormat.B8G8R8A8Srgb,
+            DepthFormat = TextureFormat.D32Sfloat
+        });
     }
 
     public void OnResize(Vector2D<int> framebufferSize)
@@ -296,7 +305,49 @@ internal sealed unsafe class WorldLayer : IDisposable
         pass.SetVertexBuffer(_vertexBuffer);
         pass.SetIndexBuffer(_indexBuffer, IndexType.UInt16);
         pass.DrawIndexed(6);
-
+        
+        _quadRenderer.SetCamera(ortho);
+        
+        _quadRenderer.DrawTextured2D(
+            new Vector2(0, 0),
+            new Vector2(100, 100),
+            MathF.PI / 4.0f,
+            _textureIndex2,
+            Vector2.Zero,
+            Vector2.One,
+            new Vector4(0.5f, 0.5f, 0.5f, 1.0f),
+            anchor: QuadAnchor.TopLeft
+            
+            );
+        
+        _quadRenderer.DrawSolid2D(
+            new Vector2(100, 0),
+            new Vector2(100, 100),
+            MathF.PI / 4.0f,
+            new Vector4(0.5f, 0.5f, 0.5f, 1.0f),
+            anchor: QuadAnchor.TopLeft
+        );
+        
+        _quadRenderer.DrawCircle2D(
+            new Vector2(200, 0),
+            50.0f,
+            new Vector4(0.5f, 0.5f, 0.5f, 1.0f),
+            anchor: QuadAnchor.TopLeft
+        );
+        
+        _quadRenderer.DrawGradient2D(
+            new Vector2(350, 50),
+            new Vector2(100, 100),
+            MathF.PI / 4.0f,
+            new Vector4(1, 0, 0, 1.0f),
+            new Vector4(0, 1, 0, 1.0f),
+            new Vector4(0, 0, 1, 1.0f),
+            new Vector4(1, 1, 1, 1.0f),
+            anchor: QuadAnchor.Center
+        );
+        
+        _quadRenderer.Flush(frame, pass);
+        
         _textRenderer.Flush(frame, pass);
 
         _textRenderer.SetCamera(_camera.ViewProj);
@@ -346,5 +397,6 @@ internal sealed unsafe class WorldLayer : IDisposable
         _vertexBuffer.Dispose();
         _indexBuffer.Dispose();
         _uvBuffer.Dispose();
+        _quadRenderer.Dispose();
     }
 }

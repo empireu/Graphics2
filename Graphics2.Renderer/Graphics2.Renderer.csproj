@@ -17,6 +17,7 @@
 
     <ItemGroup>
         <EmbeddedResource Include="Shaders\Text.slang" />
+        <EmbeddedResource Include="Shaders\Quad.slang" />
         <EmbeddedResource Include="Fonts\Inter.ttf" />
     </ItemGroup>
 
