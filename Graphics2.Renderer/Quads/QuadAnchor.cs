@@ -13,7 +13,7 @@ public enum QuadAnchor
 
 public static class QuadAnchorExtensions
 {
-    public static Vector2 Offset(this QuadAnchor anchor, Vector2 size)
+    public static Vector2 Offset2D(this QuadAnchor anchor, Vector2 size)
     {
         return anchor switch
         {

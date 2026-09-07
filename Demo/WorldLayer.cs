@@ -55,7 +55,8 @@ internal sealed unsafe class WorldLayer : IDisposable
     private readonly VkBuffer _indexBuffer;
     private readonly VkBuffer _uvBuffer;
 
-    private readonly QuadRenderer _quadRenderer;
+    private readonly QuadRenderer2D _quadRenderer2D;
+    private readonly QuadRenderer3D _quadRenderer3D;
     
     private static readonly Vertex[] BaseVertices =
     [
@@ -173,10 +174,18 @@ internal sealed unsafe class WorldLayer : IDisposable
 
         #endregion
 
-        _quadRenderer = new QuadRenderer(factory, _textureArray, _sampler, new QuadRendererDescription
+        _quadRenderer2D = new QuadRenderer2D(factory, _textureArray, _sampler, new QuadRendererDescription
         {
             ColorFormat = TextureFormat.B8G8R8A8Srgb,
             DepthFormat = TextureFormat.D32Sfloat
+        });
+
+        _quadRenderer3D = new QuadRenderer3D(factory, _textureArray, _sampler, new QuadRendererDescription
+        {
+            ColorFormat = TextureFormat.B8G8R8A8Srgb,
+            DepthFormat = TextureFormat.D32Sfloat,
+            DepthTest = true,
+            DepthWrite = true
         });
     }
 
@@ -306,9 +315,10 @@ internal sealed unsafe class WorldLayer : IDisposable
         pass.SetIndexBuffer(_indexBuffer, IndexType.UInt16);
         pass.DrawIndexed(6);
         
-        _quadRenderer.SetCamera(ortho);
+        /*
+        _quadRenderer2D.SetCamera(ortho);
         
-        _quadRenderer.DrawTextured2D(
+        _quadRenderer2D.DrawTextured2D(
             new Vector2(0, 0),
             new Vector2(100, 100),
             MathF.PI / 4.0f,
@@ -320,7 +330,7 @@ internal sealed unsafe class WorldLayer : IDisposable
             
             );
         
-        _quadRenderer.DrawSolid2D(
+        _quadRenderer2D.DrawSolid2D(
             new Vector2(100, 0),
             new Vector2(100, 100),
             MathF.PI / 4.0f,
@@ -328,14 +338,14 @@ internal sealed unsafe class WorldLayer : IDisposable
             anchor: QuadAnchor.TopLeft
         );
         
-        _quadRenderer.DrawCircle2D(
+        _quadRenderer2D.DrawCircle2D(
             new Vector2(200, 0),
             50.0f,
             new Vector4(0.5f, 0.5f, 0.5f, 1.0f),
             anchor: QuadAnchor.TopLeft
         );
         
-        _quadRenderer.DrawGradient2D(
+        _quadRenderer2D.DrawGradient2D(
             new Vector2(350, 50),
             new Vector2(100, 100),
             MathF.PI / 4.0f,
@@ -346,12 +356,29 @@ internal sealed unsafe class WorldLayer : IDisposable
             anchor: QuadAnchor.Center
         );
         
-        _quadRenderer.Flush(frame, pass);
+        _quadRenderer2D.Flush(frame, pass);
+
+        _quadRenderer3D.DrawSolid3D(
+            new Vector3(-1, 1, 0),
+            new Vector3(1, 0, 0),
+            new Vector3(0, 1, 0),
+            new Vector2(1, 1),
+            new Vector4(1, 0, 0, 0.5f)
+        );
+        _quadRenderer3D.DrawBillboard3D(
+            new Vector3(1, 1, 0),
+            _camera.Forward,
+            new Vector2(1, 1),
+            new Vector4(0, 1, 0, 0.5f)
+        );
+        */
+        
+        _quadRenderer3D.SetCamera(_camera.ViewProj);
         
         _textRenderer.Flush(frame, pass);
 
         _textRenderer.SetCamera(_camera.ViewProj);
-        _textRenderer.DrawString3DOriented(
+        /*_textRenderer.DrawString3DOriented(
             frame,
             "DrawString3D A",
             new Vector3(1, 1, 0),
@@ -372,7 +399,28 @@ internal sealed unsafe class WorldLayer : IDisposable
             new Vector4(0, 1, 0, 1),
             anchor: TextAnchor.Center,
             maxWidth: 100
+        );*/
+        
+        var sz = _textRenderer.DrawString3DBillboard(
+            frame, "Label",
+            new Vector3(1, 1, 0),
+            _camera.Forward,
+            1.0f, 
+            new Vector4(1, 1, 1, 1),
+            anchor: TextAnchor.Center
         );
+        
+        _quadRenderer3D.DrawTexturedBillboard3D(
+            new Vector3(1, 1, 0),
+            _camera.Forward,
+            new Vector2(sz.X, sz.Y),
+            _textureIndex2,
+            Vector2.Zero,
+            Vector2.One,
+            new Vector4(1, 1, 1, 1)
+        );
+        
+        _quadRenderer3D.Flush(frame, pass);
         
         _textRenderer.Flush(frame, pass);
         
@@ -397,6 +445,7 @@ internal sealed unsafe class WorldLayer : IDisposable
         _vertexBuffer.Dispose();
         _indexBuffer.Dispose();
         _uvBuffer.Dispose();
-        _quadRenderer.Dispose();
+        _quadRenderer2D.Dispose();
+        _quadRenderer3D.Dispose();
     }
 }

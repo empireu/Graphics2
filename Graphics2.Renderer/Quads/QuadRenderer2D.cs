@@ -6,9 +6,48 @@ using Graphics2.Core.Resources;
 
 namespace Graphics2.Renderer.Quads;
 
-public sealed unsafe class QuadRenderer : IDisposable
+[StructLayout(LayoutKind.Sequential)]
+public struct SolidQuad2DSsbo
 {
-    private static readonly string ShaderSource = Helpers.GetResourceText(typeof(QuadRenderer).Assembly, "Graphics2.Renderer.Shaders.Quad.slang");
+    public Vector4 Position;
+    public Vector4 Color;
+    public Vector2 Size;
+    private Vector2 _pad;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct TexturedQuad2DSsbo
+{
+    public Vector4 Position;
+    public Vector4 Color;
+    public Vector2 Size;
+    public Vector2 UvMin;
+    public Vector2 UvMax;
+    private Vector2 _pad;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct CircleQuad2DSsbo
+{
+    public Vector4 Position;
+    public Vector4 Color;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct GradientQuad2DSsbo
+{
+    public Vector4 Position;
+    public Vector4 Color0;
+    public Vector4 Color1;
+    public Vector4 Color2;
+    public Vector4 Color3;
+    public Vector2 Size;
+    private Vector2 _pad;
+}
+
+public sealed unsafe class QuadRenderer2D : IDisposable
+{
+    private static readonly string ShaderSource = Helpers.GetResourceText(typeof(QuadRenderer2D).Assembly, "Graphics2.Renderer.Shaders.Quad2D.slang");
 
     private readonly TextureArray? _textures;
     private readonly VkSampler? _sampler;
@@ -25,7 +64,7 @@ public sealed unsafe class QuadRenderer : IDisposable
     private Matrix4x4 _viewProj;
     private int _disposed;
 
-    public QuadRenderer(
+    public QuadRenderer2D(
         VulkanResourceFactory factory,
         TextureArray? textures,
         VkSampler? sampler,
@@ -115,7 +154,7 @@ public sealed unsafe class QuadRenderer : IDisposable
 
     public void DrawSolid2D(Vector2 position, Vector2 size, float rotation, Vector4 color, QuadAnchor anchor = QuadAnchor.TopLeft)
     {
-        var topLeft = position + anchor.Offset(size);
+        var topLeft = position + anchor.Offset2D(size);
         _solidQuads.Add(new SolidQuad2DSsbo
         {
             Position = new Vector4(topLeft, rotation, 0.0f),
@@ -131,7 +170,7 @@ public sealed unsafe class QuadRenderer : IDisposable
             throw new InvalidOperationException("QuadRenderer was created without a TextureArray and sampler.");
         }
 
-        var topLeft = position + anchor.Offset(size);
+        var topLeft = position + anchor.Offset2D(size);
         _texturedQuads.Add(new TexturedQuad2DSsbo
         {
             Position = new Vector4(topLeft, rotation, textureIndex),
@@ -145,7 +184,7 @@ public sealed unsafe class QuadRenderer : IDisposable
     public void DrawCircle2D(Vector2 position, float radius, Vector4 color, QuadAnchor anchor = QuadAnchor.Center)
     {
         var diameter = new Vector2(radius * 2.0f, radius * 2.0f);
-        var center = position + new Vector2(radius, radius) + anchor.Offset(diameter);
+        var center = position + new Vector2(radius, radius) + anchor.Offset2D(diameter);
         _circleQuads.Add(new CircleQuad2DSsbo
         {
             Position = new Vector4(center, radius, 0.0f),
@@ -155,7 +194,7 @@ public sealed unsafe class QuadRenderer : IDisposable
 
     public void DrawGradient2D(Vector2 position, Vector2 size, float rotation, Vector4 color0, Vector4 color1, Vector4 color2, Vector4 color3, QuadAnchor anchor = QuadAnchor.TopLeft)
     {
-        var topLeft = position + anchor.Offset(size);
+        var topLeft = position + anchor.Offset2D(size);
         _gradientQuads.Add(new GradientQuad2DSsbo
         {
             Position = new Vector4(topLeft, rotation, 0.0f),

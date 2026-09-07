@@ -150,7 +150,7 @@ public sealed unsafe class TextRenderer : IDisposable
         }
     }
 
-    public void DrawString3DOriented(
+    public Vector2 DrawString3DOriented(
         Frame frame,
         ReadOnlySpan<char> text,
         Vector3 worldPos,
@@ -169,7 +169,7 @@ public sealed unsafe class TextRenderer : IDisposable
         var measure = TextLayout.Measure(_atlas, text, maxWidth);
         var anchorOffset = anchor.Offset(measure, _atlas.Font.Metrics.Ascent);
 
-        TextLayout.Layout(
+        var size = TextLayout.Layout(
             out var quadCount,
             _buffer,
             frame,
@@ -194,6 +194,8 @@ public sealed unsafe class TextRenderer : IDisposable
                 Color = color
             });
         }
+
+        return size * pixelScale;
     }
 
     public void DrawString3DBillboard(
@@ -213,12 +215,26 @@ public sealed unsafe class TextRenderer : IDisposable
         var distance = Vector3.Distance(worldPos, cameraPos);
         var worldHeight = screenHeight * 2.0f * MathF.Tan(fov * 0.5f) * distance / viewportHeight;
 
+        DrawString3DBillboard(frame, text, worldPos, cameraForward, worldHeight, color, maxWidth, worldUp, anchor);
+    }
+
+    public Vector2 DrawString3DBillboard(
+        Frame frame,
+        ReadOnlySpan<char> text,
+        Vector3 worldPos,
+        Vector3 cameraForward,
+        float worldHeight,
+        Vector4 color,
+        float maxWidth = 0.0f,
+        Vector3? worldUp = null,
+        TextAnchor anchor = TextAnchor.TopLeft)
+    {
         var upRef = worldUp ?? Vector3.UnitY;
         var forward = Vector3.Normalize(cameraForward);
         var right = Vector3.Normalize(Vector3.Cross(forward, upRef));
         var up = Vector3.Normalize(Vector3.Cross(right, forward));
 
-        DrawString3DOriented(frame, text, worldPos, right, up, worldHeight, color, maxWidth, anchor);
+        return DrawString3DOriented(frame, text, worldPos, right, up, worldHeight, color, maxWidth, anchor);
     }
 
     public void Flush(Frame frame, RenderPassEncoder pass)
