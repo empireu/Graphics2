@@ -121,5 +121,5 @@ public sealed unsafe class Frame
         CopyBufferToImage(src.Buffer, src.Offset, dst, x, y, width, height);
     }
 
-    public RenderPassEncoder BeginRenderPass(RenderPassDescriptor descriptor) => RenderPassEncoder.Begin(Device, DescriptorPool, CommandBuffer, descriptor, Extent, _pendingCopies, _pendingImageCopies);
+    public RenderPassEncoder BeginRenderPass(RenderPassDescription description) => RenderPassEncoder.Begin(Device, DescriptorPool, CommandBuffer, description, Extent, _pendingCopies, _pendingImageCopies);
 }

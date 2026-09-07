@@ -237,7 +237,7 @@ public sealed unsafe class TextRenderer : IDisposable
         return DrawString3DOriented(frame, text, worldPos, right, up, worldHeight, color, maxWidth, anchor);
     }
 
-    public void Flush(Frame frame, RenderPassEncoder pass)
+    public void Submit(Frame frame, RenderPassEncoder pass)
     {
         if (_quads.Count == 0)
         {

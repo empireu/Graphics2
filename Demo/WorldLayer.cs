@@ -1,6 +1,4 @@
 ﻿using System.Numerics;
-using System.Runtime.InteropServices;
-using Graphics2.Assets;
 using Graphics2.Core;
 using Graphics2.Core.Render;
 using Graphics2.Core.Resources;
@@ -14,35 +12,10 @@ using Silk.NET.Maths;
 
 namespace Demo;
 
-struct Vertex(Vector2D<float> position)
-{
-    public Vector2D<float> Position = position;
-}
-
-struct PushConstants(float rotation, float time, uint textureIndex2, uint textureIndex3)
-{
-    public float Rotation = rotation;
-    public float Time = time;
-    public uint TextureIndex2 = textureIndex2;
-    public uint TextureIndex3 = textureIndex3;
-}
-
-struct Camera(Matrix4x4 viewProj)
-{
-    public Matrix4x4 ViewProj = viewProj;
-}
-
 internal sealed unsafe class WorldLayer : IDisposable
 {
     private readonly App _app;
     
-    private readonly Texture _texture;
-    private readonly Texture _texture2;
-    private readonly Texture _texture3;
-    private readonly TextureArray _textureArray;
-    private readonly uint _textureIndex2;
-    private readonly uint _textureIndex3;
-    private readonly VkSampler _sampler;
     private readonly ImGuiRenderer _imGui;
     private readonly VkSampler _textSampler;
     private readonly GlyphAtlas _glyphAtlas;
@@ -51,40 +24,13 @@ internal sealed unsafe class WorldLayer : IDisposable
 
     private Texture? _depthTexture;
 
-    private readonly Pipeline _pipeline;
-    private readonly VkBuffer _vertexBuffer;
-    private readonly VkBuffer _indexBuffer;
-    private readonly VkBuffer _uvBuffer;
-
     private readonly QuadRenderer2D _quadRenderer2D;
-    private readonly QuadRenderer3D _quadRenderer3D;
+    private readonly QuadRenderer3D _overlayQuadRenderer3D;
     private readonly LineRenderer3D _lineRenderer3D;
-    
-    private static readonly Vertex[] BaseVertices =
-    [
-        new(new Vector2D<float>(-0.5f, -0.5f)),
-        new(new Vector2D<float>(0.5f, -0.5f)),
-        new(new Vector2D<float>(-0.5f, 0.5f)),
-        new(new Vector2D<float>(0.5f, 0.5f))
-    ];
-    private static readonly Vector2D<float>[] Uvs =
-    [
-        new(0.0f, 1.0f),
-        new(1.0f, 1.0f),
-        new(0.0f, 0.0f),
-        new(1.0f, 0.0f)
-    ];
     
     private int _frames;
     private double _time;
     private readonly Camera3D _camera = new();
-
-    private Texture LoadTexture(string name)
-    {
-        var dir = AppContext.BaseDirectory;
-        using var stream = File.OpenRead(Path.Combine(dir, name));
-        return _app.Factory.LoadTexture(stream);
-    }
     
     public WorldLayer(App app)
     {
@@ -93,19 +39,6 @@ internal sealed unsafe class WorldLayer : IDisposable
         #region Assets and ImGui
 
         var factory = app.Factory;
-        
-        _texture = LoadTexture("image1.png");
-        _texture2 = LoadTexture("image2.png");
-        _texture3 = LoadTexture("image3.png");
-        
-        _textureArray = factory.CreateTextureArray(1024);
-        _textureIndex2 = _textureArray.Add(_texture2);
-        _textureIndex3 = _textureArray.Add(_texture3);
-
-        _sampler = factory.CreateSampler(new SamplerDescription
-        {
-            AnisotropyEnabled = true
-        });
 
         _imGui = new ImGuiRenderer(factory);
         _imGui.Initialize(
@@ -115,6 +48,7 @@ internal sealed unsafe class WorldLayer : IDisposable
         );
 
         var font = Font.CreateDefault(48.0f, RasterizationMode.Sdf);
+       
         _textSampler = factory.CreateSampler(new SamplerDescription
         {
             AnisotropyEnabled = false
@@ -130,72 +64,34 @@ internal sealed unsafe class WorldLayer : IDisposable
             {
                 ColorFormat = TextureFormat.B8G8R8A8Srgb,
                 DepthFormat = TextureFormat.D32Sfloat,
-                SdfSmoothing = 0.015f
+                SdfSmoothing = 0.015f,
+                DepthTest = false,
+                DepthWrite = false
             });
 
         #endregion
 
-        #region Resources
-
-        _pipeline = factory.CreatePipeline(new PipelineDescription
-        {
-            Source = Assets.GetResourceText("Demo.Shaders.Shader.slang"),
-            VertexEntryPoint = "vsMain",
-            FragmentEntryPoint = "fsMain",
-            ColorAttachments = [TextureFormat.B8G8R8A8Srgb],
-            DepthAttachment = TextureFormat.D32Sfloat,
-            DepthTest = false,
-            DepthWrite = false,
-            CullMode = CullMode.None,
-            VertexLayout = VertexLayout.FromStruct<Vertex>(),
-            PushConstantLayout = PushConstantLayout.FromStruct<PushConstants>()
-        });
-
-        _vertexBuffer = factory.CreateBuffer(new BufferDescription
-        {
-            Size = sizeof(Vertex) * 4,
-            Usage = BufferUsage.Vertex | BufferUsage.TransferDestination
-        });
-
-        _indexBuffer = factory.CreateBuffer(new BufferDescription
-        {
-            Size = sizeof(ushort) * 6,
-            Usage = BufferUsage.Index | BufferUsage.TransferDestination
-        });
-
-        var indices = new ReadOnlySpan<ushort>([0, 1, 2, 2, 1, 3]);
-        factory.UpdateBuffer(_indexBuffer, MemoryMarshal.AsBytes(indices));
-
-        _uvBuffer = factory.CreateBuffer(new BufferDescription
-        {
-            Size = sizeof(Vector2D<float>) * 4,
-            Usage = BufferUsage.Storage | BufferUsage.TransferDestination
-        });
-
-        factory.UpdateBuffer(_uvBuffer, MemoryMarshal.AsBytes(new ReadOnlySpan<Vector2D<float>>(Uvs)));
-
-        #endregion
-
-        _quadRenderer2D = new QuadRenderer2D(factory, _textureArray, _sampler, new QuadRendererDescription
+        _quadRenderer2D = new QuadRenderer2D(factory, null, null, new PrimitiveRendererDescription
         {
             ColorFormat = TextureFormat.B8G8R8A8Srgb,
             DepthFormat = TextureFormat.D32Sfloat
         });
 
-        _quadRenderer3D = new QuadRenderer3D(factory, _textureArray, _sampler, new QuadRendererDescription
+        _overlayQuadRenderer3D = new QuadRenderer3D(factory, null, null, new PrimitiveRendererDescription
         {
             ColorFormat = TextureFormat.B8G8R8A8Srgb,
             DepthFormat = TextureFormat.D32Sfloat,
-            DepthTest = true,
-            DepthWrite = true
+            DepthTest = false,
+            DepthWrite = false
         });
 
-        _lineRenderer3D = new LineRenderer3D(factory, new QuadRendererDescription
+        _lineRenderer3D = new LineRenderer3D(factory, new PrimitiveRendererDescription
         {
             ColorFormat = TextureFormat.B8G8R8A8Srgb,
             DepthFormat = TextureFormat.D32Sfloat,
             DepthTest = true,
-            DepthWrite = true
+            DepthWrite = true,
+            Blends = [new BlendState(true, BlendFactor.One, BlendFactor.One)]
         });
     }
 
@@ -228,7 +124,6 @@ internal sealed unsafe class WorldLayer : IDisposable
         }
 
         _camera.Update((float)deltaTime, input, _app.G2Wnd.Window.FramebufferSize);
-
         _imGui.Update((float)deltaTime, input, _app.G2Wnd.Window.FramebufferSize);
 
         ImGui.PushStyleColor(ImGuiCol.WindowBg, new Vector4(0, 0, 0, 0));
@@ -261,29 +156,16 @@ internal sealed unsafe class WorldLayer : IDisposable
 
         ImGui.End();
 
-        Span<Vertex> vertices = stackalloc Vertex[4];
-        for (var i = 0; i < 4; i++)
-        {
-            vertices[i] = new Vertex(new Vector2D<float>(1.0f, 1.0f) + BaseVertices[i].Position * 0.1f);
-        }
-
-        var vertexAlloc = frame.Allocate((uint)(sizeof(Vertex) * 4), 4);
-        MemoryMarshal.AsBytes(vertices).CopyTo(vertexAlloc.Data);
-        frame.CopyBuffer(vertexAlloc, _vertexBuffer);
-
         if (!_textInitialized)
         {
             _glyphAtlas.PrepopulateCommons(frame);
             _textInitialized = true;
         }
-
-        var extent = frame.Extent;
-        var ortho = Matrix4x4.CreateOrthographicOffCenter(0, extent.X, 0, extent.Y, -1, 1);
-        _textRenderer.SetCamera(ortho);
+        
         _textRenderer.DrawString2D(frame, "Hello, World!", new Vector2(0, 0), new Vector4(1, 1, 1, 1));
         _textRenderer.DrawString2D(frame, $"FPS: {1.0 / (_averageTime.Sum() / _averageTime.Count):F2}", new Vector2(50, 110), new Vector4(0, 1, 0, 1));
-        
-        using var pass = frame.BeginRenderPass(new RenderPassDescriptor
+
+        var screenPassDescription = new RenderPassDescription
         {
             ColorAttachments =
             [
@@ -291,6 +173,117 @@ internal sealed unsafe class WorldLayer : IDisposable
                 {
                     Target = frame.SwapchainColorTarget,
                     LoadOp = LoadOp.Clear,
+                    StoreOp = StoreOp.Store,
+                    ClearValue = new RgbaFloat(0f, 0f, 0f, 1f),
+                    FinalLayout = TextureLayout.Present
+                }
+            ]
+        };
+
+        using (var screenPass = frame.BeginRenderPass(screenPassDescription))
+        {
+            var extent = frame.Extent;
+            var ortho = Matrix4x4.CreateOrthographicOffCenter(0, extent.X, 0, extent.Y, -1, 1);
+            _textRenderer.SetCamera(ortho);
+            _textRenderer.Submit(frame, screenPass);
+        }
+        
+        _overlayQuadRenderer3D.SetCamera(_camera.ViewProj);
+        _textRenderer.SetCamera(_camera.ViewProj);
+        _lineRenderer3D.SetCamera(_camera.ViewProj, _camera.Position);
+
+        const float gizmoRadius = 2;
+        const float axisThickness = 0.05f;
+        const float gimbalThickness = 0.05f;
+        const int gizmoSegments = 128;
+
+        #region Labels
+
+        void SubmitLabel(string text, Vector3 unit)
+        {
+            var size = _textRenderer.DrawString3DBillboard(
+                frame, text,
+                gizmoRadius * unit,
+                _camera.Forward,
+                0.25f, 
+                new Vector4(
+                    Math.Abs(unit.X),
+                    Math.Abs(unit.Y),
+                    Math.Abs(unit.Z),
+                1),
+                anchor: TextAnchor.Center
+            );
+        
+            _overlayQuadRenderer3D.DrawBillboard3D(
+                gizmoRadius * unit,
+                _camera.Forward,
+                new Vector2(size.X, size.Y),
+                new Vector4(1, 1, 1, 1.0f) - new Vector4(Math.Abs(unit.X), Math.Abs(unit.Y), Math.Abs(unit.Z), 0.0f)
+            );
+        }
+        
+        SubmitLabel("+X", new Vector3(+1, 0, 0));
+        SubmitLabel("-X", new Vector3(-1, 0, 0));
+
+        SubmitLabel("+Y", new Vector3(0, +1, 0));
+        SubmitLabel("-Y", new Vector3(0, -1, 0));
+
+        SubmitLabel("+Z", new Vector3(0, 0, +1));
+        SubmitLabel("-Z", new Vector3(0, 0, -1));
+        
+        #endregion
+        
+        _lineRenderer3D.DrawLine3D(
+            new Vector3(-gizmoRadius, 0, 0),
+            new Vector3(+gizmoRadius, 0, 0),
+            axisThickness,
+            new Vector4(1, 0, 0, 1),
+            new Vector4(0.5f, 0, 0, 1)
+        );
+        
+        _lineRenderer3D.DrawLine3D(
+            new Vector3(0, -gizmoRadius, 0),
+            new Vector3(0, +gizmoRadius, 0),
+            axisThickness,
+            new Vector4(0, 1f, 0, 1),
+            new Vector4(0, 0.5f, 0, 1)
+        );
+        
+        _lineRenderer3D.DrawLine3D(
+            new Vector3(0, 0, -gizmoRadius),
+            new Vector3(0, 0, +gizmoRadius),
+            axisThickness,
+            new Vector4(0, 1, 0, 1),
+            new Vector4(0, 0.5f, 0, 1)
+        );
+
+        Span<Vector3> directions = [Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ];
+
+        for (var index = 0; index < directions.Length; index++)
+        {
+            var normal = directions[index];
+            var perpendicular = directions[(index + 1) % 3];
+            
+            for (var i = 1; i <= gizmoSegments; i++)
+            {
+                var q1 = Quaternion.CreateFromAxisAngle(normal, (i - 1) / (float)gizmoSegments * MathF.PI * 2.0f);
+                var q2 = Quaternion.CreateFromAxisAngle(normal, i / (float)gizmoSegments * MathF.PI * 2.0f);
+
+                var r1 = gizmoRadius * Vector3.Transform(perpendicular, q1);
+                var r2 = gizmoRadius * Vector3.Transform(perpendicular, q2);
+                
+                _lineRenderer3D.DrawLine3D(r1, r2, gimbalThickness, new Vector4(normal.X, normal.Y, normal.Z, 0.25f));
+            }
+        }
+        
+        using var pass = frame.BeginRenderPass(new RenderPassDescription
+        {
+            ColorAttachments =
+            [
+                new ColorAttachment
+                {
+                    Target = frame.SwapchainColorTarget,
+                    LoadOp = LoadOp.Load,
                     StoreOp = StoreOp.Store,
                     ClearValue = new RgbaFloat(0f, 0f, 0f, 1f),
                     FinalLayout = TextureLayout.Present
@@ -305,160 +298,11 @@ internal sealed unsafe class WorldLayer : IDisposable
                 FinalLayout = TextureLayout.DepthAttachment
             }
         });
-
-        pass.SetPipeline(_pipeline);
-        pass.SetViewport(0, 0, frame.Extent.X, frame.Extent.Y);
-        pass.SetScissor(0, 0, (uint)frame.Extent.X, (uint)frame.Extent.Y);
-
-        var cameraAlloc = frame.AllocateUniform((uint)sizeof(Camera));
-        var camera = new Camera(_camera.ViewProj);
-        MemoryMarshal.Write(cameraAlloc.Data, in camera);
-        pass.BindUniformBuffer("Camera", cameraAlloc);
-
-        pass.BindStorageBuffer("uvs", _uvBuffer);
-        pass.BindTexture("tex", _texture);
-        pass.BindSampler("samp", _sampler);
-        pass.BindTextureArray("textures", _textureArray);
-
-        pass.PushConstants(new PushConstants(0.0f, (float)_time, _textureIndex2, _textureIndex3));
-        pass.SetVertexBuffer(_vertexBuffer);
-        pass.SetIndexBuffer(_indexBuffer, IndexType.UInt16);
-        pass.DrawIndexed(6);
         
-        /*
-        _quadRenderer2D.SetCamera(ortho);
-        
-        _quadRenderer2D.DrawTextured2D(
-            new Vector2(0, 0),
-            new Vector2(100, 100),
-            MathF.PI / 4.0f,
-            _textureIndex2,
-            Vector2.Zero,
-            Vector2.One,
-            new Vector4(0.5f, 0.5f, 0.5f, 1.0f),
-            anchor: QuadAnchor.TopLeft
-            
-            );
-        
-        _quadRenderer2D.DrawSolid2D(
-            new Vector2(100, 0),
-            new Vector2(100, 100),
-            MathF.PI / 4.0f,
-            new Vector4(0.5f, 0.5f, 0.5f, 1.0f),
-            anchor: QuadAnchor.TopLeft
-        );
-        
-        _quadRenderer2D.DrawCircle2D(
-            new Vector2(200, 0),
-            50.0f,
-            new Vector4(0.5f, 0.5f, 0.5f, 1.0f),
-            anchor: QuadAnchor.TopLeft
-        );
-        
-        _quadRenderer2D.DrawGradient2D(
-            new Vector2(350, 50),
-            new Vector2(100, 100),
-            MathF.PI / 4.0f,
-            new Vector4(1, 0, 0, 1.0f),
-            new Vector4(0, 1, 0, 1.0f),
-            new Vector4(0, 0, 1, 1.0f),
-            new Vector4(1, 1, 1, 1.0f),
-            anchor: QuadAnchor.Center
-        );
-        
-        _quadRenderer2D.Flush(frame, pass);
-
-        _quadRenderer3D.DrawSolid3D(
-            new Vector3(-1, 1, 0),
-            new Vector3(1, 0, 0),
-            new Vector3(0, 1, 0),
-            new Vector2(1, 1),
-            new Vector4(1, 0, 0, 0.5f)
-        );
-        _quadRenderer3D.DrawBillboard3D(
-            new Vector3(1, 1, 0),
-            _camera.Forward,
-            new Vector2(1, 1),
-            new Vector4(0, 1, 0, 0.5f)
-        );
-        */
-        
-        _quadRenderer3D.SetCamera(_camera.ViewProj);
-        
-        _textRenderer.Flush(frame, pass);
-
-        _textRenderer.SetCamera(_camera.ViewProj);
-        /*_textRenderer.DrawString3DOriented(
-            frame,
-            "DrawString3D A",
-            new Vector3(1, 1, 0),
-            -new Vector3(1, 0, 0),
-            new Vector3(0, 1, 0),
-            1.0f, new Vector4(1, 0, 0, 1)
-        );
-        
-        _textRenderer.DrawString3DBillboard(
-            frame,
-            "DrawString3D A\nDrawString3D B",
-            new Vector3(1, 1, 0),
-            _camera.Position,
-            _camera.Forward,
-            _camera.Fov,
-            _app.G2Wnd.Window.FramebufferSize.Y,
-            100.0f,
-            new Vector4(0, 1, 0, 1),
-            anchor: TextAnchor.Center,
-            maxWidth: 100
-        );*/
-        
-        var sz = _textRenderer.DrawString3DBillboard(
-            frame, "Label",
-            new Vector3(1, 1, 0),
-            _camera.Forward,
-            1.0f, 
-            new Vector4(1, 1, 1, 1),
-            anchor: TextAnchor.Center
-        );
-        
-        _quadRenderer3D.DrawTexturedBillboard3D(
-            new Vector3(1, 1, 0),
-            _camera.Forward,
-            new Vector2(sz.X, sz.Y),
-            _textureIndex2,
-            Vector2.Zero,
-            Vector2.One,
-            new Vector4(1, 1, 1, 1)
-        );
-        
-        _quadRenderer3D.Flush(frame, pass);
-
-        _lineRenderer3D.SetCamera(_camera.ViewProj, _camera.Position);
-        _lineRenderer3D.DrawLine3D(
-            new Vector3(-2, 0, 0),
-            new Vector3(2, 0, 0),
-            0.05f,
-            new Vector4(1, 0, 0, 1),
-            new Vector4(0.5f, 0, 0, 1)
-        );
-        _lineRenderer3D.DrawLine3D(
-            new Vector3(0, 0, -2),
-            new Vector3(0, 0, 2),
-            0.05f,
-            new Vector4(0, 0, 1, 1),
-            new Vector4(0, 0, 0.5f, 1)
-        );
-        _lineRenderer3D.DrawLine3D(
-            new Vector3(0, 0, 0),
-            new Vector3(0, 3, 0),
-            0.05f,
-            new Vector4(0, 1, 0, 1),
-            new Vector4(0, 0.5f, 0, 1)
-        );
-        _lineRenderer3D.Flush(frame, pass);
-
-        _textRenderer.Flush(frame, pass);
-        
-        _imGui.Render(frame, pass);
+        _lineRenderer3D.Submit(frame, pass);
+        _overlayQuadRenderer3D.Submit(frame, pass);
+        _textRenderer.Submit(frame, pass);
+        _imGui.Submit(frame, pass);
 
         _time += deltaTime;
     }
@@ -469,18 +313,9 @@ internal sealed unsafe class WorldLayer : IDisposable
         _textRenderer.Dispose();
         _glyphAtlas.Dispose();
         _textSampler.Dispose();
-        _pipeline.Dispose();
         _depthTexture?.Dispose();
-        _textureArray.Dispose();
-        _texture.Dispose();
-        _texture2.Dispose();
-        _texture3.Dispose();
-        _sampler.Dispose();
-        _vertexBuffer.Dispose();
-        _indexBuffer.Dispose();
-        _uvBuffer.Dispose();
         _quadRenderer2D.Dispose();
-        _quadRenderer3D.Dispose();
+        _overlayQuadRenderer3D.Dispose();
         _lineRenderer3D.Dispose();
     }
 }

@@ -68,7 +68,7 @@ public sealed unsafe class QuadRenderer2D : IDisposable
         VulkanResourceFactory factory,
         TextureArray? textures,
         VkSampler? sampler,
-        QuadRendererDescription description)
+        PrimitiveRendererDescription description)
     {
         _textures = textures;
         _sampler = sampler;
@@ -85,7 +85,7 @@ public sealed unsafe class QuadRenderer2D : IDisposable
             DepthTest = description.DepthTest,
             DepthWrite = description.DepthWrite,
             CullMode = CullMode.None,
-            Blends = [BlendState.AlphaBlend],
+            Blends = description.Blends,
             SsboLayouts = new Dictionary<string, SsboLayout>
             {
                 ["solidQuads"] = SsboLayout.FromStruct<SolidQuad2DSsbo>()
@@ -104,7 +104,7 @@ public sealed unsafe class QuadRenderer2D : IDisposable
                 DepthTest = description.DepthTest,
                 DepthWrite = description.DepthWrite,
                 CullMode = CullMode.None,
-                Blends = [BlendState.AlphaBlend],
+                Blends = description.Blends,
                 SsboLayouts = new Dictionary<string, SsboLayout>
                 {
                     ["texturedQuads"] = SsboLayout.FromStruct<TexturedQuad2DSsbo>()
@@ -122,7 +122,7 @@ public sealed unsafe class QuadRenderer2D : IDisposable
             DepthTest = description.DepthTest,
             DepthWrite = description.DepthWrite,
             CullMode = CullMode.None,
-            Blends = [BlendState.AlphaBlend],
+            Blends = description.Blends,
             SsboLayouts = new Dictionary<string, SsboLayout>
             {
                 ["circleQuads"] = SsboLayout.FromStruct<CircleQuad2DSsbo>()
@@ -139,7 +139,7 @@ public sealed unsafe class QuadRenderer2D : IDisposable
             DepthTest = description.DepthTest,
             DepthWrite = description.DepthWrite,
             CullMode = CullMode.None,
-            Blends = [BlendState.AlphaBlend],
+            Blends = description.Blends,
             SsboLayouts = new Dictionary<string, SsboLayout>
             {
                 ["gradientQuads"] = SsboLayout.FromStruct<GradientQuad2DSsbo>()
@@ -206,7 +206,7 @@ public sealed unsafe class QuadRenderer2D : IDisposable
         });
     }
 
-    public void Flush(Frame frame, RenderPassEncoder pass)
+    public void Submit(Frame frame, RenderPassEncoder pass)
     {
         if (_solidQuads.Count > 0)
         {

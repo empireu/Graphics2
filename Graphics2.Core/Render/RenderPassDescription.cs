@@ -2,7 +2,7 @@ using Silk.NET.Maths;
 
 namespace Graphics2.Core.Render;
 
-public sealed class RenderPassDescriptor
+public sealed class RenderPassDescription
 {
     public Box2D<int>? RenderArea { get; init; }
 

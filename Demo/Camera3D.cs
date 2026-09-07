@@ -23,6 +23,8 @@ internal sealed class Camera3D
 
     public bool FpsMode { get; private set; }
 
+    private bool _switchedMode;
+    
     public void ToggleFpsMode(G2Window window)
     {
         FpsMode = !FpsMode;
@@ -30,6 +32,8 @@ internal sealed class Camera3D
         window.CursorMode = FpsMode
             ? G2CursorMode.Disabled
             : G2CursorMode.Normal;
+
+        _switchedMode = true;
     }
 
     public void Update(float deltaTime, InputSnapshot input, Vector2D<int> framebufferSize)
@@ -40,44 +44,46 @@ internal sealed class Camera3D
         {
             return;
         }
-
-        var mouseDelta = input.MousePosition - input.PreviousMousePosition;
-        Yaw -= mouseDelta.X * LookSensitivity;
-        Pitch -= mouseDelta.Y * LookSensitivity;
-        Pitch = Math.Clamp(Pitch, -MaxPitch, MaxPitch);
-
-        var forward = Forward;
-        var right = Right;
-
+        
+        if (!_switchedMode)
+        {
+            var mouseDelta = input.MousePosition - input.PreviousMousePosition;
+            Yaw -= mouseDelta.X * LookSensitivity;
+            Pitch -= mouseDelta.Y * LookSensitivity;
+            Pitch = Math.Clamp(Pitch, -MaxPitch, MaxPitch);
+        }
+        
+        _switchedMode = false;
+      
         var move = Vector3.Zero;
         if (input.IsKeyDown(G2Key.W))
         {
-            move += forward;
+            move += Forward;
         }
 
         if (input.IsKeyDown(G2Key.S))
         {
-            move -= forward;
+            move -= Forward;
         }
 
         if (input.IsKeyDown(G2Key.A))
         {
-            move -= right;
+            move -= Right;
         }
 
         if (input.IsKeyDown(G2Key.D))
         {
-            move += right;
+            move += Right;
         }
 
         if (input.IsKeyDown(G2Key.Space))
         {
-            move += Vector3.UnitY;
+            move += Up;
         }
 
         if (input.IsKeyDown(G2Key.C))
         {
-            move -= Vector3.UnitY;
+            move -= Up;
         }
 
         if (move != Vector3.Zero)
@@ -101,18 +107,12 @@ internal sealed class Camera3D
 
     public void SetAspect(Vector2D<int> framebufferSize)
     {
-        _aspect = framebufferSize.Y > 0 ? (float)framebufferSize.X / framebufferSize.Y : 1.0f;
+        _aspect = framebufferSize.Y > 0 
+            ? (float)framebufferSize.X / framebufferSize.Y
+            : 1.0f;
     }
 
-    public Vector3 Forward => new(
-        MathF.Cos(Pitch) * MathF.Sin(Yaw),
-        MathF.Sin(Pitch),
-        MathF.Cos(Pitch) * MathF.Cos(Yaw)
-    );
-
-    public Vector3 Right => new(
-        -MathF.Cos(Yaw),
-        0.0f,
-        MathF.Sin(Yaw)
-    );
+    public Vector3 Forward => new(MathF.Cos(Pitch) * MathF.Sin(Yaw), MathF.Sin(Pitch), MathF.Cos(Pitch) * MathF.Cos(Yaw));
+    public Vector3 Right => new(-MathF.Cos(Yaw), 0.0f, MathF.Sin(Yaw));
+    public Vector3 Up => Vector3.Cross(Right, Forward);
 }

@@ -33,9 +33,7 @@ public sealed unsafe class LineRenderer3D : IDisposable
     private LineCameraData _camera;
     private int _disposed;
 
-    public LineRenderer3D(
-        VulkanResourceFactory factory,
-        QuadRendererDescription description)
+    public LineRenderer3D(VulkanResourceFactory factory, PrimitiveRendererDescription description)
     {
         var depthAttachment = description.DepthFormat ?? TextureFormat.D32Sfloat;
 
@@ -49,7 +47,7 @@ public sealed unsafe class LineRenderer3D : IDisposable
             DepthTest = description.DepthTest,
             DepthWrite = description.DepthWrite,
             CullMode = CullMode.None,
-            Blends = [BlendState.AlphaBlend],
+            Blends = description.Blends,
             SsboLayouts = new Dictionary<string, SsboLayout>
             {
                 ["lines"] = SsboLayout.FromStruct<Line3DSsbo>()
@@ -82,7 +80,7 @@ public sealed unsafe class LineRenderer3D : IDisposable
         });
     }
 
-    public void Flush(Frame frame, RenderPassEncoder pass)
+    public void Submit(Frame frame, RenderPassEncoder pass)
     {
         if (_lines.Count == 0)
         {

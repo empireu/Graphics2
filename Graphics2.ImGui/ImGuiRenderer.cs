@@ -197,7 +197,7 @@ public sealed unsafe class ImGuiRenderer(VulkanResourceFactory factory) : IDispo
         }
     }
 
-    public void Render(Frame frame, RenderPassEncoder pass)
+    public void Submit(Frame frame, RenderPassEncoder pass)
     {
         ImGuiNET.ImGui.Render();
         var drawData = ImGuiNET.ImGui.GetDrawData();

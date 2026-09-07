@@ -16,7 +16,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
     private readonly Vk _vk;
     private readonly DescriptorPool _descriptorPool;
     private readonly CommandBuffer _cmd;
-    private readonly RenderPassDescriptor _descriptor;
+    private readonly RenderPassDescription _description;
     private readonly Vector2D<int> _defaultExtent;
     private readonly HashSet<ulong> _pendingCopies;
     private readonly HashSet<VkTexture> _pendingImageCopies;
@@ -25,36 +25,36 @@ public sealed unsafe class RenderPassEncoder : IDisposable
     private bool _descriptorsDirty;
     private bool _ended;
 
-    private RenderPassEncoder(VkDevice device, DescriptorPool descriptorPool, CommandBuffer cmd, RenderPassDescriptor descriptor, Vector2D<int> defaultExtent, HashSet<ulong> pendingCopies, HashSet<VkTexture> pendingImageCopies)
+    private RenderPassEncoder(VkDevice device, DescriptorPool descriptorPool, CommandBuffer cmd, RenderPassDescription description, Vector2D<int> defaultExtent, HashSet<ulong> pendingCopies, HashSet<VkTexture> pendingImageCopies)
     {
         _device = device;
         _vk = device.Instance.Vk;
         _descriptorPool = descriptorPool;
         _cmd = cmd;
-        _descriptor = descriptor;
+        _description = description;
         _defaultExtent = defaultExtent;
         _pendingCopies = pendingCopies;
         _pendingImageCopies = pendingImageCopies;
     }
 
-    internal static RenderPassEncoder Begin(VkDevice device, DescriptorPool descriptorPool, CommandBuffer cmd, RenderPassDescriptor descriptor, Vector2D<int> defaultExtent, HashSet<ulong> pendingCopies, HashSet<VkTexture> pendingImageCopies)
+    internal static RenderPassEncoder Begin(VkDevice device, DescriptorPool descriptorPool, CommandBuffer cmd, RenderPassDescription description, Vector2D<int> defaultExtent, HashSet<ulong> pendingCopies, HashSet<VkTexture> pendingImageCopies)
     {
-        var encoder = new RenderPassEncoder(device, descriptorPool, cmd, descriptor, defaultExtent, pendingCopies, pendingImageCopies);
+        var encoder = new RenderPassEncoder(device, descriptorPool, cmd, description, defaultExtent, pendingCopies, pendingImageCopies);
         encoder.BeginPass();
         return encoder;
     }
 
     private void BeginPass()
     {
-        var colors = _descriptor.ColorAttachments;
+        var colors = _description.ColorAttachments;
         if (colors == null || colors.Length == 0)
         {
-            throw new ArgumentException("RenderPassDescriptor requires at least one color attachment for now", nameof(_descriptor));
+            throw new ArgumentException("RenderPassDescriptor requires at least one color attachment for now", nameof(_description));
         }
 
-        var depth = _descriptor.DepthAttachment;
+        var depth = _description.DepthAttachment;
 
-        var area = _descriptor.RenderArea ?? new Box2D<int>(Vector2D<int>.Zero, _defaultExtent);
+        var area = _description.RenderArea ?? new Box2D<int>(Vector2D<int>.Zero, _defaultExtent);
         var offset = new Offset2D(area.Min.X, area.Min.Y);
         var extent = new Extent2D((uint)(area.Max.X - area.Min.X), (uint)(area.Max.Y - area.Min.Y));
 
@@ -570,8 +570,8 @@ public sealed unsafe class RenderPassEncoder : IDisposable
 
         _vk.CmdEndRendering(_cmd);
 
-        var colors = _descriptor.ColorAttachments;
-        var depth = _descriptor.DepthAttachment;
+        var colors = _description.ColorAttachments;
+        var depth = _description.DepthAttachment;
         var barrierCount = colors.Length + (depth != null ? 1 : 0);
         var postBarriers = stackalloc ImageMemoryBarrier2[barrierCount];
         var postCount = 0;

@@ -45,11 +45,7 @@ public sealed unsafe class QuadRenderer3D : IDisposable
     private Matrix4x4 _viewProj;
     private int _disposed;
 
-    public QuadRenderer3D(
-        VulkanResourceFactory factory,
-        TextureArray? textures,
-        VkSampler? sampler,
-        QuadRendererDescription description)
+    public QuadRenderer3D(VulkanResourceFactory factory, TextureArray? textures, VkSampler? sampler, PrimitiveRendererDescription description)
     {
         _textures = textures;
         _sampler = sampler;
@@ -66,7 +62,7 @@ public sealed unsafe class QuadRenderer3D : IDisposable
             DepthTest = description.DepthTest,
             DepthWrite = description.DepthWrite,
             CullMode = CullMode.None,
-            Blends = [BlendState.AlphaBlend],
+            Blends = description.Blends,
             SsboLayouts = new Dictionary<string, SsboLayout>
             {
                 ["solidQuads"] = SsboLayout.FromStruct<SolidQuad3DSsbo>()
@@ -85,7 +81,7 @@ public sealed unsafe class QuadRenderer3D : IDisposable
                 DepthTest = description.DepthTest,
                 DepthWrite = description.DepthWrite,
                 CullMode = CullMode.None,
-                Blends = [BlendState.AlphaBlend],
+                Blends = description.Blends,
                 SsboLayouts = new Dictionary<string, SsboLayout>
                 {
                     ["texturedQuads"] = SsboLayout.FromStruct<TexturedQuad3DSsbo>()
@@ -153,7 +149,7 @@ public sealed unsafe class QuadRenderer3D : IDisposable
         DrawTextured3D(position, right, up, size, textureIndex, uvMin, uvMax, color);
     }
 
-    public void Flush(Frame frame, RenderPassEncoder pass)
+    public void Submit(Frame frame, RenderPassEncoder pass)
     {
         if (_solidQuads.Count > 0)
         {
