@@ -16,19 +16,19 @@ public sealed class UploadRing : IDisposable
 {
     private readonly VkBuffer _buffer;
     private readonly uint _capacity;
-    private readonly uint _uniformAlignment;
+    private readonly uint _alignment;
     private uint _offset;
     private int _disposed;
 
-    private UploadRing(VkBuffer buffer, uint capacity, uint uniformAlignment)
+    private UploadRing(VkBuffer buffer, uint capacity, uint alignment)
     {
         _buffer = buffer;
         _capacity = capacity;
-        _uniformAlignment = uniformAlignment;
+        _alignment = alignment;
         _offset = 0;
     }
 
-    public static UploadRing Create(VulkanResourceFactory factory, long capacity, uint uniformAlignment, BufferUsage usage)
+    public static UploadRing Create(VulkanResourceFactory factory, long capacity, uint alignment, BufferUsage usage)
     {
         var buffer = factory.CreateBuffer(new BufferDescription
         {
@@ -36,13 +36,13 @@ public sealed class UploadRing : IDisposable
             Usage = usage
         });
 
-        return new UploadRing(buffer, (uint)capacity, uniformAlignment);
+        return new UploadRing(buffer, (uint)capacity, alignment);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public RingAllocation Allocate(uint size, uint alignment)
+    public RingAllocation Allocate(uint size)
     {
-        var alignedOffset = AlignUp(_offset, alignment);
+        var alignedOffset = AlignUp(_offset, _alignment);
 
         if (alignedOffset + size > _capacity)
         {
@@ -52,12 +52,6 @@ public sealed class UploadRing : IDisposable
         _offset = alignedOffset + size;
 
         return new RingAllocation(_buffer, alignedOffset, size);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public RingAllocation AllocateUniform(uint size)
-    {
-        return Allocate(size, _uniformAlignment);
     }
 
     public void Reset()

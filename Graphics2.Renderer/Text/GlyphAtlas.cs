@@ -90,7 +90,7 @@ public sealed class GlyphAtlas : IDisposable
 
         BlitGlyph(rasterized.Pixels, x, y, w, h);
 
-        var alloc = frame.Allocate((uint)(w * h), 4);
+        var alloc = frame.AllocateStorage((uint)(w * h));
         rasterized.Pixels.AsSpan().CopyTo(alloc.Data);
         frame.CopyBufferToImage(alloc, _texture, (uint)x, (uint)y, (uint)w, (uint)h);
 

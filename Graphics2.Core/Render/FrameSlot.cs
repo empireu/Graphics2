@@ -15,26 +15,29 @@ public sealed unsafe class FrameSlot : IDisposable
         CommandBuffer commandBuffer,
         Semaphore acquireSemaphore,
         Fence fence,
-        UploadRing uploadRing,
-        UploadRing vertexRing)
+        UploadRing uniformRing,
+        UploadRing storageRing,
+        UploadRing geometryRing)
     {
         Device = device;
         _commandPool = commandPool;
         CommandBuffer = commandBuffer;
         AcquireSemaphore = acquireSemaphore;
         Fence = fence;
-        UploadRing = uploadRing;
-        VertexRing = vertexRing;
+        UniformRing = uniformRing;
+        StorageRing = storageRing;
+        GeometryRing = geometryRing;
     }
 
     public readonly VkDevice Device;
     public readonly CommandBuffer CommandBuffer;
     public readonly Semaphore AcquireSemaphore;
     public readonly Fence Fence;
-    public readonly UploadRing UploadRing;
-    public readonly UploadRing VertexRing;
+    public readonly UploadRing UniformRing;
+    public readonly UploadRing StorageRing;
+    public readonly UploadRing GeometryRing;
 
-    public static FrameSlot Create(VkDevice device, UploadRing uploadRing, UploadRing vertexRing)
+    public static FrameSlot Create(VkDevice device, UploadRing uniformRing, UploadRing storageRing, UploadRing geometryRing)
     {
         var vk = device.Instance.Vk;
 
@@ -93,7 +96,7 @@ public sealed unsafe class FrameSlot : IDisposable
             throw new VkBootstrapException("Failed to create fence");
         }
 
-        return new FrameSlot(device, commandPool, commandBuffer, acquireSemaphore, fence, uploadRing, vertexRing);
+        return new FrameSlot(device, commandPool, commandBuffer, acquireSemaphore, fence, uniformRing, storageRing, geometryRing);
     }
 
     public void Reset()
@@ -116,7 +119,8 @@ public sealed unsafe class FrameSlot : IDisposable
         vk.FreeCommandBuffers(Device.Device, _commandPool, 1, &commandBuffer);
         vk.DestroyCommandPool(Device.Device, _commandPool, null);
 
-        UploadRing.Dispose();
-        VertexRing.Dispose();
+        UniformRing.Dispose();
+        StorageRing.Dispose();
+        GeometryRing.Dispose();
     }
 }

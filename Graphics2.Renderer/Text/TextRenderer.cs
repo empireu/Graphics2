@@ -258,7 +258,7 @@ public sealed unsafe class TextRenderer : IDisposable
         pass.BindUniformBuffer("Camera", uboAlloc);
 
         var ssboSize = (uint)(_quads.Count * sizeof(TextQuadSsbo));
-        var ssboAlloc = frame.Allocate(ssboSize, 4);
+        var ssboAlloc = frame.AllocateStorage(ssboSize);
 
         var quadsSpan = CollectionsMarshal.AsSpan(_quads);
         MemoryMarshal.AsBytes(quadsSpan).CopyTo(ssboAlloc.Data);

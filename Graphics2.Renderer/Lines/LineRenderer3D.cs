@@ -97,7 +97,7 @@ public sealed unsafe class LineRenderer3D : IDisposable
         pass.BindUniformBuffer("Camera", uboAlloc);
 
         var ssboSize = (uint)(_lines.Count * sizeof(Line3DSsbo));
-        var ssboAlloc = frame.Allocate(ssboSize, 4);
+        var ssboAlloc = frame.AllocateStorage(ssboSize);
         var linesSpan = CollectionsMarshal.AsSpan(_lines);
         MemoryMarshal.AsBytes(linesSpan).CopyTo(ssboAlloc.Data);
         pass.BindStorageBuffer("lines", ssboAlloc);

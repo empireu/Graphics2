@@ -11,8 +11,9 @@ public sealed unsafe class Frame
     internal readonly DescriptorPool DescriptorPool;
     internal readonly CommandBuffer CommandBuffer;
     internal readonly uint ImageIndex;
-    private readonly UploadRing _uploadRing;
-    private readonly UploadRing _vertexRing;
+    private readonly UploadRing _uniformRing;
+    private readonly UploadRing _storageRing;
+    private readonly UploadRing _geometryRing;
     private readonly HashSet<ulong> _pendingCopies = [];
     private readonly HashSet<VkTexture> _pendingImageCopies = [];
 
@@ -20,7 +21,7 @@ public sealed unsafe class Frame
 
     public Vector2D<int> Extent { get; }
 
-    internal Frame(VkDevice device, DescriptorPool descriptorPool, CommandBuffer commandBuffer, uint imageIndex, VkTexture swapchainColorTarget, Extent2D extent, UploadRing uploadRing, UploadRing vertexRing)
+    internal Frame(VkDevice device, DescriptorPool descriptorPool, CommandBuffer commandBuffer, uint imageIndex, VkTexture swapchainColorTarget, Extent2D extent, UploadRing uniformRing, UploadRing storageRing, UploadRing geometryRing)
     {
         Device = device;
         DescriptorPool = descriptorPool;
@@ -28,15 +29,16 @@ public sealed unsafe class Frame
         ImageIndex = imageIndex;
         SwapchainColorTarget = swapchainColorTarget;
         Extent = new Vector2D<int>((int)extent.Width, (int)extent.Height);
-        _uploadRing = uploadRing;
-        _vertexRing = vertexRing;
+        _uniformRing = uniformRing;
+        _storageRing = storageRing;
+        _geometryRing = geometryRing;
     }
 
-    public RingAllocation Allocate(uint size, uint alignment) => _uploadRing.Allocate(size, alignment);
+    public RingAllocation AllocateUniform(uint size) => _uniformRing.Allocate(size);
 
-    public RingAllocation AllocateUniform(uint size) => _uploadRing.AllocateUniform(size);
+    public RingAllocation AllocateStorage(uint size) => _storageRing.Allocate(size);
 
-    public RingAllocation AllocateVertex(uint size, uint alignment) => _vertexRing.Allocate(size, alignment);
+    public RingAllocation AllocateVertex(uint size) => _geometryRing.Allocate(size);
 
     public void CopyBuffer(VkBuffer src, ulong srcOffset, VkBuffer dst, ulong dstOffset, ulong size)
     {

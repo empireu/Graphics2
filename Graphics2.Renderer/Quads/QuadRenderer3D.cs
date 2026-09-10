@@ -172,7 +172,7 @@ public sealed unsafe class QuadRenderer3D : IDisposable
         BindCamera(frame, pass);
 
         var ssboSize = (uint)(quads.Count * sizeof(T));
-        var ssboAlloc = frame.Allocate(ssboSize, 4);
+        var ssboAlloc = frame.AllocateStorage(ssboSize);
         var quadsSpan = CollectionsMarshal.AsSpan(quads);
         MemoryMarshal.AsBytes(quadsSpan).CopyTo(ssboAlloc.Data);
         pass.BindStorageBuffer(ssboName, ssboAlloc);
@@ -188,7 +188,7 @@ public sealed unsafe class QuadRenderer3D : IDisposable
         BindCamera(frame, pass);
 
         var ssboSize = (uint)(_texturedQuads.Count * sizeof(TexturedQuad3DSsbo));
-        var ssboAlloc = frame.Allocate(ssboSize, 4);
+        var ssboAlloc = frame.AllocateStorage(ssboSize);
         var quadsSpan = CollectionsMarshal.AsSpan(_texturedQuads);
         MemoryMarshal.AsBytes(quadsSpan).CopyTo(ssboAlloc.Data);
         pass.BindStorageBuffer("texturedQuads", ssboAlloc);

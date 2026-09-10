@@ -44,7 +44,7 @@ public sealed unsafe class RenderContext : IDisposable
     
     public readonly uint FramesInFlight;
 
-    private const long RingCapacity = 4 * 1024 * 1024;
+    private const long RingCapacity = 16 * 1024 * 1024;
 
     public static RenderContext Create(
         VkDevice device,
@@ -64,12 +64,21 @@ public sealed unsafe class RenderContext : IDisposable
                 uniformAlignment = 1;
             }
 
+            var storageAlignment = (uint)device.Info.MinStorageBufferOffsetAlignment;
+            if (storageAlignment == 0)
+            {
+                storageAlignment = 1;
+            }
+
+            const uint vertexIndexAlignment = 4;
+
             var slots = new FrameSlot[framesInFlight];
             for (var i = 0; i < framesInFlight; i++)
             {
-                var ring = UploadRing.Create(factory, RingCapacity, uniformAlignment, BufferUsage.Uniform | BufferUsage.Storage | BufferUsage.Staging);
-                var vertexRing = UploadRing.Create(factory, RingCapacity, uniformAlignment, BufferUsage.Vertex | BufferUsage.Index | BufferUsage.Staging);
-                slots[i] = FrameSlot.Create(device, ring, vertexRing);
+                var uniformRing = UploadRing.Create(factory, RingCapacity, uniformAlignment, BufferUsage.Uniform | BufferUsage.Staging);
+                var storageRing = UploadRing.Create(factory, RingCapacity, storageAlignment, BufferUsage.Storage | BufferUsage.Staging);
+                var geometryRing = UploadRing.Create(factory, RingCapacity, vertexIndexAlignment, BufferUsage.Vertex | BufferUsage.Index | BufferUsage.Staging);
+                slots[i] = FrameSlot.Create(device, uniformRing, storageRing, geometryRing);
             }
 
             try
@@ -110,8 +119,9 @@ public sealed unsafe class RenderContext : IDisposable
         vk.ResetFences(_device.Device, 1, &fence);
 
         slot.Reset();
-        slot.UploadRing.Reset();
-        slot.VertexRing.Reset();
+        slot.UniformRing.Reset();
+        slot.StorageRing.Reset();
+        slot.GeometryRing.Reset();
 
         var descriptorPool = _descriptorPools[_frame % FramesInFlight];
         vk.ResetDescriptorPool(_device.Device, descriptorPool, 0);
@@ -140,7 +150,7 @@ public sealed unsafe class RenderContext : IDisposable
             throw new VkBootstrapException("Failed to begin command buffer");
         }
 
-        return new Frame(_device, descriptorPool, slot.CommandBuffer, imageIndex, _swapchainTargets[imageIndex], Swapchain.Extent, slot.UploadRing, slot.VertexRing);
+        return new Frame(_device, descriptorPool, slot.CommandBuffer, imageIndex, _swapchainTargets[imageIndex], Swapchain.Extent, slot.UniformRing, slot.StorageRing, slot.GeometryRing);
     }
 
     /// <summary>

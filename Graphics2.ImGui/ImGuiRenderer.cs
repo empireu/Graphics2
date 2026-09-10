@@ -224,8 +224,8 @@ public sealed unsafe class ImGuiRenderer(VulkanResourceFactory factory) : IDispo
             var vtxSize = (uint)(vtxBuffer.Size * 20);
             var idxSize = (uint)(idxBuffer.Size * 2);
 
-            var vtxAlloc = frame.AllocateVertex(vtxSize, 4);
-            var idxAlloc = frame.AllocateVertex(idxSize, 4);
+            var vtxAlloc = frame.AllocateVertex(vtxSize);
+            var idxAlloc = frame.AllocateVertex(idxSize);
 
             var vtxSrc = new Span<byte>((void*)vtxBuffer.Data, (int)vtxSize);
             var idxSrc = new Span<byte>((void*)idxBuffer.Data, (int)idxSize);
