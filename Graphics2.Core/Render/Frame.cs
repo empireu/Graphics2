@@ -39,7 +39,13 @@ public sealed unsafe class Frame
     public RingAllocation AllocateStorage(uint size) => _storageRing.Allocate(size);
 
     public RingAllocation AllocateVertex(uint size) => _geometryRing.Allocate(size);
+    
+    public RingAllocation AllocateUniform(int size) => _uniformRing.Allocate((uint)size);
 
+    public RingAllocation AllocateStorage(int size) => _storageRing.Allocate((uint)size);
+
+    public RingAllocation AllocateVertex(int size) => _geometryRing.Allocate((uint)size);
+    
     public void CopyBuffer(VkBuffer src, ulong srcOffset, VkBuffer dst, ulong dstOffset, ulong size)
     {
         var region = new BufferCopy

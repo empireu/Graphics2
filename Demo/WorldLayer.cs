@@ -1,4 +1,6 @@
 ﻿using System.Numerics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using Graphics2.Core;
 using Graphics2.Core.Render;
 using Graphics2.Core.Resources;
@@ -28,14 +30,14 @@ internal sealed unsafe class WorldLayer : IDisposable
     private readonly QuadRenderer3D _overlayQuadRenderer3D;
     private readonly LineRenderer3D _lineRenderer3D;
     
-    private int _frames;
-    private double _time;
     private readonly Camera3D _camera = new();
+
+    private readonly Pipeline _pipeline;
     
     public WorldLayer(App app)
     {
         _app = app;
-
+        
         #region Assets and ImGui
 
         var factory = app.Factory;
@@ -93,6 +95,33 @@ internal sealed unsafe class WorldLayer : IDisposable
             DepthWrite = true,
             Blends = [new BlendState(true, BlendFactor.One, BlendFactor.One)]
         });
+
+        _pipeline = app.Factory.CreatePipeline(new PipelineDescription
+        {
+            Source = Helpers.GetResourceText(typeof(App).Assembly, "Demo.Shaders.Shader.slang"),
+            VertexEntryPoint = "vsMain",
+            FragmentEntryPoint = "fsMain",
+            ColorAttachments = [TextureFormat.B8G8R8A8Srgb],
+            DepthAttachment = TextureFormat.D32Sfloat,
+            DepthTest = true,
+            DepthWrite = true,
+            CullMode = CullMode.None,
+            Wireframe = false,
+            Blends = [BlendState.None],
+            VertexLayout = VertexLayout.FromStruct<Vertex>(),
+            PushConstantLayout = PushConstantLayout.FromStruct<PushConstants>()
+        });
+    }
+
+    private struct Vertex
+    {
+        public Vector4 Position;
+        public Vector4 Normal;
+    }
+
+    private struct PushConstants
+    {
+        public Matrix4x4 ViewProj;
     }
 
     public void OnResize(Vector2D<int> framebufferSize)
@@ -112,10 +141,26 @@ internal sealed unsafe class WorldLayer : IDisposable
 
         _camera.SetAspect(framebufferSize);
     }
-    
-    private string _text = string.Empty;
-    private readonly List<double> _averageTime = new();
 
+    private void ImGuiPass(Frame frame)
+    {
+        using var imGuiPass = frame.BeginRenderPass(new RenderPassDescription
+        {
+            ColorAttachments =
+            [
+                new ColorAttachment
+                {
+                    Target = frame.SwapchainColorTarget,
+                    LoadOp = LoadOp.Load,
+                    StoreOp = StoreOp.Store,
+                    FinalLayout = TextureLayout.Present
+                }
+            ]
+        });
+
+        _imGui.Submit(frame, imGuiPass);
+    }
+    
     public void OnFrame(double deltaTime, Frame frame, InputSnapshot input)
     {
         if (input.WasKeyPressed(G2Key.Escape))
@@ -126,46 +171,19 @@ internal sealed unsafe class WorldLayer : IDisposable
         _camera.Update((float)deltaTime, input, _app.G2Wnd.Window.FramebufferSize);
         _imGui.Update((float)deltaTime, input, _app.G2Wnd.Window.FramebufferSize);
 
-        ImGui.PushStyleColor(ImGuiCol.WindowBg, new Vector4(0, 0, 0, 0));
-        ImGui.DockSpaceOverViewport(0U, (ImGuiViewport*) null, ImGuiDockNodeFlags.PassthruCentralNode, (ImGuiWindowClass*) null);
-        ImGui.PopStyleColor();
-
-        if (_averageTime.Count > 30)
-        {
-            _averageTime.RemoveAt(0);
-        }
-
-        _averageTime.Add(deltaTime);
-
-        if (ImGui.Begin("Info"))
-        {
-            ImGui.Text($"Frames: {_frames++}");
-            ImGui.Text($"FPS: {1.0 / (_averageTime.Sum() / _averageTime.Count):F2}");
-            ImGui.InputText("Text", ref _text, 128);
-        }
-
-        ImGui.End();
-
-        if (ImGui.Begin("Camera"))
-        {
-            var pos = _camera.Position;
-            ImGui.Text($"Pos: {pos:F2}");
-            ImGui.Text($"Yaw: {_camera.Yaw:F3}  Pitch: {_camera.Pitch:F3}");
-            ImGui.Text($"Mode: {(_camera.FpsMode ? "FP" : "Free")}");
-        }
-
-        ImGui.End();
-
         if (!_textInitialized)
         {
             _glyphAtlas.PrepopulateCommons(frame);
             _textInitialized = true;
         }
         
-        _textRenderer.DrawString2D(frame, "Hello, World!", new Vector2(0, 0), new Vector4(1, 1, 1, 1));
-        _textRenderer.DrawString2D(frame, $"FPS: {1.0 / (_averageTime.Sum() / _averageTime.Count):F2}", new Vector2(50, 110), new Vector4(0, 1, 0, 1));
+        _overlayQuadRenderer3D.SetCamera(_camera.ViewProj);
+        _textRenderer.SetCamera(_camera.ViewProj);
+        _lineRenderer3D.SetCamera(_camera.ViewProj, _camera.Position);
 
-        var screenPassDescription = new RenderPassDescription
+        Voxels(out var vertices, out var indices);
+
+        var worldPassDescription = new RenderPassDescription
         {
             ColorAttachments =
             [
@@ -175,138 +193,409 @@ internal sealed unsafe class WorldLayer : IDisposable
                     LoadOp = LoadOp.Clear,
                     StoreOp = StoreOp.Store,
                     ClearValue = new Vector4(0f, 0f, 0f, 1f),
-                    FinalLayout = TextureLayout.Present
-                }
-            ]
-        };
-
-        using (var screenPass = frame.BeginRenderPass(screenPassDescription))
-        {
-            var extent = frame.Extent;
-            var ortho = Matrix4x4.CreateOrthographicOffCenter(0, extent.X, 0, extent.Y, -1, 1);
-            _textRenderer.SetCamera(ortho);
-            _textRenderer.Submit(frame, screenPass);
-        }
-        
-        _overlayQuadRenderer3D.SetCamera(_camera.ViewProj);
-        _textRenderer.SetCamera(_camera.ViewProj);
-        _lineRenderer3D.SetCamera(_camera.ViewProj, _camera.Position);
-
-        const float gizmoRadius = 2;
-        const float axisThickness = 0.05f;
-        const float gimbalThickness = 0.05f;
-        const int gizmoSegments = 128;
-
-        #region Labels
-
-        void SubmitLabel(string text, Vector3 unit)
-        {
-            var size = _textRenderer.DrawString3DBillboard(
-                frame, text,
-                gizmoRadius * unit,
-                _camera.Forward,
-                0.25f, 
-                new Vector4(
-                    Math.Abs(unit.X),
-                    Math.Abs(unit.Y),
-                    Math.Abs(unit.Z),
-                1),
-                anchor: TextAnchor.Center
-            );
-        
-            _overlayQuadRenderer3D.DrawBillboard3D(
-                gizmoRadius * unit,
-                _camera.Forward,
-                new Vector2(size.X, size.Y),
-                new Vector4(1, 1, 1, 1.0f) - new Vector4(Math.Abs(unit.X), Math.Abs(unit.Y), Math.Abs(unit.Z), 0.0f)
-            );
-        }
-        
-        SubmitLabel("+X", new Vector3(+1, 0, 0));
-        SubmitLabel("-X", new Vector3(-1, 0, 0));
-
-        SubmitLabel("+Y", new Vector3(0, +1, 0));
-        SubmitLabel("-Y", new Vector3(0, -1, 0));
-
-        SubmitLabel("+Z", new Vector3(0, 0, +1));
-        SubmitLabel("-Z", new Vector3(0, 0, -1));
-        
-        #endregion
-        
-        _lineRenderer3D.DrawLine3D(
-            new Vector3(-gizmoRadius, 0, 0),
-            new Vector3(+gizmoRadius, 0, 0),
-            axisThickness,
-            new Vector4(1, 0, 0, 1),
-            new Vector4(0.5f, 0, 0, 1)
-        );
-        
-        _lineRenderer3D.DrawLine3D(
-            new Vector3(0, -gizmoRadius, 0),
-            new Vector3(0, +gizmoRadius, 0),
-            axisThickness,
-            new Vector4(0, 1f, 0, 1),
-            new Vector4(0, 0.5f, 0, 1)
-        );
-        
-        _lineRenderer3D.DrawLine3D(
-            new Vector3(0, 0, -gizmoRadius),
-            new Vector3(0, 0, +gizmoRadius),
-            axisThickness,
-            new Vector4(0, 1, 0, 1),
-            new Vector4(0, 0.5f, 0, 1)
-        );
-
-        Span<Vector3> directions = [Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ];
-
-        for (var index = 0; index < directions.Length; index++)
-        {
-            var normal = directions[index];
-            var perpendicular = directions[(index + 1) % 3];
-            
-            for (var i = 1; i <= gizmoSegments; i++)
-            {
-                var q1 = Quaternion.CreateFromAxisAngle(normal, (i - 1) / (float)gizmoSegments * MathF.PI * 2.0f);
-                var q2 = Quaternion.CreateFromAxisAngle(normal, i / (float)gizmoSegments * MathF.PI * 2.0f);
-
-                var r1 = gizmoRadius * Vector3.Transform(perpendicular, q1);
-                var r2 = gizmoRadius * Vector3.Transform(perpendicular, q2);
-                
-                _lineRenderer3D.DrawLine3D(r1, r2, gimbalThickness, new Vector4(normal.X, normal.Y, normal.Z, 0.25f));
-            }
-        }
-        
-        using var pass = frame.BeginRenderPass(new RenderPassDescription
-        {
-            ColorAttachments =
-            [
-                new ColorAttachment
-                {
-                    Target = frame.SwapchainColorTarget,
-                    LoadOp = LoadOp.Load,
-                    StoreOp = StoreOp.Store,
-                    ClearValue = new Vector4(0f, 0f, 0f, 1f),
-                    FinalLayout = TextureLayout.Present
+                    FinalLayout = TextureLayout.ColorAttachment
                 }
             ],
             DepthAttachment = new DepthAttachment
             {
                 Target = _depthTexture!,
                 LoadOp = LoadOp.Clear,
-                StoreOp = StoreOp.DontCare,
+                StoreOp = StoreOp.Store,
                 ClearDepth = 1.0f,
                 FinalLayout = TextureLayout.DepthAttachment
             }
-        });
-        
-        _lineRenderer3D.Submit(frame, pass);
-        _overlayQuadRenderer3D.Submit(frame, pass);
-        _textRenderer.Submit(frame, pass);
-        _imGui.Submit(frame, pass);
+        };
 
-        _time += deltaTime;
+        using (var worldPass = frame.BeginRenderPass(worldPassDescription))
+        {
+            _lineRenderer3D.Submit(frame, worldPass);
+            _overlayQuadRenderer3D.Submit(frame, worldPass);
+            _textRenderer.Submit(frame, worldPass);
+
+            var vertexBuffer = frame.AllocateVertex(sizeof(Vertex) * vertices.Count);
+            MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(vertices)).CopyTo(vertexBuffer.Data);
+
+            var indexBuffer = frame.AllocateVertex(sizeof(uint) * indices.Count);
+            MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(indices)).CopyTo(indexBuffer.Data);
+            
+            worldPass.SetPipeline(_pipeline);
+            worldPass.SetViewport(0, 0, frame.Extent.X, frame.Extent.Y);
+            worldPass.SetScissor(0, 0, (uint)frame.Extent.X, (uint)frame.Extent.Y);
+
+            worldPass.PushConstants(new PushConstants
+            {
+                ViewProj = _camera.ViewProj
+            });
+            
+            worldPass.SetVertexBuffer(vertexBuffer.Buffer, vertexBuffer.Offset);
+            worldPass.SetIndexBuffer(indexBuffer.Buffer, IndexType.UInt32, indexBuffer.Offset);
+            worldPass.DrawIndexed((uint)indices.Count);
+        }
+        
+        ImGui.PushStyleColor(ImGuiCol.WindowBg, new Vector4(0, 0, 0, 0));
+        ImGui.DockSpaceOverViewport(0U, (ImGuiViewport*) null, ImGuiDockNodeFlags.PassthruCentralNode, (ImGuiWindowClass*) null);
+        ImGui.PopStyleColor();
+        
+        if (ImGui.Begin("Info"))
+        {
+            ImGui.Text($"Vtx: {vertices.Count}");
+        }
+
+        ImGui.End();
+        
+        ImGuiPass(frame);
     }
 
+    private void Voxels(out List<Vertex> finalVertices, out List<int> finalIndices)
+    {
+        const int radius = 5;
+
+        var grid = new Grid3D<byte>(radius * 2 + 3);
+        var center = new Vector3(grid.SizeX / 2.0f, grid.SizeY / 2.0f, grid.SizeZ / 2.0f);
+
+        for (var z = 0; z < grid.SizeZ; z++)
+        {
+            for (var y = 0; y < grid.SizeY; y++)
+            {
+                for (var x = 0; x < grid.SizeX; x++)
+                {
+                    var p = new Vector3(x, y, z);
+                    var sdf = Vector3.Distance(p, center) - radius;
+
+                    grid[x, y, z] = (byte)Math.Clamp(127 - sdf * 127, 0, 255);
+                }
+            }
+        }
+        
+        var cellsX = grid.SizeX - 1;
+        var cellsY = grid.SizeY - 1;
+        var cellsZ = grid.SizeZ - 1;
+
+        var vertices = new List<Vector3>();
+        var cellIndices = new int[cellsX * cellsY * cellsZ];
+        Array.Fill(cellIndices, -1);
+        
+        for (var z = 0; z < grid.SizeZ - 1; z++)
+        {
+            for (var y = 0; y < grid.SizeY - 1; y++)
+            {
+                for (var x = 0; x < grid.SizeX - 1; x++)
+                {
+                    var c000 = grid[x, y, z];
+                    var c100 = grid[x + 1, y, z];
+                    var c010 = grid[x, y + 1, z];
+                    var c001 = grid[x, y, z + 1];
+                    var c110 = grid[x + 1, y + 1, z];
+                    var c011 = grid[x, y + 1, z + 1];
+                    var c101 = grid[x + 1, y, z + 1];
+                    var c111 = grid[x + 1, y + 1, z + 1];
+
+                    var mask =
+                        (Unsafe.BitCast<bool, byte>(c000 > 127) << 0) |
+                        (Unsafe.BitCast<bool, byte>(c100 > 127) << 1) |
+                        (Unsafe.BitCast<bool, byte>(c010 > 127) << 2) |
+                        (Unsafe.BitCast<bool, byte>(c110 > 127) << 3) |
+                        (Unsafe.BitCast<bool, byte>(c001 > 127) << 4) |
+                        (Unsafe.BitCast<bool, byte>(c101 > 127) << 5) |
+                        (Unsafe.BitCast<bool, byte>(c011 > 127) << 6) |
+                        (Unsafe.BitCast<bool, byte>(c111 > 127) << 7);
+                    
+                    if (mask == 0 || mask == 255)
+                    {
+                        continue;
+                    }
+
+                    var sum = Vector3.Zero;
+                    var count = 0;
+                    
+                    if (c000 > 127 != c100 > 127)
+                    {
+                        sum += Vector3.Lerp(
+                            new Vector3(x, y, z),
+                            new Vector3(x + 1, y, z),
+                            (127.0f - c000) / (c100 - c000)
+                        );
+
+                        ++count;
+                    }
+
+                    if (c000 > 127 != c010 > 127)
+                    {
+                        sum += Vector3.Lerp(
+                            new Vector3(x, y, z),
+                            new Vector3(x, y + 1, z),
+                            (127.0f - c000) / (c010 - c000)
+                        );
+
+                        ++count;
+                    }
+                    
+                    if (c000 > 127 != c001 > 127)
+                    {
+                        sum += Vector3.Lerp(
+                            new Vector3(x, y, z),
+                            new Vector3(x, y, z + 1),
+                            (127.0f - c000) / (c001 - c000)
+                        );
+
+                        ++count;
+                    }
+                    
+                    if (c111 > 127 != c110 > 127)
+                    {
+                        sum += Vector3.Lerp(
+                            new Vector3(x + 1, y + 1, z + 1),
+                            new Vector3(x + 1, y + 1, z),
+                            (127.0f - c111) / (c110 - c111)
+                        );
+
+                        ++count;
+                    }
+                    
+                    if (c111 > 127 != c011 > 127)
+                    {
+                        sum += Vector3.Lerp(
+                            new Vector3(x + 1, y + 1, z + 1),
+                            new Vector3(x, y + 1, z + 1),
+                            (127.0f - c111) / (c011 - c111)
+                        );
+
+                        ++count;
+                    }
+                    
+                    if (c111 > 127 != c101 > 127)
+                    {
+                        sum += Vector3.Lerp(
+                            new Vector3(x + 1, y + 1, z + 1),
+                            new Vector3(x + 1, y, z + 1),
+                            (127.0f - c111) / (c101 - c111)
+                        );
+
+                        ++count;
+                    }
+                    
+                    if (c101 > 127 != c100 > 127)
+                    {
+                        sum += Vector3.Lerp(
+                            new Vector3(x + 1, y, z + 1),
+                            new Vector3(x + 1, y, z),
+                            (127.0f - c101) / (c100 - c101)
+                        );
+
+                        ++count;
+                    }
+                    
+                    if (c101 > 127 != c001 > 127)
+                    {
+                        sum += Vector3.Lerp(
+                            new Vector3(x + 1, y, z + 1),
+                            new Vector3(x, y, z + 1),
+                            (127.0f - c101) / (c001 - c101)
+                        );
+
+                        ++count;
+                    }
+                    
+                    if (c011 > 127 != c010 > 127)
+                    {
+                        sum += Vector3.Lerp(
+                            new Vector3(x, y + 1, z + 1),
+                            new Vector3(x, y + 1, z),
+                            (127.0f - c011) / (c010 - c011)
+                        );
+
+                        ++count;
+                    }
+
+                    if (c010 > 127 != c110 > 127)
+                    {
+                        sum += Vector3.Lerp(
+                            new Vector3(x, y + 1, z),
+                            new Vector3(x + 1, y + 1, z),
+                            (127.0f - c010) / (c110 - c010)
+                        );
+
+                        ++count;
+                    }
+
+                    if (c100 > 127 != c110 > 127)
+                    {
+                        sum += Vector3.Lerp(
+                            new Vector3(x + 1, y, z),
+                            new Vector3(x + 1, y + 1, z),
+                            (127.0f - c100) / (c110 - c100)
+                        );
+
+                        ++count;
+                    }
+
+                    if (c001 > 127 != c011 > 127)
+                    {
+                        sum += Vector3.Lerp(
+                            new Vector3(x, y, z + 1),
+                            new Vector3(x, y + 1, z + 1),
+                            (127.0f - c001) / (c011 - c001)
+                        );
+
+                        ++count;
+                    }
+                    
+                    var vertex = sum / count;
+
+                    cellIndices[z * cellsX * cellsY + y * cellsX + x] = vertices.Count;
+                    vertices.Add(vertex);
+                }
+            }
+        }
+        
+        finalVertices = new List<Vertex>();
+
+        foreach (var vector3 in vertices)
+        {
+            finalVertices.Add(new Vertex
+            {
+                Position = new Vector4(vector3, 0.0f),
+                Normal = new Vector4(vector3, 0.0f)
+            });
+        }
+        
+        finalIndices = new List<int>();
+
+        for (var z = 0; z < grid.SizeZ - 1; z++)
+        {
+            for (var y = 0; y < grid.SizeY - 1; y++)
+            {
+                for (var x = 0; x < grid.SizeX - 1; x++)
+                {
+                    var c000 = grid[x, y, z];
+                    var c100 = grid[x + 1, y, z];
+                    var c010 = grid[x, y + 1, z];
+                    var c001 = grid[x, y, z + 1];
+
+                    var crossX = c000 > 127 != c100 > 127;
+                    var crossY = c000 > 127 != c010 > 127;
+                    var crossZ = c000 > 127 != c001 > 127;
+
+                    if (!crossX && !crossY && !crossZ)
+                    {
+                        continue;
+                    }
+
+                    var i0 = cellIndices[z * cellsX * cellsY + y * cellsX + x];
+                    var v0 = vertices[i0];
+
+                    const float thickness = 0.01f;
+                    
+                    if (crossX && y > 0 && z > 0)
+                    { 
+                        var i1 = cellIndices[z * cellsX * cellsY + (y - 1) * cellsX + x];
+                        var i2 = cellIndices[(z - 1) * cellsX * cellsY + (y - 1) * cellsX + x];
+                        var i3 = cellIndices[(z - 1) * cellsX * cellsY + y * cellsX + x];
+                        
+                        var v1 = vertices[i1];
+                        var v2 = vertices[i2];
+                        var v3 = vertices[i3];
+
+                        if (c000 > 127)
+                        {
+                            finalIndices.Add(i0);
+                            finalIndices.Add(i1);
+                            finalIndices.Add(i2);
+                            finalIndices.Add(i0);
+                            finalIndices.Add(i2);
+                            finalIndices.Add(i3);
+                        }
+                        else
+                        {
+                            finalIndices.Add(i0);
+                            finalIndices.Add(i2);
+                            finalIndices.Add(i1);
+                            finalIndices.Add(i0);
+                            finalIndices.Add(i3);
+                            finalIndices.Add(i2);
+                        }
+                        
+                        _lineRenderer3D.DrawLine3D(v0, v1, thickness, new Vector4(1, 0, 0, 1));
+                        _lineRenderer3D.DrawLine3D(v1, v2, thickness, new Vector4(0, 1, 0, 1));
+                        _lineRenderer3D.DrawLine3D(v2, v3, thickness, new Vector4(0, 0, 1, 1));
+                        _lineRenderer3D.DrawLine3D(v3, v0, thickness, new Vector4(0, 1, 1, 1));
+                    }
+                    
+                    if (crossY && x > 0 && z > 0)
+                    {
+                        var i1 = cellIndices[(z - 1) * cellsX * cellsY + y * cellsX + x];
+                        var i2 = cellIndices[(z - 1) * cellsX * cellsY + y * cellsX + (x - 1)];
+                        var i3 = cellIndices[z * cellsX * cellsY + y * cellsX + (x - 1)];
+                        
+                        var v1 = vertices[i1];
+                        var v2 = vertices[i2];
+                        var v3 = vertices[i3];
+
+                        if (c000 > 127)
+                        {
+                            finalIndices.Add(i0);
+                            finalIndices.Add(i1);
+                            finalIndices.Add(i2);
+                            finalIndices.Add(i0);
+                            finalIndices.Add(i2);
+                            finalIndices.Add(i3);
+                        }
+                        else
+                        {
+                            finalIndices.Add(i0);
+                            finalIndices.Add(i2);
+                            finalIndices.Add(i1);
+                            finalIndices.Add(i0);
+                            finalIndices.Add(i3);
+                            finalIndices.Add(i2);
+                        }
+                        
+                        _lineRenderer3D.DrawLine3D(v0, v1, thickness, new Vector4(1, 0, 0, 1));
+                        _lineRenderer3D.DrawLine3D(v1, v2, thickness, new Vector4(0, 1, 0, 1));
+                        _lineRenderer3D.DrawLine3D(v2, v3, thickness, new Vector4(0, 0, 1, 1));
+                        _lineRenderer3D.DrawLine3D(v3, v0, thickness, new Vector4(0, 1, 1, 1));
+                    }
+                    
+                    if (crossZ && x > 0 && y > 0)
+                    {
+                        var i1 = cellIndices[z * cellsX * cellsY + y * cellsX + (x - 1)];
+                        var i2 = cellIndices[z * cellsX * cellsY + (y - 1) * cellsX + (x - 1)];
+                        var i3 = cellIndices[z * cellsX * cellsY + (y - 1) * cellsX + x];
+                        
+                        var v1 = vertices[i1];
+                        var v2 = vertices[i2];
+                        var v3 = vertices[i3];
+
+                        if (c000 > 127)
+                        {
+                            finalIndices.Add(i0);
+                            finalIndices.Add(i1);
+                            finalIndices.Add(i2);
+                            finalIndices.Add(i0);
+                            finalIndices.Add(i2);
+                            finalIndices.Add(i3);
+                        }
+                        else
+                        {
+                            finalIndices.Add(i0);
+                            finalIndices.Add(i2);
+                            finalIndices.Add(i1);
+                            finalIndices.Add(i0);
+                            finalIndices.Add(i3);
+                            finalIndices.Add(i2);
+                        }
+                        
+                        _lineRenderer3D.DrawLine3D(v0, v1, thickness, new Vector4(1, 0, 0, 1));
+                        _lineRenderer3D.DrawLine3D(v1, v2, thickness, new Vector4(0, 1, 0, 1));
+                        _lineRenderer3D.DrawLine3D(v2, v3, thickness, new Vector4(0, 0, 1, 1));
+                        _lineRenderer3D.DrawLine3D(v3, v0, thickness, new Vector4(0, 1, 1, 1));
+                    }
+                }
+            }
+        }
+
+    }
+    
     public void Dispose()
     {
         _imGui.Dispose();
@@ -317,5 +606,6 @@ internal sealed unsafe class WorldLayer : IDisposable
         _quadRenderer2D.Dispose();
         _overlayQuadRenderer3D.Dispose();
         _lineRenderer3D.Dispose();
+        _pipeline.Dispose();
     }
 }
