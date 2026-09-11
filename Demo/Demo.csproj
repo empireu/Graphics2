@@ -12,6 +12,7 @@
       <ProjectReference Include="..\Graphics2.Applications\Graphics2.Applications.csproj" />
       <ProjectReference Include="..\Graphics2.Assets\Graphics2.Assets.csproj" />
       <ProjectReference Include="..\Graphics2.ImGui\Graphics2.ImGui.csproj" />
+      <ProjectReference Include="..\Graphics2.Math\Graphics2.Math.csproj" />
       <ProjectReference Include="..\Graphics2.Renderer\Graphics2.Renderer.csproj" />
     </ItemGroup>
     

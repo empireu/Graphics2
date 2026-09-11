@@ -1,6 +1,6 @@
 ﻿struct VertexInput {
-    float4 position;
-    float4 normal;
+    float3 position;
+    float3 normal;
 };
 
 struct VertexOutput {
@@ -24,5 +24,7 @@ VertexOutput vsMain(VertexInput input) {
 
 [shader("fragment")]
 float4 fsMain(VertexOutput input) : SV_TARGET {
-    return float4(input.normal, 1.0);
+     float3 lightDir = normalize(-float3(0.4, 0.8, 0.5));
+     float lambert = saturate(dot(normalize(input.normal), lightDir));
+     return float4(float3(0.15) + float3(0.85) * lambert, 1.0);
 }
