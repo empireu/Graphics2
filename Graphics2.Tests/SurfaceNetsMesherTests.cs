@@ -1,4 +1,5 @@
 using System.Numerics;
+using Graphics2.Data;
 using Graphics2.Mathematics;
 using Graphics2.Voxels;
 
@@ -8,7 +9,7 @@ public class SurfaceNetsMesherTests
 {
     private const byte Iso = 127;
 
-    private static (List<SurfaceNetsVertex> Vertices, List<int> Indices) Mesh(Grid3D<byte> content, Vector3i? cellMin = null, Vector3i? cellCount = null)
+    private static (List<SurfaceNetsVertex> Vertices, List<int> Indices) Mesh(Memory3D<byte> content, Vector3i? cellMin = null, Vector3i? cellCount = null)
     {
         var vertices = new List<SurfaceNetsVertex>();
         var indices = new List<int>();
@@ -26,22 +27,23 @@ public class SurfaceNetsMesherTests
         return (vertices, indices);
     }
 
-    private static Grid3D<byte> DenseField(int size, byte value)
+    private static Memory3D<byte> DenseField(int size, byte value)
     {
-        var grid = new Grid3D<byte>(size);
-        Array.Fill(grid.Data, value);
+        var grid = Memory3D<byte>.Allocate(size, size, size);
+        grid.Span.Data.Fill(value);
 
         return grid;
     }
 
-    private static Grid3D<byte> SphereField(int radius)
+    private static Memory3D<byte> SphereField(int radius)
     {
         return PeanutField(radius, 0);
     }
 
-    private static Grid3D<byte> PeanutField(int radius, int offset)
+    private static Memory3D<byte> PeanutField(int radius, int offset)
     {
-        var grid = new Grid3D<byte>(23);
+        var grid = Memory3D<byte>.Allocate(23, 23, 23);
+        var content = grid.Span;
         var center = new Vector3(grid.SizeX / 2.0f, grid.SizeY / 2.0f, grid.SizeZ / 2.0f);
         var shift = new Vector3(offset, 0.0f, 0.0f);
 
@@ -56,7 +58,7 @@ public class SurfaceNetsMesherTests
                     var right = Vector3.Distance(position, center + shift) - radius;
                     var distance = MathF.Min(left, right);
 
-                    grid[x, y, z] = (byte)Math.Clamp(Iso - distance * Iso, 0.0f, 255.0f);
+                    content[x, y, z] = (byte)Math.Clamp(Iso - distance * Iso, 0.0f, 255.0f);
                 }
             }
         }
@@ -64,9 +66,10 @@ public class SurfaceNetsMesherTests
         return grid;
     }
 
-    private static Grid3D<byte> CarvedSphereField(int radius)
+    private static Memory3D<byte> CarvedSphereField(int radius)
     {
         var grid = SphereField(radius);
+        var content = grid.Span;
         var middle = grid.SizeX / 2;
 
         for (var x = middle - 2; x < middle + 1; x++)
@@ -75,7 +78,7 @@ public class SurfaceNetsMesherTests
             {
                 for (var z = 0; z < grid.SizeZ; z++)
                 {
-                    grid.GetChecked(x, y, z) = 0;
+                    content.GetChecked(x, y, z) = 0;
                 }
             }
         }
@@ -83,7 +86,7 @@ public class SurfaceNetsMesherTests
         return grid;
     }
 
-    private static Vector3 Center(Grid3D<byte> field)
+    private static Vector3 Center(Memory3D<byte> field)
     {
         return new Vector3(field.SizeX / 2.0f, field.SizeY / 2.0f, field.SizeZ / 2.0f);
     }
@@ -222,7 +225,7 @@ public class SurfaceNetsMesherTests
     public void LoneVoxel_IsAClosedHexahedron()
     {
         var field = DenseField(7, 0);
-        field[3, 3, 3] = 255;
+        field.Span[3, 3, 3] = 255;
 
         var (vertices, indices) = Mesh(field);
 

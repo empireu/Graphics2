@@ -1,5 +1,6 @@
 ﻿using System.Numerics;
 using System.Runtime.CompilerServices;
+using Graphics2.Data;
 using Graphics2.Mathematics;
 
 /*
@@ -36,7 +37,7 @@ public sealed class SurfaceNetsMeshingDescription
     /// <summary>
     ///     Content field.
     /// </summary>
-    public required Grid3D<byte> Content { get; init; }
+    public required Memory3D<byte> Content { get; init; }
     
     /// <summary>
     ///     Content above this level counts as solid.
@@ -125,9 +126,13 @@ public class SurfaceNetsMesher
     public static void Mesh(SurfaceNetsMeshingDescription description)
     {
         ArgumentNullException.ThrowIfNull(description);
-        ArgumentNullException.ThrowIfNull(description.Content);
         ArgumentNullException.ThrowIfNull(description.Vertices);
         ArgumentNullException.ThrowIfNull(description.Indices);
+
+        if (description.Content.IsEmpty)
+        {
+            throw new ArgumentException("The content box is empty.", nameof(description.Content));
+        }
 
         var cells = new Vector3i(description.Content.SizeX - 1, description.Content.SizeY - 1, description.Content.SizeZ - 1);
 
@@ -149,7 +154,7 @@ public class SurfaceNetsMesher
         ArgumentOutOfRangeException.ThrowIfGreaterThan(cellCount.Y, cells.Y - Halo - cellMin.Y, nameof(description.CellCount));
         ArgumentOutOfRangeException.ThrowIfGreaterThan(cellCount.Z, cells.Z - Halo - cellMin.Z, nameof(description.CellCount));
 
-        var content = description.Content;
+        var content = description.Content.Span;
         var iso = description.IsoLevel;
         var vertices = description.Vertices;
         var indices = description.Indices;
@@ -310,7 +315,7 @@ public class SurfaceNetsMesher
     ///     The validation bounds the stencil, so these reads always land inside the grid.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static Vector3 CornerGradient(int sx, int sy, int sz, Grid3D<byte> content)
+    private static Vector3 CornerGradient(int sx, int sy, int sz, Span3D<byte> content)
     {
         return new Vector3(
             content[sx + 1, sy, sz] - content[sx - 1, sy, sz],
@@ -322,7 +327,7 @@ public class SurfaceNetsMesher
     /// <summary>
     ///     Blends the gradients of the 8 cell corners to the vertex, negated because content grows toward the solid.
     /// </summary>
-    private static Vector3 VertexNormal(int sx, int sy, int sz, Vector3 local, Grid3D<byte> content)
+    private static Vector3 VertexNormal(int sx, int sy, int sz, Vector3 local, Span3D<byte> content)
     {
         var g000 = CornerGradient(sx, sy, sz, content);
         var g100 = CornerGradient(sx + 1, sy, sz, content);

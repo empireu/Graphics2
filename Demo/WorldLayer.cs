@@ -1,9 +1,9 @@
 ﻿using System.Numerics;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Graphics2.Core;
 using Graphics2.Core.Render;
 using Graphics2.Core.Resources;
+using Graphics2.Data;
 using Graphics2.ImGui;
 using Graphics2.Mathematics;
 using Graphics2.Renderer.Quads;
@@ -256,9 +256,11 @@ internal sealed unsafe class WorldLayer : IDisposable
         ImGuiPass(frame);
     }
 
-    private static Grid3D<byte> SphereDistanceField(int radius)
+    private static Memory3D<byte> SphereDistanceField(int radius)
     {
-        var grid = new Grid3D<byte>(radius * 2 + 5);
+        var size = radius * 2 + 5;
+        var grid = Memory3D<byte>.Allocate(size, size, size);
+        var content = grid.Span;
         var center = new Vector3(grid.SizeX / 2.0f, grid.SizeY / 2.0f, grid.SizeZ / 2.0f);
 
         for (var z = 0; z < grid.SizeZ; z++)
@@ -270,7 +272,7 @@ internal sealed unsafe class WorldLayer : IDisposable
                     var p = new Vector3(x, y, z);
                     var sdf = Vector3.Distance(p, center) - radius;
 
-                    grid[x, y, z] = (byte)Math.Clamp(127 - sdf * 127, 0, 255);
+                    content[x, y, z] = (byte)Math.Clamp(127 - sdf * 127, 0, 255);
                 }
             }
         }
@@ -282,7 +284,7 @@ internal sealed unsafe class WorldLayer : IDisposable
             {
                 for (var z = 0; z < grid.SizeZ; z++)
                 {
-                    grid.GetChecked(x, y, z) = 0;
+                    content.GetChecked(x, y, z) = 0;
                 }
             }
         }
