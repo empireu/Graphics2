@@ -9,6 +9,7 @@ using Graphics2.Math;
 using Graphics2.Renderer.Quads;
 using Graphics2.Renderer.Lines;
 using Graphics2.Renderer.Text;
+using Graphics2.Voxels;
 using Graphics2.Windowing.Input;
 using ImGuiNET;
 using Silk.NET.Maths;
@@ -180,9 +181,8 @@ internal sealed unsafe class WorldLayer : IDisposable
 
         var vertices = new List<SurfaceNetsVertex>();
         var indices = new List<int>();
-        const int radius = 5;
 
-        var sdf = SphereDistanceField(radius);
+        var sdf = SphereDistanceField(10);
         SurfaceNetsMesher.Mesh(new SurfaceNetsMeshingDescription
         {
             Content = sdf,
@@ -256,7 +256,6 @@ internal sealed unsafe class WorldLayer : IDisposable
         ImGuiPass(frame);
     }
 
-
     private static Grid3D<byte> SphereDistanceField(int radius)
     {
         var grid = new Grid3D<byte>(radius * 2 + 5);
@@ -275,7 +274,19 @@ internal sealed unsafe class WorldLayer : IDisposable
                 }
             }
         }
-
+        
+        const int carve = 2;
+        for (var x = grid.SizeX / 2 - carve; x < grid.SizeX / 2 + carve / 2; x++)
+        {
+            for (var y = grid.SizeY / 2 - carve; y < grid.SizeY / 2 + carve; y++)
+            {
+                for (var z = 0; z < grid.SizeZ; z++)
+                {
+                    grid.GetRef(x, y, z) = 0;
+                }
+            }
+        }
+        
         return grid;
     }
     

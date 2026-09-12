@@ -20,7 +20,7 @@ using Graphics2.Math;
     The CubeEdges lists the three edges from corner 0 first, so a cell's three base edges are bits 0, 1 and 2 of that mask.
 */
 
-namespace Demo;
+namespace Graphics2.Voxels;
 
 /// <summary>
 ///     One vertex per cell that crosses the iso level, in sample coordinates with an outward unit normal.
