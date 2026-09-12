@@ -12,7 +12,7 @@
       <ProjectReference Include="..\Graphics2.Applications\Graphics2.Applications.csproj" />
       <ProjectReference Include="..\Graphics2.Assets\Graphics2.Assets.csproj" />
       <ProjectReference Include="..\Graphics2.ImGui\Graphics2.ImGui.csproj" />
-      <ProjectReference Include="..\Graphics2.Math\Graphics2.Math.csproj" />
+      <ProjectReference Include="..\Graphics2.Mathematics\Graphics2.Mathematics.csproj" />
       <ProjectReference Include="..\Graphics2.Renderer\Graphics2.Renderer.csproj" />
       <ProjectReference Include="..\Graphics2.Voxels\Graphics2.Voxels.csproj" />
     </ItemGroup>

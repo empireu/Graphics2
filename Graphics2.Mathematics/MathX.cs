@@ -1,6 +1,6 @@
 ﻿using System.Runtime.CompilerServices;
 
-namespace Graphics2.Math;
+namespace Graphics2.Mathematics;
 
 public static class MathX
 {
@@ -15,7 +15,7 @@ public static class MathX
     public static int NSnz(int a) => a <= 0 ? -1 : 1;
     public static double SnzE(double a) => a >= 0.0 ? SnzEpsilonDouble : -SnzEpsilonDouble;
     public static float SnzE(float a) => a >= 0.0 ? SnzEpsilonFloat : -SnzEpsilonFloat;
-    public static int MatchSign(int a, int targetSign) => System.Math.Sign(a) == targetSign ? 1 : 0;
+    public static int MatchSign(int a, int targetSign) => Math.Sign(a) == targetSign ? 1 : 0;
 
     public static int Rsb(int a) => (a & -1) >>> 31;
 

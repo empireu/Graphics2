@@ -1,6 +1,6 @@
 ﻿using System.Numerics;
 using System.Runtime.CompilerServices;
-using Graphics2.Math;
+using Graphics2.Mathematics;
 
 /*
     Surface nets: a dual grid mesher for signed distance fields.

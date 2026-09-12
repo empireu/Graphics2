@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 
 // ReSharper disable InconsistentNaming
 
-namespace Graphics2.Math;
+namespace Graphics2.Mathematics;
 
 public enum Base4Direction2D : byte
 {
@@ -71,7 +71,7 @@ public struct Vector2d
     [JsonIgnore]
     public double NormSqr => X * X + Y * Y;
     [JsonIgnore]
-    public double Norm => System.Math.Sqrt(NormSqr);
+    public double Norm => Math.Sqrt(NormSqr);
     public Vector2d Normalized() => this / Norm;
 
     public override bool Equals(object? obj)
@@ -120,7 +120,7 @@ public struct Vector3i : IComparable<Vector3i>
     public int Z;
 
     public int NormSqr => X * X + Y * Y + Z * Z;
-    public double Norm => System.Math.Sqrt(NormSqr);
+    public double Norm => Math.Sqrt(NormSqr);
     public float NormF => MathF.Sqrt(NormSqr);
 
     public Vector3i(int x, int y, int z)
@@ -139,7 +139,7 @@ public struct Vector3i : IComparable<Vector3i>
 
     public override string ToString() => $"X={X}, Y={Y}, Z={Z}";
 
-    public override bool Equals(object? obj) => obj is Vector3i v && this.Equals(v);
+    public override bool Equals(object? obj) => obj is Vector3i v && Equals(v);
 
     public bool Equals(Vector3i other) => X == other.X && Y == other.Y && Z == other.Z;
 
@@ -185,36 +185,36 @@ public struct Vector3i : IComparable<Vector3i>
     public static int DistanceSqr(Vector3i a, Vector3i b) => (a - b).NormSqr;
     public static double Distance(Vector3i a, Vector3i b) => (a - b).Norm;
     public static float DistanceF(Vector3i a, Vector3i b) => (a - b).NormF;
-    public static int Manhattan(Vector3i a, Vector3i b) => System.Math.Abs(a.X - b.X) + System.Math.Abs(a.Y - b.Y) + System.Math.Abs(a.Z - b.Z);
+    public static int Manhattan(Vector3i a, Vector3i b) => Math.Abs(a.X - b.X) + Math.Abs(a.Y - b.Y) + Math.Abs(a.Z - b.Z);
 
     public static Vector3i Clamp(Vector3i v, Vector3i min, Vector3i max) => new(
-        System.Math.Clamp(v.X, min.X, max.X),
-        System.Math.Clamp(v.Y, min.Y, max.Y),
-        System.Math.Clamp(v.Z, min.Z, max.Z)
+        Math.Clamp(v.X, min.X, max.X),
+        Math.Clamp(v.Y, min.Y, max.Y),
+        Math.Clamp(v.Z, min.Z, max.Z)
     );
 
     public static Vector3i ClampExclusive(Vector3i v, Vector3i min, Vector3i maxExclusive) => new(
-        System.Math.Clamp(v.X, min.X, maxExclusive.X - 1),
-        System.Math.Clamp(v.Y, min.Y, maxExclusive.Y - 1),
-        System.Math.Clamp(v.Z, min.Z, maxExclusive.Z - 1)
+        Math.Clamp(v.X, min.X, maxExclusive.X - 1),
+        Math.Clamp(v.Y, min.Y, maxExclusive.Y - 1),
+        Math.Clamp(v.Z, min.Z, maxExclusive.Z - 1)
     );
 
     public static Vector3i Clamp(Vector3i v, int min, int max) => new(
-        System.Math.Clamp(v.X, min, max),
-        System.Math.Clamp(v.Y, min, max),
-        System.Math.Clamp(v.Z, min, max)
+        Math.Clamp(v.X, min, max),
+        Math.Clamp(v.Y, min, max),
+        Math.Clamp(v.Z, min, max)
     );
 
     public static Vector3i Min(Vector3i a, Vector3i b) => new(
-        System.Math.Min(a.X, b.X),
-        System.Math.Min(a.Y, b.Y),
-        System.Math.Min(a.Z, b.Z)
+        Math.Min(a.X, b.X),
+        Math.Min(a.Y, b.Y),
+        Math.Min(a.Z, b.Z)
     );
 
     public static Vector3i Max(Vector3i a, Vector3i b) => new(
-        System.Math.Max(a.X, b.X),
-        System.Math.Max(a.Y, b.Y),
-        System.Math.Max(a.Z, b.Z)
+        Math.Max(a.X, b.X),
+        Math.Max(a.Y, b.Y),
+        Math.Max(a.Z, b.Z)
     );
 }
 
@@ -245,7 +245,7 @@ public struct Vector3d
     }
 
     public double NormSqr => Dot(this, this);
-    public double Norm => System.Math.Sqrt(NormSqr);
+    public double Norm => Math.Sqrt(NormSqr);
     public Vector3d Normalized() => this / Norm;
 
     public static double Dot(Vector3d a, Vector3d b) => a.X * b.X + a.Y * b.Y + a.Z * b.Z;
@@ -283,7 +283,7 @@ public struct Vector3d
         Min(Max(value, min), max);
 
     public static double Angle(Vector3d a, Vector3d b) =>
-        System.Math.Acos(System.Math.Clamp(Vector3d.Dot(a, b) / (a.Norm * b.Norm), -1, +1));
+        Math.Acos(Math.Clamp(Dot(a, b) / (a.Norm * b.Norm), -1, +1));
 }
 
 public struct BoundingBox3i
@@ -342,15 +342,15 @@ public struct BoundingBox3i
     public int DistanceToSqr(Vector3i point) => Contains(point) ? 0 : Vector3i.DistanceSqr(point, Vector3i.Clamp(point, Min, Max));
     public float DistanceToSqr(Vector3 point) => Contains(point) ? 0 : Vector3.DistanceSquared(point, Vector3.Clamp(point, Min, Max));
 
-    public double DistanceTo(Vector3i point) => System.Math.Sqrt(DistanceToSqr(point));
+    public double DistanceTo(Vector3i point) => Math.Sqrt(DistanceToSqr(point));
     public float DistanceFTo(Vector3i point) => MathF.Sqrt(DistanceToSqr(point));
 
     public static BoundingBox3i Intersect(BoundingBox3i a, BoundingBox3i b) => new(
-        System.Math.Max(a.Min.X, b.Min.X),
-        System.Math.Max(a.Min.Y, b.Min.Y),
-        System.Math.Max(a.Min.Z, b.Min.Z),
-        System.Math.Min(a.Max.X, b.Max.X),
-        System.Math.Min(a.Max.Y, b.Max.Y),
-        System.Math.Min(a.Max.Z, b.Max.Z)    
+        Math.Max(a.Min.X, b.Min.X),
+        Math.Max(a.Min.Y, b.Min.Y),
+        Math.Max(a.Min.Z, b.Min.Z),
+        Math.Min(a.Max.X, b.Max.X),
+        Math.Min(a.Max.Y, b.Max.Y),
+        Math.Min(a.Max.Z, b.Max.Z)    
     );
 }

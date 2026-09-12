@@ -5,7 +5,7 @@ using Graphics2.Core;
 using Graphics2.Core.Render;
 using Graphics2.Core.Resources;
 using Graphics2.ImGui;
-using Graphics2.Math;
+using Graphics2.Mathematics;
 using Graphics2.Renderer.Quads;
 using Graphics2.Renderer.Lines;
 using Graphics2.Renderer.Text;
@@ -282,7 +282,7 @@ internal sealed unsafe class WorldLayer : IDisposable
             {
                 for (var z = 0; z < grid.SizeZ; z++)
                 {
-                    grid.GetRef(x, y, z) = 0;
+                    grid.GetChecked(x, y, z) = 0;
                 }
             }
         }

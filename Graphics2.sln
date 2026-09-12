@@ -18,7 +18,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Graphics2.ImGui", "Graphics
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Graphics2.Renderer", "Graphics2.Renderer\Graphics2.Renderer.csproj", "{B8FAF462-4611-40A5-A912-93FFA79ED9E4}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Graphics2.Math", "Graphics2.Math\Graphics2.Math.csproj", "{2B78F41F-7BF5-47ED-A82E-ED2064BE876A}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Graphics2.Mathematics", "Graphics2.Mathematics\Graphics2.Mathematics.csproj", "{2B78F41F-7BF5-47ED-A82E-ED2064BE876A}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Graphics2.Voxels", "Graphics2.Voxels\Graphics2.Voxels.csproj", "{5E33EE57-A2AA-4BD0-9567-462D1BF834DA}"
 EndProject

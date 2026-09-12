@@ -1,4 +1,4 @@
-﻿namespace Graphics2.Math;
+﻿namespace Graphics2.Mathematics;
 
 public static class Extensions
 {
@@ -39,11 +39,11 @@ public static class Extensions
 
     public static bool ApproxEq(this float f, float other, float threshold = 1e-7f)
     {
-        return System.Math.Abs(f - other) < threshold;
+        return Math.Abs(f - other) < threshold;
     }
 
     public static bool ApproxEq(this double d, double other, double threshold = 1e-7)
     {
-        return System.Math.Abs(d - other) < threshold;
+        return Math.Abs(d - other) < threshold;
     }
 }

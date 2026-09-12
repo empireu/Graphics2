@@ -27,19 +27,19 @@ public class Grid3D<T> where T : struct
     public ref T this[int x, int y, int z] => ref Data[z * SizeX * SizeY + y * SizeX + x];
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public ref T GetRef(int x, int y, int z)
+    public ref T GetChecked(int x, int y, int z)
     {
         if (x < 0 || x >= SizeX)
         {
             throw new ArgumentOutOfRangeException(nameof(x));
         }
         
-        if (y < 0 || y >= SizeX)
+        if (y < 0 || y >= SizeY)
         {
             throw new ArgumentOutOfRangeException(nameof(y));
         }
         
-        if (z < 0 || z >= SizeX)
+        if (z < 0 || z >= SizeZ)
         {
             throw new ArgumentOutOfRangeException(nameof(z));
         }

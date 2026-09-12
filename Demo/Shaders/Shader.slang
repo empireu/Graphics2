@@ -24,7 +24,7 @@ VertexOutput vsMain(VertexInput input) {
 
 [shader("fragment")]
 float4 fsMain(VertexOutput input) : SV_TARGET {
-     float3 lightDir = normalize(-float3(0.4, 0.8, 0.5));
+     float3 lightDir = normalize(float3(0.35, 0.9, -0.35));
      float lambert = saturate(dot(normalize(input.normal), lightDir));
      return float4(float3(0.15) + float3(0.85) * lambert, 1.0);
 }
