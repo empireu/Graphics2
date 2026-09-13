@@ -45,6 +45,18 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         }
     }
 
+    /// <summary>
+    ///     Creates a device-local vertex and index buffer.
+    ///     Both capacities are floors applied to the first allocation, and what is actually allocated is rounded up to a power of two.
+    /// </summary>
+    public Mesh<TVertex> CreateMesh<TVertex>(int vertexCapacity = 0, int indexCapacity = 0) where TVertex : unmanaged
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(vertexCapacity);
+        ArgumentOutOfRangeException.ThrowIfNegative(indexCapacity);
+
+        return new Mesh<TVertex>(_device, this, vertexCapacity, indexCapacity);
+    }
+
     public VkBuffer CreateBuffer(BufferDescription description)
     {
         if (description.Size <= 0)

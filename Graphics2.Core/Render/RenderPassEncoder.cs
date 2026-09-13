@@ -564,6 +564,56 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         _vk.CmdDrawIndexed(_cmd, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
     }
 
+    #region Mesh
+
+    /// <summary>
+    ///     Binds the mesh's vertex buffer.
+    ///     Does nothing when the mesh has never been built, so callers with a possibly empty mesh can bind and draw fine.
+    /// </summary>
+    public void SetVertexBuffer<TVertex>(Mesh<TVertex> mesh) where TVertex : unmanaged
+    {
+        ArgumentNullException.ThrowIfNull(mesh);
+
+        if (mesh.VertexBuffer == null)
+        {
+            return;
+        }
+
+        SetVertexBuffer(mesh.VertexBuffer);
+    }
+
+    /// <summary>
+    ///     Binds the mesh's index buffer with the mesh's index type. Does nothing when the mesh has never been built.
+    /// </summary>
+    public void SetIndexBuffer<TVertex>(Mesh<TVertex> mesh) where TVertex : unmanaged
+    {
+        ArgumentNullException.ThrowIfNull(mesh);
+
+        if (mesh.IndexBuffer == null)
+        {
+            return;
+        }
+
+        SetIndexBuffer(mesh.IndexBuffer, mesh.IndexType);
+    }
+
+    /// <summary>
+    ///     Draws every index in the mesh. Emits no draw call for an empty mesh.
+    /// </summary>
+    public void DrawIndexed<TVertex>(Mesh<TVertex> mesh) where TVertex : unmanaged
+    {
+        ArgumentNullException.ThrowIfNull(mesh);
+
+        if (mesh.IndexCount == 0)
+        {
+            return;
+        }
+
+        DrawIndexed((uint)mesh.IndexCount);
+    }
+
+    #endregion
+
     public void End()
     {
         if (_ended)

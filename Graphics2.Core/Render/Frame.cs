@@ -14,15 +14,15 @@ public sealed unsafe class Frame
     private readonly UploadRing _uniformRing;
     private readonly UploadRing _storageRing;
     private readonly UploadRing _geometryRing;
-    private readonly HashSet<ulong> _pendingCopies = [];
-    private readonly HashSet<VkTexture> _pendingImageCopies = [];
+    private readonly HashSet<ulong> _pendingCopies;
+    private readonly HashSet<VkTexture> _pendingImageCopies;
     private readonly List<IDisposable> _deferredDisposals;
 
     public VkTexture SwapchainColorTarget { get; }
 
     public Vector2D<int> Extent { get; }
 
-    internal Frame(VkDevice device, DescriptorPool descriptorPool, CommandBuffer commandBuffer, uint imageIndex, VkTexture swapchainColorTarget, Extent2D extent, UploadRing uniformRing, UploadRing storageRing, UploadRing geometryRing, List<IDisposable> deferredDisposals)
+    internal Frame(VkDevice device, DescriptorPool descriptorPool, CommandBuffer commandBuffer, uint imageIndex, VkTexture swapchainColorTarget, Extent2D extent, UploadRing uniformRing, UploadRing storageRing, UploadRing geometryRing, List<IDisposable> deferredDisposals, HashSet<ulong> pendingCopies, HashSet<VkTexture> pendingImageCopies)
     {
         Device = device;
         DescriptorPool = descriptorPool;
@@ -33,6 +33,8 @@ public sealed unsafe class Frame
         _uniformRing = uniformRing;
         _storageRing = storageRing;
         _geometryRing = geometryRing;
+        _pendingCopies = pendingCopies;
+        _pendingImageCopies = pendingImageCopies;
         _deferredDisposals = deferredDisposals;
     }
 

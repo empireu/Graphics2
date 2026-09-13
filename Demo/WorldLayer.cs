@@ -14,6 +14,8 @@ using Graphics2.Windowing.Input;
 using ImGuiNET;
 using Silk.NET.Maths;
 
+// ReSharper disable ForCanBeConvertedToForeach
+
 namespace Demo;
 
 internal sealed unsafe class WorldLayer : IDisposable
@@ -42,35 +44,10 @@ internal sealed unsafe class WorldLayer : IDisposable
     private float _reliefVoxels = 12.0f; 
     private int _size = 32;
 
-    private class GeneratedState : IDisposable
-    {
-        public required VkBuffer Vertex { get; init; }
-        
-        public required VkBuffer Index { get; init; }
-        
-        public required int Voxels { get; init; }
+    private readonly List<uint> _indexScratch = [];
 
-        public required int Vertices { get; init; }
-        
-        public required int Indices { get; init; }
-
-        private bool _disposed;
-        
-        public void Dispose()
-        {
-            if (_disposed)
-            {
-                return;
-            }
-
-            _disposed = true;
-            
-            Vertex.Dispose();
-            Index.Dispose();
-        }
-    }
-
-    private GeneratedState? _generatedState;
+    private Mesh<SurfaceNetsVertex>? _mesh;
+    private int _solidVoxels;
     
     public WorldLayer(App app)
     {
@@ -244,7 +221,7 @@ internal sealed unsafe class WorldLayer : IDisposable
             _overlayQuadRenderer3D.Submit(frame, worldPass);
             _textRenderer.Submit(frame, worldPass);
             
-            if (_generatedState != null)
+            if (_mesh != null)
             {
                 worldPass.SetPipeline(_pipeline);
                 worldPass.SetViewport(0, 0, frame.Extent.X, frame.Extent.Y);
@@ -255,9 +232,9 @@ internal sealed unsafe class WorldLayer : IDisposable
                     ViewProj = _camera.ViewProj
                 });
             
-                worldPass.SetVertexBuffer(_generatedState.Vertex);
-                worldPass.SetIndexBuffer(_generatedState.Index, IndexType.UInt32);
-                worldPass.DrawIndexed((uint)_generatedState.Indices);
+                worldPass.SetVertexBuffer(_mesh);
+                worldPass.SetIndexBuffer(_mesh);
+                worldPass.DrawIndexed(_mesh);
             }
         }
         
@@ -275,91 +252,96 @@ internal sealed unsafe class WorldLayer : IDisposable
             _size = Math.Clamp(_size, 1, 128);
             _voxelsPerUnit = MathF.Max(_voxelsPerUnit, 0.01f);
 
-            if (_generatedState != null)
+            if (_mesh != null && _mesh.IndexCount > 0)
             {
                 ImGui.Separator();
                 ImGui.Text("Generated state:");
-                ImGui.Text($"Solid Voxels: {_generatedState.Voxels}");
-                ImGui.Text($"Vertices: {_generatedState.Vertices}");
-                ImGui.Text($"Indices: {_generatedState.Indices}");
+                ImGui.Text($"Solid Voxels: {_solidVoxels}");
+                ImGui.Text($"Vertices: {_mesh.VertexCount}");
+                ImGui.Text($"Indices: {_mesh.IndexCount}");
+                ImGui.Text($"Vertex capacity: {_mesh.VertexCapacity}");
+                ImGui.Text($"Index capacity: {_mesh.IndexCapacity}");
             }
             
             if (ImGui.Button("Run"))
             {
-                if (_generatedState != null)
-                {
-                    frame.DisposeLater(_generatedState);
-                    _generatedState = null;
-                }
-                
-                var generator = new FbmTerrainGenerator(
-                    _seed,
-                    _voxelsPerUnit,
-                    _surfaceHeight,
-                    _reliefVoxels
-                );
-
-                var sampleSize = _size + 4;
-
-                var content = Memory3D<byte>.Allocate(
-                    sampleSize,
-                    sampleSize,
-                    sampleSize
-                );
-                
-                var material = Memory3D<byte>.Allocate(
-                    content.SizeX,
-                    content.SizeY,
-                    content.SizeZ
-                );
-                
-                generator.Generate(
-                    new Vector3i(0, 0, 0),
-                    new Vector3i(content.SizeX - 1, content.SizeY - 1, content.SizeZ - 1),
-                    content.Span,
-                    material.Span
-                );
-                
-                var vertices = new List<SurfaceNetsVertex>();
-                var indices = new List<int>();
-
-                SurfaceNetsMesher.Mesh(new SurfaceNetsMeshingDescription
-                {
-                    Content = content,
-                    IsoLevel = 127,
-                    Vertices = vertices,
-                    Indices = indices
-                });
-
-                var vertex = _app.Factory.CreateBuffer(new BufferDescription
-                {
-                    Size = sizeof(SurfaceNetsVertex) * vertices.Count,
-                    Usage = BufferUsage.Vertex | BufferUsage.TransferDestination
-                });
-                
-                var index = _app.Factory.CreateBuffer(new BufferDescription
-                {
-                    Size = sizeof(uint) * indices.Count,
-                    Usage = BufferUsage.Index | BufferUsage.TransferDestination
-                });
-
-                _app.Factory.UpdateBuffer(vertex, MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(vertices)));
-                _app.Factory.UpdateBuffer(index, MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(indices)));
-
-                _generatedState = new GeneratedState
-                {
-                    Vertex = vertex,
-                    Index = index,
-                    Voxels = content.Span.Data.ToArray().Count(x => x > 127),
-                    Vertices = vertices.Count,
-                    Indices = indices.Count
-                };
+                Regenerate(frame);
             }
         }
 
         ImGui.End();
         
         ImGuiPass(frame);
+    }
+
+    private void Regenerate(Frame frame)
+    {
+        var generator = new FbmTerrainGenerator(
+            _seed,
+            _voxelsPerUnit,
+            _surfaceHeight,
+            _reliefVoxels
+        );
+        
+        var sampleSize = _size + 4;
+
+        var content = Memory3D<byte>.Allocate(
+            sampleSize,
+            sampleSize,
+            sampleSize
+        );
+        
+        var material = Memory3D<byte>.Allocate(
+            content.SizeX,
+            content.SizeY,
+            content.SizeZ
+        );
+        
+        generator.Generate(
+            new Vector3i(0, 0, 0),
+            new Vector3i(content.SizeX - 1, content.SizeY - 1, content.SizeZ - 1),
+            content.Span,
+            material.Span
+        );
+        
+        var vertices = new List<SurfaceNetsVertex>();
+        var indices = new List<int>();
+
+        SurfaceNetsMesher.Mesh(new SurfaceNetsMeshingDescription
+        {
+            Content = content,
+            IsoLevel = 127,
+            Vertices = vertices,
+            Indices = indices
+        });
+
+        _indexScratch.Clear();
+
+        foreach (var index in indices)
+        {
+            _indexScratch.Add((uint)index);
+        }
+
+        _mesh ??= _app.Factory.CreateMesh<SurfaceNetsVertex>();
+        
+        _mesh.Rebuild(
+            CollectionsMarshal.AsSpan(vertices),
+            CollectionsMarshal.AsSpan(_indexScratch),
+            frame
+        );
+
+        _solidVoxels = 0;
+
+        var data = content.Span.Data;
+        
+        for (var index = 0; index < data.Length; index++)
+        {
+            var contentByte = data[index];
+            if (contentByte > 127)
+            {
+                _solidVoxels++;
+            }
+        }
     }
 
     public void Dispose()
@@ -373,6 +355,6 @@ internal sealed unsafe class WorldLayer : IDisposable
         _overlayQuadRenderer3D.Dispose();
         _lineRenderer3D.Dispose();
         _pipeline.Dispose();
-        _generatedState?.Dispose();
+        _mesh?.Dispose();
     }
 }

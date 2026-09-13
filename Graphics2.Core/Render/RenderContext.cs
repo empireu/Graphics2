@@ -13,6 +13,13 @@ public sealed unsafe class RenderContext : IDisposable
     private VkTexture[] _swapchainTargets = [];
     private readonly DescriptorPool[] _descriptorPools;
     private readonly List<IDisposable>[] _deferredDisposals;
+
+    /// <summary>
+    ///     Pending copy barriers live here rather than on the frame.
+    ///     A copy recorded after the last pass of a frame is only barriered at the next pass begin, which may be in the next frame, and submission order on the queue is what makes a barrier in a later command buffer cover an earlier copy.
+    /// </summary>
+    private readonly HashSet<ulong> _pendingCopies = [];
+    private readonly HashSet<VkTexture> _pendingImageCopies = [];
     
     private uint _frame;
     private int _disposed;
@@ -157,7 +164,7 @@ public sealed unsafe class RenderContext : IDisposable
             throw new VkBootstrapException("Failed to begin command buffer");
         }
 
-        return new Frame(_device, descriptorPool, slot.CommandBuffer, imageIndex, _swapchainTargets[imageIndex], Swapchain.Extent, slot.UniformRing, slot.StorageRing, slot.GeometryRing, _deferredDisposals[frameIndex]);
+        return new Frame(_device, descriptorPool, slot.CommandBuffer, imageIndex, _swapchainTargets[imageIndex], Swapchain.Extent, slot.UniformRing, slot.StorageRing, slot.GeometryRing, _deferredDisposals[frameIndex], _pendingCopies, _pendingImageCopies);
     }
 
     /// <summary>
