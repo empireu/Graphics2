@@ -286,7 +286,11 @@ internal sealed unsafe class WorldLayer : IDisposable
             
             if (ImGui.Button("Run"))
             {
-                _generatedState?.Dispose();
+                if (_generatedState != null)
+                {
+                    frame.DisposeLater(_generatedState);
+                    _generatedState = null;
+                }
                 
                 var generator = new FbmTerrainGenerator(
                     _seed,

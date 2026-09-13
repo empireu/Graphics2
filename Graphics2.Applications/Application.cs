@@ -136,6 +136,7 @@ public abstract unsafe class Application : IDisposable
         }
 
         _disposed = true;
+        Device.WaitIdle();
         OnDispose();
         Context?.Dispose();
         Factory.Dispose();

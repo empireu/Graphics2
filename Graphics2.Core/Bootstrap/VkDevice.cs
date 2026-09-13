@@ -29,6 +29,14 @@ public sealed unsafe class VkDevice : IDisposable
     public readonly Device Device;
     public readonly Queue Queue;
 
+    /// <summary>
+    ///     Blocks until every queue of the device has finished the work submitted to it.
+    /// </summary>
+    public void WaitIdle()
+    {
+        Instance.Vk.DeviceWaitIdle(Device);
+    }
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)

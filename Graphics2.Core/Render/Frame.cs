@@ -16,12 +16,13 @@ public sealed unsafe class Frame
     private readonly UploadRing _geometryRing;
     private readonly HashSet<ulong> _pendingCopies = [];
     private readonly HashSet<VkTexture> _pendingImageCopies = [];
+    private readonly List<IDisposable> _deferredDisposals;
 
     public VkTexture SwapchainColorTarget { get; }
 
     public Vector2D<int> Extent { get; }
 
-    internal Frame(VkDevice device, DescriptorPool descriptorPool, CommandBuffer commandBuffer, uint imageIndex, VkTexture swapchainColorTarget, Extent2D extent, UploadRing uniformRing, UploadRing storageRing, UploadRing geometryRing)
+    internal Frame(VkDevice device, DescriptorPool descriptorPool, CommandBuffer commandBuffer, uint imageIndex, VkTexture swapchainColorTarget, Extent2D extent, UploadRing uniformRing, UploadRing storageRing, UploadRing geometryRing, List<IDisposable> deferredDisposals)
     {
         Device = device;
         DescriptorPool = descriptorPool;
@@ -32,6 +33,18 @@ public sealed unsafe class Frame
         _uniformRing = uniformRing;
         _storageRing = storageRing;
         _geometryRing = geometryRing;
+        _deferredDisposals = deferredDisposals;
+    }
+
+    /// <summary>
+    ///     Queues a resource to be destroyed once the GPU has finished this frame slot, which is one full cycle of frames in flight after this call. 
+    ///     Destroying a resource that an earlier frame still reads corrupts the memory its allocation was freed into.
+    /// </summary>
+    public void DisposeLater(IDisposable resource)
+    {
+        ArgumentNullException.ThrowIfNull(resource);
+
+        _deferredDisposals.Add(resource);
     }
 
     public RingAllocation AllocateUniform(uint size) => _uniformRing.Allocate(size);

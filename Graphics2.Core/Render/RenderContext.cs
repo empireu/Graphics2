@@ -12,6 +12,7 @@ public sealed unsafe class RenderContext : IDisposable
     private Semaphore[] _renderFinishedSemaphores;
     private VkTexture[] _swapchainTargets = [];
     private readonly DescriptorPool[] _descriptorPools;
+    private readonly List<IDisposable>[] _deferredDisposals;
     
     private uint _frame;
     private int _disposed;
@@ -32,9 +33,12 @@ public sealed unsafe class RenderContext : IDisposable
         FramesInFlight = framesInFlight;
 
         _descriptorPools = new DescriptorPool[framesInFlight];
+        _deferredDisposals = new List<IDisposable>[framesInFlight];
+
         for (var i = 0; i < framesInFlight; i++)
         {
             _descriptorPools[i] = CreateDescriptorPool(device);
+            _deferredDisposals[i] = [];
         }
     }
 
@@ -111,19 +115,22 @@ public sealed unsafe class RenderContext : IDisposable
     /// </summary>
     public Frame BeginFrame()
     {
-        var slot = _slots[_frame % FramesInFlight];
+        var frameIndex = _frame % FramesInFlight;
+        var slot = _slots[frameIndex];
         var vk = _device.Instance.Vk;
 
         var fence = slot.Fence;
         vk.WaitForFences(_device.Device, 1, &fence, true, ulong.MaxValue);
         vk.ResetFences(_device.Device, 1, &fence);
 
+        RunDisposalsForFrame(frameIndex);
+
         slot.Reset();
         slot.UniformRing.Reset();
         slot.StorageRing.Reset();
         slot.GeometryRing.Reset();
 
-        var descriptorPool = _descriptorPools[_frame % FramesInFlight];
+        var descriptorPool = _descriptorPools[frameIndex];
         vk.ResetDescriptorPool(_device.Device, descriptorPool, 0);
 
         var result = Swapchain.AcquireNextImage(slot.AcquireSemaphore, out var imageIndex);
@@ -150,7 +157,7 @@ public sealed unsafe class RenderContext : IDisposable
             throw new VkBootstrapException("Failed to begin command buffer");
         }
 
-        return new Frame(_device, descriptorPool, slot.CommandBuffer, imageIndex, _swapchainTargets[imageIndex], Swapchain.Extent, slot.UniformRing, slot.StorageRing, slot.GeometryRing);
+        return new Frame(_device, descriptorPool, slot.CommandBuffer, imageIndex, _swapchainTargets[imageIndex], Swapchain.Extent, slot.UniformRing, slot.StorageRing, slot.GeometryRing, _deferredDisposals[frameIndex]);
     }
 
     /// <summary>
@@ -219,6 +226,8 @@ public sealed unsafe class RenderContext : IDisposable
         var vk = _device.Instance.Vk;
         vk.DeviceWaitIdle(_device.Device);
 
+        RunAllDisposals();
+
         foreach (var pool in _descriptorPools)
         {
             vk.DestroyDescriptorPool(_device.Device, pool, null);
@@ -235,6 +244,31 @@ public sealed unsafe class RenderContext : IDisposable
         }
 
         Swapchain.Dispose();
+    }
+
+    private void RunAllDisposals()
+    {
+        for (var i = 0; i < _deferredDisposals.Length; i++)
+        {
+            RunDisposalsForFrame((uint)i);
+        }
+    }
+
+    private void RunDisposalsForFrame(uint frameIndex)
+    {
+        var deferred = _deferredDisposals[frameIndex];
+
+        if (deferred.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var resource in deferred)
+        {
+            resource.Dispose();
+        }
+
+        deferred.Clear();
     }
 
     private void DestroyRenderFinishedSemaphores()
