@@ -7,9 +7,9 @@ namespace Demo;
 
 internal sealed class Camera3D
 {
-    private const float MoveSpeed = 2.0f;
-    private const float LookSensitivity = 0.0025f;
-    private const float MaxPitch = MathF.PI / 2.0f - 0.01f;
+    public float MoveSpeed = 2.0f;
+    public float LookSensitivity = 0.0025f;
+    public float MaxPitch = MathF.PI / 2.0f - 0.01f;
 
     public Vector3 Position = new(0.0f, 0.0f, -3.0f);
     public float Yaw;
@@ -89,7 +89,8 @@ internal sealed class Camera3D
         if (move != Vector3.Zero)
         {
             move = Vector3.Normalize(move);
-            Position += move * MoveSpeed * deltaTime;
+            var speed = input.IsKeyDown(G2Key.ShiftLeft) ? MoveSpeed * 5 : MoveSpeed;
+            Position += move * speed * deltaTime;
         }
     }
 

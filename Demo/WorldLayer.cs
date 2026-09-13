@@ -35,6 +35,42 @@ internal sealed unsafe class WorldLayer : IDisposable
     private readonly Camera3D _camera = new();
 
     private readonly Pipeline _pipeline;
+
+    private int _seed = 3141;
+    private float _voxelsPerUnit = 16.0f;
+    private float _surfaceHeight = 16.0f;
+    private float _reliefVoxels = 12.0f; 
+    private int _size = 32;
+
+    private class GeneratedState : IDisposable
+    {
+        public required VkBuffer Vertex { get; init; }
+        
+        public required VkBuffer Index { get; init; }
+        
+        public required int Voxels { get; init; }
+
+        public required int Vertices { get; init; }
+        
+        public required int Indices { get; init; }
+
+        private bool _disposed;
+        
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            
+            Vertex.Dispose();
+            Index.Dispose();
+        }
+    }
+
+    private GeneratedState? _generatedState;
     
     public WorldLayer(App app)
     {
@@ -178,21 +214,7 @@ internal sealed unsafe class WorldLayer : IDisposable
         _overlayQuadRenderer3D.SetCamera(_camera.ViewProj);
         _textRenderer.SetCamera(_camera.ViewProj);
         _lineRenderer3D.SetCamera(_camera.ViewProj, _camera.Position);
-
-        var vertices = new List<SurfaceNetsVertex>();
-        var indices = new List<int>();
-
-        var sdf = SphereDistanceField(10);
-        SurfaceNetsMesher.Mesh(new SurfaceNetsMeshingDescription
-        {
-            Content = sdf,
-            IsoLevel = 127,
-            Vertices = vertices,
-            Indices = indices,
-            CellMin = new Vector3i(2, 2, 2),
-            CellCount = new Vector3i(sdf.SizeX - 4, sdf.SizeY - 4, sdf.SizeZ - 4)
-        });
-
+        
         var worldPassDescription = new RenderPassDescription
         {
             ColorAttachments =
@@ -221,34 +243,114 @@ internal sealed unsafe class WorldLayer : IDisposable
             _lineRenderer3D.Submit(frame, worldPass);
             _overlayQuadRenderer3D.Submit(frame, worldPass);
             _textRenderer.Submit(frame, worldPass);
-
-            var vertexBuffer = frame.AllocateVertex(sizeof(SurfaceNetsVertex) * vertices.Count);
-            MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(vertices)).CopyTo(vertexBuffer.Data);
-
-            var indexBuffer = frame.AllocateVertex(sizeof(uint) * indices.Count);
-            MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(indices)).CopyTo(indexBuffer.Data);
             
-            worldPass.SetPipeline(_pipeline);
-            worldPass.SetViewport(0, 0, frame.Extent.X, frame.Extent.Y);
-            worldPass.SetScissor(0, 0, (uint)frame.Extent.X, (uint)frame.Extent.Y);
-
-            worldPass.PushConstants(new PushConstants
+            if (_generatedState != null)
             {
-                ViewProj = _camera.ViewProj
-            });
+                worldPass.SetPipeline(_pipeline);
+                worldPass.SetViewport(0, 0, frame.Extent.X, frame.Extent.Y);
+                worldPass.SetScissor(0, 0, (uint)frame.Extent.X, (uint)frame.Extent.Y);
+
+                worldPass.PushConstants(new PushConstants
+                {
+                    ViewProj = _camera.ViewProj
+                });
             
-            worldPass.SetVertexBuffer(vertexBuffer.Buffer, vertexBuffer.Offset);
-            worldPass.SetIndexBuffer(indexBuffer.Buffer, IndexType.UInt32, indexBuffer.Offset);
-            worldPass.DrawIndexed((uint)indices.Count);
+                worldPass.SetVertexBuffer(_generatedState.Vertex);
+                worldPass.SetIndexBuffer(_generatedState.Index, IndexType.UInt32);
+                worldPass.DrawIndexed((uint)_generatedState.Indices);
+            }
         }
         
         ImGui.PushStyleColor(ImGuiCol.WindowBg, new Vector4(0, 0, 0, 0));
         ImGui.DockSpaceOverViewport(0U, (ImGuiViewport*) null, ImGuiDockNodeFlags.PassthruCentralNode, (ImGuiWindowClass*) null);
         ImGui.PopStyleColor();
         
-        if (ImGui.Begin("Info"))
+         if (ImGui.Begin("Generator"))
         {
-            ImGui.Text($"Vtx: {vertices.Count}");
+            ImGui.InputInt("Cells", ref _size, 10);
+            ImGui.InputFloat("Unit", ref _voxelsPerUnit, 1.0f);
+            ImGui.InputFloat("Height", ref _surfaceHeight, 0.5f);
+            ImGui.InputFloat("Relief", ref _reliefVoxels, 0.5f);
+
+            _size = Math.Clamp(_size, 1, 128);
+            _voxelsPerUnit = MathF.Max(_voxelsPerUnit, 0.01f);
+
+            if (_generatedState != null)
+            {
+                ImGui.Separator();
+                ImGui.Text("Generated state:");
+                ImGui.Text($"Solid Voxels: {_generatedState.Voxels}");
+                ImGui.Text($"Vertices: {_generatedState.Vertices}");
+                ImGui.Text($"Indices: {_generatedState.Indices}");
+            }
+            
+            if (ImGui.Button("Run"))
+            {
+                _generatedState?.Dispose();
+                
+                var generator = new FbmTerrainGenerator(
+                    _seed,
+                    _voxelsPerUnit,
+                    _surfaceHeight,
+                    _reliefVoxels
+                );
+
+                var sampleSize = _size + 4;
+
+                var content = Memory3D<byte>.Allocate(
+                    sampleSize,
+                    sampleSize,
+                    sampleSize
+                );
+                
+                var material = Memory3D<byte>.Allocate(
+                    content.SizeX,
+                    content.SizeY,
+                    content.SizeZ
+                );
+                
+                generator.Generate(
+                    new Vector3i(0, 0, 0),
+                    new Vector3i(content.SizeX - 1, content.SizeY - 1, content.SizeZ - 1),
+                    content.Span,
+                    material.Span
+                );
+                
+                var vertices = new List<SurfaceNetsVertex>();
+                var indices = new List<int>();
+
+                SurfaceNetsMesher.Mesh(new SurfaceNetsMeshingDescription
+                {
+                    Content = content,
+                    IsoLevel = 127,
+                    Vertices = vertices,
+                    Indices = indices
+                });
+
+                var vertex = _app.Factory.CreateBuffer(new BufferDescription
+                {
+                    Size = sizeof(SurfaceNetsVertex) * vertices.Count,
+                    Usage = BufferUsage.Vertex | BufferUsage.TransferDestination
+                });
+                
+                var index = _app.Factory.CreateBuffer(new BufferDescription
+                {
+                    Size = sizeof(uint) * indices.Count,
+                    Usage = BufferUsage.Index | BufferUsage.TransferDestination
+                });
+
+                _app.Factory.UpdateBuffer(vertex, MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(vertices)));
+                _app.Factory.UpdateBuffer(index, MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(indices)));
+
+                _generatedState = new GeneratedState
+                {
+                    Vertex = vertex,
+                    Index = index,
+                    Voxels = content.Span.Data.ToArray().Count(x => x > 127),
+                    Vertices = vertices.Count,
+                    Indices = indices.Count
+                };
+            }
         }
 
         ImGui.End();
@@ -256,42 +358,6 @@ internal sealed unsafe class WorldLayer : IDisposable
         ImGuiPass(frame);
     }
 
-    private static Memory3D<byte> SphereDistanceField(int radius)
-    {
-        var size = radius * 2 + 5;
-        var grid = Memory3D<byte>.Allocate(size, size, size);
-        var content = grid.Span;
-        var center = new Vector3(grid.SizeX / 2.0f, grid.SizeY / 2.0f, grid.SizeZ / 2.0f);
-
-        for (var z = 0; z < grid.SizeZ; z++)
-        {
-            for (var y = 0; y < grid.SizeY; y++)
-            {
-                for (var x = 0; x < grid.SizeX; x++)
-                {
-                    var p = new Vector3(x, y, z);
-                    var sdf = Vector3.Distance(p, center) - radius;
-
-                    content[x, y, z] = (byte)Math.Clamp(127 - sdf * 127, 0, 255);
-                }
-            }
-        }
-        
-        const int carve = 2;
-        for (var x = grid.SizeX / 2 - carve; x < grid.SizeX / 2 + carve / 2; x++)
-        {
-            for (var y = grid.SizeY / 2 - carve; y < grid.SizeY / 2 + carve; y++)
-            {
-                for (var z = 0; z < grid.SizeZ; z++)
-                {
-                    content.GetChecked(x, y, z) = 0;
-                }
-            }
-        }
-        
-        return grid;
-    }
-    
     public void Dispose()
     {
         _imGui.Dispose();
@@ -303,5 +369,6 @@ internal sealed unsafe class WorldLayer : IDisposable
         _overlayQuadRenderer3D.Dispose();
         _lineRenderer3D.Dispose();
         _pipeline.Dispose();
+        _generatedState?.Dispose();
     }
 }
