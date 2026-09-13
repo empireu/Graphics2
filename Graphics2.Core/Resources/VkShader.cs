@@ -19,7 +19,7 @@ public sealed class ShaderDescription
     public string EntryPoint { get; init; } = "main";
 }
 
-public sealed unsafe class VkShader : IDisposable
+public sealed unsafe class VkShader : IDeviceResource
 {
     private readonly VkDevice _device;
     private int _disposed;
@@ -38,6 +38,18 @@ public sealed unsafe class VkShader : IDisposable
     }
 
     public void Dispose()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
+        _device.WaitIdle();
+        
+        Destroy();
+    }
+
+    public void Destroy()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {

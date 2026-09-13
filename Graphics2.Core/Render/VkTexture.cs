@@ -43,7 +43,7 @@ public class VkTexture
     }
 }
 
-public sealed unsafe class Texture : VkTexture, IDisposable
+public sealed unsafe class Texture : VkTexture, IDeviceResource
 {
     private readonly VkDevice _device;
     private readonly BlockAllocator<VulkanMemory> _allocator;
@@ -81,13 +81,25 @@ public sealed unsafe class Texture : VkTexture, IDisposable
 
     public void Dispose()
     {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
+        _device.WaitIdle();
+        
+        Destroy();
+    }
+
+    public void Destroy()
+    {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return;
         }
 
         var vk = _device.Instance.Vk;
-        vk.DeviceWaitIdle(_device.Device);
+
         vk.DestroyImageView(_device.Device, View, null);
         vk.DestroyImage(_device.Device, Image, null);
         _allocator.Free(_allocation);

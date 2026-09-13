@@ -88,7 +88,7 @@ public sealed class PipelineDescription
     public Dictionary<string, SsboLayout>? SsboLayouts { get; init; }
 }
 
-public sealed unsafe class Pipeline : IDisposable
+public sealed unsafe class Pipeline : IDeviceResource
 {
     private readonly VkDevice _device;
     private readonly VkShader _vertexShader;
@@ -135,13 +135,24 @@ public sealed unsafe class Pipeline : IDisposable
 
     public void Dispose()
     {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
+        _device.WaitIdle();
+        
+        Destroy();
+    }
+
+    public void Destroy()
+    {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return;
         }
 
         var vk = _device.Instance.Vk;
-        vk.DeviceWaitIdle(_device.Device);
 
         vk.DestroyPipeline(_device.Device, Handle, null);
         vk.DestroyPipelineLayout(_device.Device, Layout, null);
@@ -151,7 +162,7 @@ public sealed unsafe class Pipeline : IDisposable
             vk.DestroyDescriptorSetLayout(_device.Device, setLayout, null);
         }
 
-        _vertexShader.Dispose();
-        _fragmentShader?.Dispose();
+        _vertexShader.Destroy();
+        _fragmentShader?.Destroy();
     }
 }

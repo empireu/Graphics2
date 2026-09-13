@@ -28,7 +28,7 @@ public sealed class SamplerDescription
     public float MaxAnisotropy { get; init; } = 16.0f;
 }
 
-public sealed unsafe class VkSampler : IDisposable
+public sealed unsafe class VkSampler : IDeviceResource
 {
     private readonly VkDevice _device;
     private int _disposed;
@@ -71,6 +71,18 @@ public sealed unsafe class VkSampler : IDisposable
     }
 
     public void Dispose()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
+        _device.WaitIdle();
+        
+        Destroy();
+    }
+
+    public void Destroy()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {

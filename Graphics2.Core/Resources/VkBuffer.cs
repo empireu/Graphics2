@@ -50,7 +50,7 @@ public sealed class BufferDescription
     public required BufferUsage Usage { get; init; }
 }
 
-public sealed unsafe class VkBuffer : IDisposable
+public sealed unsafe class VkBuffer : IDeviceResource
 {
     private readonly VkDevice _device;
     private readonly BlockAllocator<VulkanMemory> _allocator;
@@ -96,16 +96,27 @@ public sealed unsafe class VkBuffer : IDisposable
 
     public void Dispose()
     {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
+        _device.WaitIdle();
+        
+        Destroy();
+    }
+
+    public void Destroy()
+    {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return;
         }
 
         var vk = _device.Instance.Vk;
-        
-        vk.DeviceWaitIdle(_device.Device);
+
         vk.DestroyBuffer(_device.Device, Handle, null);
-        
+
         _allocator.Free(Allocation);
     }
 }

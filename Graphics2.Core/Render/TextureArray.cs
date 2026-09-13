@@ -1,4 +1,5 @@
 using Graphics2.Core.Bootstrap;
+using Graphics2.Core.Resources;
 using Silk.NET.Vulkan;
 
 namespace Graphics2.Core.Render;
@@ -9,7 +10,7 @@ namespace Graphics2.Core.Render;
 ///     Textures are added at load time and referenced by index from the shader.
 ///     The registry does not own the textures themselves. It only holds their image views in the descriptor set.
 /// </summary>
-public sealed unsafe class TextureArray : IDisposable
+public sealed unsafe class TextureArray : IDeviceResource
 {
     private readonly VkDevice _device;
     private readonly DescriptorPool _pool;
@@ -199,13 +200,25 @@ public sealed unsafe class TextureArray : IDisposable
 
     public void Dispose()
     {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
+        _device.WaitIdle();
+        
+        Destroy();
+    }
+
+    public void Destroy()
+    {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return;
         }
 
         var vk = _device.Instance.Vk;
-        vk.DeviceWaitIdle(_device.Device);
+
         vk.DestroyDescriptorPool(_device.Device, _pool, null);
         vk.DestroyDescriptorSetLayout(_device.Device, Layout, null);
     }

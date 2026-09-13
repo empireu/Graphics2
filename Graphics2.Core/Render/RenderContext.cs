@@ -265,7 +265,14 @@ public sealed unsafe class RenderContext : IDisposable
 
         foreach (var resource in deferred)
         {
-            resource.Dispose();
+            if (resource is IDeviceResource deviceResource)
+            {
+                deviceResource.Destroy();
+            }
+            else
+            {
+                resource.Dispose();
+            }
         }
 
         deferred.Clear();
