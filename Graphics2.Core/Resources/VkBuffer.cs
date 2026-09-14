@@ -62,6 +62,7 @@ public sealed unsafe class VkBuffer : IDeviceResource
 
     public readonly long Size;
     public readonly MemoryUsage MemoryUsage;
+    public readonly BufferUsage Usage;
 
     internal VkBuffer(
         VkDevice device,
@@ -70,7 +71,8 @@ public sealed unsafe class VkBuffer : IDeviceResource
         Allocation allocation,
         VulkanMemory memory,
         long size,
-        MemoryUsage memoryUsage)
+        MemoryUsage memoryUsage,
+        BufferUsage usage)
     {
         _device = device;
         _allocator = allocator;
@@ -79,6 +81,7 @@ public sealed unsafe class VkBuffer : IDeviceResource
         Memory = memory;
         Size = size;
         MemoryUsage = memoryUsage;
+        Usage = usage;
     }
 
     public Span<byte> MappedData

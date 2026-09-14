@@ -28,7 +28,7 @@ internal sealed unsafe class WorldLayer : IDisposable
     private readonly TextRenderer _textRenderer;
     private bool _textInitialized;
 
-    private Texture? _depthTexture;
+    private Texture[]? _depthTextures;
 
     private readonly QuadRenderer2D _quadRenderer2D;
     private readonly QuadRenderer3D _overlayQuadRenderer3D;
@@ -141,14 +141,21 @@ internal sealed unsafe class WorldLayer : IDisposable
 
         var factory = _app.Factory;
 
-        _depthTexture?.Dispose();
-        _depthTexture = factory.CreateTexture(new TextureDescription
+        DisposeDepthTextures();
+
+        var depthTextureCount = (int)_app.Context!.FramesInFlight;
+        _depthTextures = new Texture[depthTextureCount];
+
+        for (var slot = 0; slot < depthTextureCount; slot++)
         {
-            Width = (uint)framebufferSize.X,
-            Height = (uint)framebufferSize.Y,
-            Format = TextureFormat.D32Sfloat,
-            Usage = TextureUsage.DepthAttachment
-        });
+            _depthTextures[slot] = factory.CreateTexture(new TextureDescription
+            {
+                Width = (uint)framebufferSize.X,
+                Height = (uint)framebufferSize.Y,
+                Format = TextureFormat.D32Sfloat,
+                Usage = TextureUsage.DepthAttachment
+            });
+        }
 
         _camera.SetAspect(framebufferSize);
     }
@@ -207,7 +214,7 @@ internal sealed unsafe class WorldLayer : IDisposable
             ],
             DepthAttachment = new DepthAttachment
             {
-                Target = _depthTexture!,
+                Target = _depthTextures![frame.SlotIndex],
                 LoadOp = LoadOp.Clear,
                 StoreOp = StoreOp.Store,
                 ClearDepth = 1.0f,
@@ -267,6 +274,14 @@ internal sealed unsafe class WorldLayer : IDisposable
             {
                 Regenerate(frame);
             }
+
+            var gpuOnly = _app.Factory.GetAllocatorStats(AllocatorFamily.GpuOnly);
+            var cpuToGpu = _app.Factory.GetAllocatorStats(AllocatorFamily.CpuToGpu);
+
+            ImGui.Separator();
+            ImGui.Text("Allocators:");
+            ImGui.Text($"GPU only: {gpuOnly.Pages} page(s), {gpuOnly.BytesUsed} bytes, {gpuOnly.FreeRanges} free range(s)");
+            ImGui.Text($"CPU to GPU: {cpuToGpu.Pages} page(s), {cpuToGpu.BytesUsed} bytes, {cpuToGpu.FreeRanges} free range(s)");
         }
 
         ImGui.End();
@@ -344,13 +359,28 @@ internal sealed unsafe class WorldLayer : IDisposable
         }
     }
 
+    private void DisposeDepthTextures()
+    {
+        if (_depthTextures == null)
+        {
+            return;
+        }
+
+        foreach (var depthTexture in _depthTextures)
+        {
+            depthTexture.Dispose();
+        }
+
+        _depthTextures = null;
+    }
+
     public void Dispose()
     {
         _imGui.Dispose();
         _textRenderer.Dispose();
         _glyphAtlas.Dispose();
         _textSampler.Dispose();
-        _depthTexture?.Dispose();
+        DisposeDepthTextures();
         _quadRenderer2D.Dispose();
         _overlayQuadRenderer3D.Dispose();
         _lineRenderer3D.Dispose();

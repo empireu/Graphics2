@@ -12,6 +12,7 @@ namespace Graphics2.Core.Render;
 
 public sealed unsafe class RenderPassEncoder : IDisposable
 {
+    private readonly Frame _frame;
     private readonly VkDevice _device;
     private readonly Vk _vk;
     private readonly DescriptorPool _descriptorPool;
@@ -25,21 +26,22 @@ public sealed unsafe class RenderPassEncoder : IDisposable
     private bool _descriptorsDirty;
     private bool _ended;
 
-    private RenderPassEncoder(VkDevice device, DescriptorPool descriptorPool, CommandBuffer cmd, RenderPassDescription description, Vector2D<int> defaultExtent, HashSet<ulong> pendingCopies, HashSet<VkTexture> pendingImageCopies)
+    private RenderPassEncoder(Frame frame, RenderPassDescription description)
     {
-        _device = device;
-        _vk = device.Instance.Vk;
-        _descriptorPool = descriptorPool;
-        _cmd = cmd;
+        _frame = frame;
+        _device = frame.Device;
+        _vk = frame.Device.Instance.Vk;
+        _descriptorPool = frame.DescriptorPool;
+        _cmd = frame.CommandBuffer;
         _description = description;
-        _defaultExtent = defaultExtent;
-        _pendingCopies = pendingCopies;
-        _pendingImageCopies = pendingImageCopies;
+        _defaultExtent = frame.Extent;
+        _pendingCopies = frame.PendingCopies;
+        _pendingImageCopies = frame.PendingImageCopies;
     }
 
-    internal static RenderPassEncoder Begin(VkDevice device, DescriptorPool descriptorPool, CommandBuffer cmd, RenderPassDescription description, Vector2D<int> defaultExtent, HashSet<ulong> pendingCopies, HashSet<VkTexture> pendingImageCopies)
+    internal static RenderPassEncoder Begin(Frame frame, RenderPassDescription description)
     {
-        var encoder = new RenderPassEncoder(device, descriptorPool, cmd, description, defaultExtent, pendingCopies, pendingImageCopies);
+        var encoder = new RenderPassEncoder(frame, description);
         encoder.BeginPass();
         return encoder;
     }
@@ -219,6 +221,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         }
 
         _vk.CmdBeginRendering(_cmd, &renderingInfo);
+        _frame.PassOpen = true;
     }
 
     public void SetPipeline(Pipeline pipeline)
@@ -624,6 +627,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         _ended = true;
 
         _vk.CmdEndRendering(_cmd);
+        _frame.PassOpen = false;
 
         var colors = _description.ColorAttachments;
         var depth = _description.DepthAttachment;

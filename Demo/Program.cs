@@ -12,6 +12,7 @@ var description = new ApplicationDescription
     Instance = new VkInstanceDescription
     {
         UseValidationLayers = true,
+        ValidationFeaturesFlags = VkValidationFeatureFlags.Synchronization,
         ValidationShowVerboseSeverity = true
     }
 };

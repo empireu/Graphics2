@@ -159,7 +159,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
             throw new VkAllocationException("Failed to bind buffer memory.");
         }
 
-        return new VkBuffer(_device, allocator, bufferHandle, allocation, memory, description.Size, BufferUsageToMemoryUsage(description.Usage));
+        return new VkBuffer(_device, allocator, bufferHandle, allocation, memory, description.Size, BufferUsageToMemoryUsage(description.Usage), description.Usage);
     }
 
     public VkShader CreateShader(ShaderDescription description)
