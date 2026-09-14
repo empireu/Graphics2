@@ -78,6 +78,16 @@ public class SurfaceNetsMesher
     private const int Halo = 1;
 
     /// <summary>
+    ///     Samples read below the first meshed cell: the halo cell, plus the gradient stencil of its own corners.
+    /// </summary>
+    private const int LowSampleMargin = Halo + 1;
+
+    /// <summary>
+    ///     Samples read above the top corner of the last meshed cell: its gradient stencil.
+    /// </summary>
+    private const int HighSampleMargin = 1;
+
+    /// <summary>
     ///     Corner offsets are packed as bits, x in bit 0, y in bit 1, z in bit 2.
     /// </summary>
     private static readonly int[] CubeEdges = new int[24];
@@ -120,6 +130,51 @@ public class SurfaceNetsMesher
 
             EdgeTable[mask] = edges;
         }
+    }
+
+    /// <summary>
+    ///     The inclusive box of samples this mesher reads to mesh <see cref="cellCount"/> cells from <see cref="cellMin"/>.
+    ///     Read exactly this box and the default range meshes exactly those cells.
+    /// </summary>
+    public static BoundingBox3i GetSampleRange(Vector3i cellMin, Vector3i cellCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(cellCount.X, 1, nameof(cellCount));
+        ArgumentOutOfRangeException.ThrowIfLessThan(cellCount.Y, 1, nameof(cellCount));
+        ArgumentOutOfRangeException.ThrowIfLessThan(cellCount.Z, 1, nameof(cellCount));
+
+        return new BoundingBox3i(cellMin - LowSampleMargin, cellMin + cellCount + HighSampleMargin);
+    }
+
+    /// <summary>
+    ///     The range of uniformly spaced blocks of <see cref="chunkCellCount"/> cells whose meshes can change when any sample in <see cref="sampleBox"/> changes.
+    ///     A block is affected when its read window overlaps the box rather than when the box touches its cells, because the block's mesh depends on the halo cell below its first cell and on the surrounding stencils.
+    ///     The result can reach outside the grid.
+    /// </summary>
+    public static BoundingBox3i GetAffectedChunkRange(BoundingBox3i sampleBox, Vector3i chunkCellCount)
+    {
+        if (!sampleBox.IsValid)
+        {
+            throw new ArgumentException("The box is empty.", nameof(sampleBox));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfLessThan(chunkCellCount.X, 1, nameof(chunkCellCount));
+        ArgumentOutOfRangeException.ThrowIfLessThan(chunkCellCount.Y, 1, nameof(chunkCellCount));
+        ArgumentOutOfRangeException.ThrowIfLessThan(chunkCellCount.Z, 1, nameof(chunkCellCount));
+
+        // A block at index k reads [k * cells - Low, k * cells + cells + High], which overlaps [min, max] when k * cells <= max + Low and k * cells + cells + High >= min:
+        var min = new Vector3i(
+            MathX.CeilDiv(sampleBox.Min.X - chunkCellCount.X - HighSampleMargin, chunkCellCount.X), 
+            MathX.CeilDiv(sampleBox.Min.Y - chunkCellCount.Y - HighSampleMargin, chunkCellCount.Y),
+            MathX.CeilDiv(sampleBox.Min.Z - chunkCellCount.Z - HighSampleMargin, chunkCellCount.Z)
+        );
+
+        var max = new Vector3i(
+            MathX.FloorDiv(sampleBox.Max.X + LowSampleMargin, chunkCellCount.X),
+            MathX.FloorDiv(sampleBox.Max.Y + LowSampleMargin, chunkCellCount.Y),
+            MathX.FloorDiv(sampleBox.Max.Z + LowSampleMargin, chunkCellCount.Z)
+        );
+
+        return new BoundingBox3i(min, max);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
