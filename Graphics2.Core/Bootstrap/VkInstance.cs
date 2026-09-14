@@ -5,6 +5,17 @@ using Silk.NET.Vulkan.Extensions.EXT;
 
 namespace Graphics2.Core.Bootstrap;
 
+public enum VkValidationFeatureFlags
+{
+    None = 0,
+
+    /// <summary>
+    ///     Traces memory access of submitted command buffers and reports hazards that the ordinary checks cannot see.
+    ///     A hazard between two submissions on one queue, or between two frames in flight, is invisible without it.
+    /// </summary>
+    Synchronization = 1 << 0
+}
+
 public sealed record VkInstanceDescription
 {
     /// <summary>
@@ -12,6 +23,11 @@ public sealed record VkInstanceDescription
     ///     Startup will fail if the SDK is not installed.
     /// </summary>
     public bool UseValidationLayers { get; init; }
+
+    /// <summary>
+    ///     Validation features to enable on top of the ordinary checks. Only when <see cref="UseValidationLayers"/>.
+    /// </summary>
+    public VkValidationFeatureFlags ValidationFeaturesFlags { get; init; } = VkValidationFeatureFlags.None;
 
     public string ApplicationName { get; init; } = "Graphics2";
     
@@ -124,6 +140,13 @@ public sealed unsafe class VkInstance : IDisposable
     
     public static VkInstance Create(VkInstanceDescription description)
     {
+        if (description.ValidationFeaturesFlags != VkValidationFeatureFlags.None && !description.UseValidationLayers)
+        {
+            throw new VkBootstrapException(
+                "Validation features were requested while the validation layers are disabled. The layers ignore the feature list quietly, so the run would look checked but not be."
+            );
+        }
+
         var extensions = description.AdditionalExtensions.ToList();
 
         if (description.UseValidationLayers)
@@ -191,6 +214,22 @@ public sealed unsafe class VkInstance : IDisposable
                 };
 
                 instanceCreateInfo.PNext = &debugCreateInfo;
+
+                if (description.ValidationFeaturesFlags != VkValidationFeatureFlags.None)
+                {
+                    var enabledFeatures = stackalloc ValidationFeatureEnableEXT[MaxValidationFeatures];
+                    var enabledFeatureCount = WriteValidationFeatures(description.ValidationFeaturesFlags, enabledFeatures);
+
+                    ValidationFeaturesEXT validationFeatures = new()
+                    {
+                        SType = StructureType.ValidationFeaturesExt,
+                        EnabledValidationFeatureCount = enabledFeatureCount,
+                        PEnabledValidationFeatures = enabledFeatures,
+                        PNext = &debugCreateInfo
+                    };
+
+                    instanceCreateInfo.PNext = &validationFeatures;
+                }
             }
 
             if (vk.CreateInstance(in instanceCreateInfo, null, out var instance) != Result.Success)
@@ -212,6 +251,20 @@ public sealed unsafe class VkInstance : IDisposable
         }
     }
     
+    private const int MaxValidationFeatures = 32;
+
+    private static uint WriteValidationFeatures(VkValidationFeatureFlags featuresFlags, ValidationFeatureEnableEXT* destination)
+    {
+        var count = 0;
+
+        if ((featuresFlags & VkValidationFeatureFlags.Synchronization) != 0)
+        {
+            destination[count++] = ValidationFeatureEnableEXT.SynchronizationValidationExt;
+        }
+
+        return (uint)count;
+    }
+
     private static bool HasValidationSupport(Vk vk, List<string> validationLayers, out HashSet<string?> availableLayerNames)
     {
         uint layerCount = 0;
