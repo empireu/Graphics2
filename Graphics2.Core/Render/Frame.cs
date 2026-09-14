@@ -22,12 +22,20 @@ public sealed unsafe class Frame
 
     public Vector2D<int> Extent { get; }
 
-    internal Frame(VkDevice device, DescriptorPool descriptorPool, CommandBuffer commandBuffer, uint imageIndex, VkTexture swapchainColorTarget, Extent2D extent, UploadRing uniformRing, UploadRing storageRing, UploadRing geometryRing, List<IDisposable> deferredDisposals, HashSet<ulong> pendingCopies, HashSet<VkTexture> pendingImageCopies)
+    
+    /// <summary>
+    ///     Index of the frame slot this frame records into, in [0, FramesInFlight).
+    ///     A resource that a frame writes has to be owned per slot, because the other frames in flight still read the contents of their own.
+    /// </summary>
+    public uint SlotIndex { get; }
+
+    internal Frame(VkDevice device, DescriptorPool descriptorPool, CommandBuffer commandBuffer, uint imageIndex, uint slotIndex, VkTexture swapchainColorTarget, Extent2D extent, UploadRing uniformRing, UploadRing storageRing, UploadRing geometryRing, List<IDisposable> deferredDisposals, HashSet<ulong> pendingCopies, HashSet<VkTexture> pendingImageCopies)
     {
         Device = device;
         DescriptorPool = descriptorPool;
         CommandBuffer = commandBuffer;
         ImageIndex = imageIndex;
+        SlotIndex = slotIndex;
         SwapchainColorTarget = swapchainColorTarget;
         Extent = new Vector2D<int>((int)extent.Width, (int)extent.Height);
         _uniformRing = uniformRing;

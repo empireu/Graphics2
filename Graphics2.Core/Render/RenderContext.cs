@@ -164,7 +164,7 @@ public sealed unsafe class RenderContext : IDisposable
             throw new VkBootstrapException("Failed to begin command buffer");
         }
 
-        return new Frame(_device, descriptorPool, slot.CommandBuffer, imageIndex, _swapchainTargets[imageIndex], Swapchain.Extent, slot.UniformRing, slot.StorageRing, slot.GeometryRing, _deferredDisposals[frameIndex], _pendingCopies, _pendingImageCopies);
+        return new Frame(_device, descriptorPool, slot.CommandBuffer, imageIndex, frameIndex, _swapchainTargets[imageIndex], Swapchain.Extent, slot.UniformRing, slot.StorageRing, slot.GeometryRing, _deferredDisposals[frameIndex], _pendingCopies, _pendingImageCopies);
     }
 
     /// <summary>

@@ -108,7 +108,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
                 {
                     SType = StructureType.ImageMemoryBarrier2,
                     SrcStageMask = PipelineStageFlags2.EarlyFragmentTestsBit | PipelineStageFlags2.LateFragmentTestsBit,
-                    SrcAccessMask = AccessFlags2.None,
+                    SrcAccessMask = AccessFlags2.DepthStencilAttachmentWriteBit,
                     DstStageMask = PipelineStageFlags2.EarlyFragmentTestsBit | PipelineStageFlags2.LateFragmentTestsBit,
                     DstAccessMask = AccessFlags2.DepthStencilAttachmentReadBit | AccessFlags2.DepthStencilAttachmentWriteBit,
                     OldLayout = oldLayout,
