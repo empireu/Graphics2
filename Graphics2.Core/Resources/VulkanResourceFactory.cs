@@ -4,7 +4,25 @@ using Graphics2.Core.Render;
 using Silk.NET.Vulkan;
 using Silk.NET.Core.Native;
 
+// ReSharper disable ForCanBeConvertedToForeach
+
 namespace Graphics2.Core.Resources;
+
+public readonly struct AllocatorStats
+{
+    public int Pages { get; init; }
+    
+    public long BytesUsed { get; init; }
+    
+    public int FreeRanges { get; init; }
+}
+
+public enum AllocatorFamily
+{
+    GpuOnly,
+    CpuToGpu,
+    GpuToCpu
+}
 
 public sealed unsafe class VulkanResourceFactory : IDisposable
 {
@@ -45,6 +63,36 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         }
     }
 
+    private BlockAllocator<VulkanMemory> GetAllocator(AllocatorFamily family) => family switch
+    {
+        AllocatorFamily.GpuOnly => _gpuOnly,
+        AllocatorFamily.CpuToGpu => _cpuToGpu,
+        AllocatorFamily.GpuToCpu => _gpuToCpu,
+        _ => throw new ArgumentOutOfRangeException(nameof(family), family, $"Invalid allocator family {family}")
+    };
+
+    public AllocatorStats GetAllocatorStats(AllocatorFamily family)
+    {
+        var allocator = GetAllocator(family);
+        
+        var usedBytes = 0L;
+        var freeRanges = 0;
+        for (var index = 0; index < allocator.Blocks.Count; index++)
+        {
+            var allocatorBlock = allocator.Blocks[index];
+
+            usedBytes += allocatorBlock.UsedBytes;
+            freeRanges += allocatorBlock.FreeRangeCount;
+        }
+
+        return new AllocatorStats
+        {
+            Pages = allocator.Blocks.Count,
+            BytesUsed = usedBytes,
+            FreeRanges = freeRanges
+        };
+    }
+    
     /// <summary>
     ///     Creates a device-local vertex and index buffer.
     ///     Both capacities are floors applied to the first allocation, and what is actually allocated is rounded up to a power of two.

@@ -16,13 +16,15 @@ public sealed class MemoryBlock<THandle>
     public readonly int Id;
     public readonly long Capacity;
     public readonly THandle Handle;
-
+    
     public long UsedBytes => Capacity - FreeBytes;
 
     public long FreeBytes { get; private set; }
 
     internal IReadOnlyList<FreeRange> FreeRanges => _freeRanges;
 
+    public int FreeRangeCount => _freeRanges.Count;
+    
     public MemoryBlock(int id, long capacity, THandle handle)
     {
         if (capacity <= 0)
