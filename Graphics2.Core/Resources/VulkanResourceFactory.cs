@@ -1116,7 +1116,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
 
     private static MemoryUsage BufferUsageToMemoryUsage(BufferUsage usage)
     {
-        if (usage.HasFlag(BufferUsage.Staging) || usage.HasFlag(BufferUsage.Uniform))
+        if (usage.HasFlag(BufferUsage.Staging) || usage.HasFlag(BufferUsage.Uniform) || usage.HasFlag(BufferUsage.IndirectHostVisible))
         {
             return MemoryUsage.CpuToGpu;
         }
@@ -1154,6 +1154,11 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         }
         
         if (usage.HasFlag(BufferUsage.Indirect))
+        {
+            flags |= BufferUsageFlags.IndirectBufferBit;
+        }
+
+        if (usage.HasFlag(BufferUsage.IndirectHostVisible))
         {
             flags |= BufferUsageFlags.IndirectBufferBit;
         }

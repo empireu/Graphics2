@@ -567,6 +567,25 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         _vk.CmdDrawIndexed(_cmd, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
     }
 
+    public void DrawIndexedIndirect(VkBuffer args, ulong offset, uint drawCount, uint stride = DrawIndexedIndirectCommand.SizeInBytes)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+
+        if (offset % 4 != 0)
+        {
+            throw new ArgumentException("The first command must start at a 4-byte aligned offset.", nameof(offset));
+        }
+
+        if (stride < DrawIndexedIndirectCommand.SizeInBytes || stride % 4 != 0)
+        {
+            throw new ArgumentException($"Stride must be at least {DrawIndexedIndirectCommand.SizeInBytes} bytes and a multiple of 4.", nameof(stride));
+        }
+
+        FlushDescriptors();
+        
+        _vk.CmdDrawIndexedIndirect(_cmd, args.Handle, offset, drawCount, stride);
+    }
+
     #region Mesh
 
     /// <summary>

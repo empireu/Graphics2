@@ -40,7 +40,11 @@ public enum BufferUsage
     /// <summary>
     ///     GPU-only device-local buffer that can receive copies.
     /// </summary>
-    TransferDestination = 1 << 6
+    TransferDestination = 1 << 6,
+    /// <summary>
+    ///     Host-visible draw arguments rewritten by the CPU every frame, one command per draw.
+    /// </summary>
+    IndirectHostVisible = 1 << 7
 }
 
 public sealed class BufferDescription

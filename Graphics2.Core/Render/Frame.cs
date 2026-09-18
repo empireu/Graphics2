@@ -215,7 +215,7 @@ public sealed unsafe class Frame
             stages |= PipelineStageFlags2.IndexInputBit;
         }
 
-        if ((usage & BufferUsage.Indirect) != 0)
+        if ((usage & (BufferUsage.Indirect | BufferUsage.IndirectHostVisible)) != 0)
         {
             stages |= PipelineStageFlags2.DrawIndirectBit;
         }
