@@ -1,4 +1,5 @@
 ﻿using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Graphics2.Core;
 using Graphics2.Core.Render;
@@ -13,6 +14,7 @@ using Graphics2.Voxels;
 using Graphics2.Windowing.Input;
 using ImGuiNET;
 using Silk.NET.Maths;
+using WinterGame.Core;
 
 // ReSharper disable ForCanBeConvertedToForeach
 
@@ -39,16 +41,31 @@ internal sealed unsafe class WorldLayer : IDisposable
 
     private readonly Pipeline _pipeline;
 
+    private const float VoxelSize = 0.25f;
+
     private int _seed = 3141;
     private float _voxelsPerUnit = 16.0f;
     private float _surfaceHeight = 16.0f;
     private float _reliefVoxels = 12.0f; 
-    private int _size = 32;
+    private int _chunkCells = 32;
+    private int _chunksX = 4;
+    private int _chunksZ = 4;
 
-    private readonly List<uint> _indexScratch = [];
+    private MeshArena? _arena;
+    private readonly List<Chunk> _chunks = [];   
+    private bool _rebuildRequested = true;
+    private long _solidVoxels;
+    private long _vertexCount;
+    private long _indexCount;
 
-    private Mesh<SurfaceNetsVertex>? _mesh;
-    private int _solidVoxels;
+   
+    private sealed class Chunk
+    {
+        public Vector3i Origin;
+        public MeshAllocation Allocation;
+        public int VertexCount;
+        public int IndexCount;
+    }
     
     public WorldLayer(App app)
     {
@@ -126,7 +143,33 @@ internal sealed unsafe class WorldLayer : IDisposable
             Wireframe = false,
             Blends = [BlendState.None],
             VertexLayout = VertexLayout.FromStruct<SurfaceNetsVertex>(),
-            PushConstantLayout = PushConstantLayout.FromStruct<PushConstants>()
+            PushConstantLayout = PushConstantLayout.FromStruct<PushConstants>(),
+            SsboLayouts = new Dictionary<string, SsboLayout>
+            {
+                ["draws"] = SsboLayout.FromStruct<DrawRecord>()
+            }
+        });
+        
+        _arena = new MeshArena(factory, new MeshArenaDescription
+        {
+            VertexStride = sizeof(SurfaceNetsVertex),
+            IndexType = IndexType.UInt16,
+            VertexClasses =
+            [
+                new MeshArenaDescription.BufferClass { ElementsPerSlot = 512, SlotsPerPage = 32 },
+                new MeshArenaDescription.BufferClass { ElementsPerSlot = 1024, SlotsPerPage = 32 },
+                new MeshArenaDescription.BufferClass { ElementsPerSlot = 2048, SlotsPerPage = 16 },
+                new MeshArenaDescription.BufferClass { ElementsPerSlot = 4096, SlotsPerPage = 16 },
+                new MeshArenaDescription.BufferClass { ElementsPerSlot = 8192, SlotsPerPage = 4 }
+            ],
+            IndexClasses =
+            [
+                new MeshArenaDescription.BufferClass { ElementsPerSlot = 2048, SlotsPerPage = 32 },
+                new MeshArenaDescription.BufferClass { ElementsPerSlot = 4096, SlotsPerPage = 32 },
+                new MeshArenaDescription.BufferClass { ElementsPerSlot = 8192, SlotsPerPage = 16 },
+                new MeshArenaDescription.BufferClass { ElementsPerSlot = 16384, SlotsPerPage = 16 },
+                new MeshArenaDescription.BufferClass { ElementsPerSlot = 32768, SlotsPerPage = 4 }
+            ]
         });
 
         _argBuffers = new VkBuffer[_app.Context!.FramesInFlight];
@@ -171,6 +214,37 @@ internal sealed unsafe class WorldLayer : IDisposable
         _camera.SetAspect(framebufferSize);
     }
 
+    /// <summary>
+    ///     Issues one indirect draw for a run of commands, or nothing when the run is empty.
+    /// </summary>
+    private static void DrawRun(RenderPassEncoder pass, VkBuffer args, int firstCommand, int commandCount)
+    {
+        if (firstCommand < 0 || commandCount <= 0)
+        {
+            return;
+        }
+
+        pass.DrawIndexedIndirect(args, (ulong)firstCommand * DrawIndexedIndirectCommand.SizeInBytes, (uint)commandCount);
+    }
+    
+    private static void UploadMesh(Frame frame, in MeshAllocation allocation, ReadOnlySpan<byte> vertices, ReadOnlySpan<byte> indices)
+    {
+        UploadRange(frame, allocation.Vertices.Buffer, allocation.Vertices.BaseAddress, vertices);
+        UploadRange(frame, allocation.Indices.Buffer, allocation.Indices.BaseAddress, indices);
+    }
+
+    private static void UploadRange(Frame frame, VkBuffer destination, int destinationOffset, ReadOnlySpan<byte> data)
+    {
+        if (data.IsEmpty)
+        {
+            return;
+        }
+
+        var staging = frame.AllocateVertex(data.Length);
+        data.CopyTo(staging.Data);
+        frame.CopyBuffer(staging.Buffer, staging.Offset, destination, (ulong)destinationOffset, (ulong)data.Length);
+    }
+
     private void ImGuiPass(Frame frame)
     {
         using var imGuiPass = frame.BeginRenderPass(new RenderPassDescription
@@ -192,6 +266,13 @@ internal sealed unsafe class WorldLayer : IDisposable
     
     public void OnFrame(double deltaTime, Frame frame, InputSnapshot input)
     {
+        if (_rebuildRequested)
+        {
+            _app.Device.WaitIdle();
+            BuildWorld(frame);
+            _rebuildRequested = false;
+        }
+
         if (input.WasKeyPressed(G2Key.Escape))
         {
             _camera.ToggleFpsMode(_app.G2Wnd);
@@ -239,7 +320,7 @@ internal sealed unsafe class WorldLayer : IDisposable
             _overlayQuadRenderer3D.Submit(frame, worldPass);
             _textRenderer.Submit(frame, worldPass);
             
-            if (_mesh != null)
+            if (_chunks.Count > 0)
             {
                 worldPass.SetPipeline(_pipeline);
                 worldPass.SetViewport(0, 0, frame.Extent.X, frame.Extent.Y);
@@ -249,24 +330,57 @@ internal sealed unsafe class WorldLayer : IDisposable
                 {
                     ViewProj = _camera.ViewProj
                 });
-            
-                worldPass.SetVertexBuffer(_mesh);
-                worldPass.SetIndexBuffer(_mesh);
 
-                var buffer = _argBuffers![frame.SlotIndex];
+                var arena = _arena!;
 
-                var arguments = new DrawIndexedIndirectCommand
+                var records = frame.AllocateStorage(_chunks.Count * Unsafe.SizeOf<DrawRecord>());
+                var recordSpan = MemoryMarshal.Cast<byte, DrawRecord>(records.Data);
+                for (var index = 0; index < _chunks.Count; index++)
                 {
-                    IndexCount = (uint)_mesh.IndexCount,
-                    InstanceCount = 1,
-                    FirstIndex = 0,
-                    VertexOffset = 0,
-                    FirstInstance = 0
-                };
+                    var chunk = _chunks[index];
+                    recordSpan[index] = new DrawRecord
+                    {
+                        Origin = new Vector3(chunk.Origin.X, chunk.Origin.Y, chunk.Origin.Z),
+                        VoxelSize = VoxelSize
+                    };
+                }
+
+                worldPass.BindStorageBuffer("draws", records);
+
                 
-                MemoryMarshal.Write(buffer.MappedData, arguments);
-                
-                worldPass.DrawIndexedIndirect(buffer, 0, 1);
+                var args = _argBuffers![frame.SlotIndex];
+                var argSpan = MemoryMarshal.Cast<byte, DrawIndexedIndirectCommand>(args.MappedData);
+                VkBuffer? vertexBuffer = null;
+                VkBuffer? indexBuffer = null;
+                var runFirstCommand = 0;
+
+                for (var index = 0; index < _chunks.Count; index++)
+                {
+                    var chunk = _chunks[index];
+
+                    if (!ReferenceEquals(chunk.Allocation.Vertices.Buffer, vertexBuffer) ||
+                        !ReferenceEquals(chunk.Allocation.Indices.Buffer, indexBuffer))
+                    {
+                        DrawRun(worldPass, args, runFirstCommand, index - runFirstCommand);
+
+                        vertexBuffer = chunk.Allocation.Vertices.Buffer;
+                        indexBuffer = chunk.Allocation.Indices.Buffer;
+                        runFirstCommand = index;
+                        worldPass.SetVertexBuffer(vertexBuffer);
+                        worldPass.SetIndexBuffer(indexBuffer, IndexType.UInt16);
+                    }
+
+                    argSpan[index] = new DrawIndexedIndirectCommand
+                    {
+                        IndexCount = (uint)chunk.IndexCount,
+                        InstanceCount = 1,
+                        FirstIndex = (uint)chunk.Allocation.Indices.ElementOffset,
+                        VertexOffset = chunk.Allocation.Vertices.ElementOffset,
+                        FirstInstance = (uint)index
+                    };
+                }
+
+                DrawRun(worldPass, args, runFirstCommand, _chunks.Count - runFirstCommand);
             }
         }
         
@@ -276,28 +390,40 @@ internal sealed unsafe class WorldLayer : IDisposable
         
          if (ImGui.Begin("Generator"))
         {
-            ImGui.InputInt("Cells", ref _size, 10);
+            ImGui.InputInt("Chunk cells", ref _chunkCells, 8);
+            ImGui.InputInt("Chunks X", ref _chunksX, 1);
+            ImGui.InputInt("Chunks Z", ref _chunksZ, 1);
             ImGui.InputFloat("Unit", ref _voxelsPerUnit, 1.0f);
             ImGui.InputFloat("Height", ref _surfaceHeight, 0.5f);
             ImGui.InputFloat("Relief", ref _reliefVoxels, 0.5f);
 
-            _size = Math.Clamp(_size, 1, 128);
+            _chunkCells = Math.Clamp(_chunkCells, 1, 64);
+            _chunksX = Math.Clamp(_chunksX, 1, 16);
+            _chunksZ = Math.Clamp(_chunksZ, 1, 16);
             _voxelsPerUnit = MathF.Max(_voxelsPerUnit, 0.01f);
 
-            if (_mesh != null && _mesh.IndexCount > 0)
-            {
-                ImGui.Separator();
-                ImGui.Text("Generated state:");
-                ImGui.Text($"Solid Voxels: {_solidVoxels}");
-                ImGui.Text($"Vertices: {_mesh.VertexCount}");
-                ImGui.Text($"Indices: {_mesh.IndexCount}");
-                ImGui.Text($"Vertex capacity: {_mesh.VertexCapacity}");
-                ImGui.Text($"Index capacity: {_mesh.IndexCapacity}");
-            }
-            
+            ImGui.Separator();
+            ImGui.Text("World state:");
+            ImGui.Text($"Chunks: {_chunks.Count}");
+            ImGui.Text($"Voxel size: {VoxelSize} m");
+            ImGui.Text($"World: {_chunksX * _chunkCells * VoxelSize} x {_chunksZ * _chunkCells * VoxelSize} m");
+            ImGui.Text($"Solid Voxels: {_solidVoxels}");
+            ImGui.Text($"Vertices: {_vertexCount}");
+            ImGui.Text($"Indices: {_indexCount}");
+
+            var arenaStats = _arena!.GetStats();
+
+            ImGui.Separator();
+            ImGui.Text("Arena:");
+            ImGui.Text($"Vertex: {arenaStats.Vertices.Pages} page(s), {arenaStats.Vertices.Bytes / 1024} KiB");
+            ImGui.Text($"Vertex slots: {arenaStats.Vertices.UsedSlots} used, {arenaStats.Vertices.FreeSlots} free");
+            ImGui.Text($"Index: {arenaStats.Indices.Pages} page(s), {arenaStats.Indices.Bytes / 1024} KiB");
+            ImGui.Text($"Index slots: {arenaStats.Indices.UsedSlots} used, {arenaStats.Indices.FreeSlots} free");
+            ImGui.Text($"Total: {arenaStats.Bytes / 1024} KiB");
+
             if (ImGui.Button("Run"))
             {
-                Regenerate(frame);
+                _rebuildRequested = true;
             }
 
             var gpuOnly = _app.Factory.GetAllocatorStats(AllocatorFamily.GpuOnly);
@@ -314,74 +440,178 @@ internal sealed unsafe class WorldLayer : IDisposable
         ImGuiPass(frame);
     }
 
-    private void Regenerate(Frame frame)
+  
+    private void BuildWorld(Frame frame)
     {
+        var arena = _arena!;
+
+        foreach (var chunk in _chunks)
+        {
+            arena.MarkFree(frame, chunk.Allocation);
+        }
+
+        _chunks.Clear();
+        _solidVoxels = 0;
+        _vertexCount = 0;
+        _indexCount = 0;
+
         var generator = new FbmTerrainGenerator(
             _seed,
             _voxelsPerUnit,
             _surfaceHeight,
             _reliefVoxels
         );
-        
-        var sampleSize = _size + 4;
 
-        var content = Memory3D<byte>.Allocate(
-            sampleSize,
-            sampleSize,
-            sampleSize
-        );
-        
-        var material = Memory3D<byte>.Allocate(
-            content.SizeX,
-            content.SizeY,
-            content.SizeZ
-        );
-        
-        generator.Generate(
-            new Vector3i(0, 0, 0),
-            new Vector3i(content.SizeX - 1, content.SizeY - 1, content.SizeZ - 1),
-            content.Span,
-            material.Span
-        );
-        
-        var vertices = new List<SurfaceNetsVertex>();
-        var indices = new List<int>();
+        var cellCount = new Vector3i(_chunkCells, _chunkCells, _chunkCells);
 
-        SurfaceNetsMesher.Mesh(new SurfaceNetsMeshingDescription
+        for (var chunkZ = 0; chunkZ < _chunksZ; chunkZ++)
         {
-            Content = content,
-            IsoLevel = 127,
-            Vertices = vertices,
-            Indices = indices
-        });
-
-        _indexScratch.Clear();
-
-        foreach (var index in indices)
-        {
-            _indexScratch.Add((uint)index);
-        }
-
-        _mesh ??= _app.Factory.CreateMesh<SurfaceNetsVertex>();
-        
-        _mesh.Rebuild(
-            CollectionsMarshal.AsSpan(vertices),
-            CollectionsMarshal.AsSpan(_indexScratch),
-            frame
-        );
-
-        _solidVoxels = 0;
-
-        var data = content.Span.Data;
-        
-        for (var index = 0; index < data.Length; index++)
-        {
-            var contentByte = data[index];
-            if (contentByte > 127)
+            for (var chunkX = 0; chunkX < _chunksX; chunkX++)
             {
-                _solidVoxels++;
+                var cellMin = new Vector3i(chunkX * _chunkCells, 0, chunkZ * _chunkCells);
+                var box = SurfaceNetsMesher.GetSampleRange(cellMin, cellCount);
+
+                var content = Memory3D<byte>.Allocate(
+                    box.Max.X - box.Min.X + 1,
+                    box.Max.Y - box.Min.Y + 1,
+                    box.Max.Z - box.Min.Z + 1
+                );
+
+                var material = Memory3D<byte>.Allocate(content.SizeX, content.SizeY, content.SizeZ);
+
+                generator.Generate(box.Min, box.Max, content.Span, material.Span);
+
+                var vertices = new List<SurfaceNetsVertex>();
+                var indices = new List<int>();
+
+                SurfaceNetsMesher.Mesh(new SurfaceNetsMeshingDescription
+                {
+                    Content = content,
+                    IsoLevel = 127,
+                    Vertices = vertices,
+                    Indices = indices
+                });
+
+                // A chunk holds far fewer than 65536 vertices, so its indices stay 16 bits and slot-relative:
+                var indexScratch = new ushort[indices.Count];
+                for (var index = 0; index < indices.Count; index++)
+                {
+                    indexScratch[index] = (ushort)indices[index];
+                }
+
+                var allocation = arena.Allocate(vertices.Count, indexScratch.Length);
+
+                UploadMesh(
+                    frame,
+                    allocation,
+                    MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(vertices)),
+                    MemoryMarshal.AsBytes(indexScratch.AsSpan())
+                );
+
+                _chunks.Add(new Chunk
+                {
+                    Origin = box.Min,
+                    Allocation = allocation,
+                    VertexCount = vertices.Count,
+                    IndexCount = indexScratch.Length
+                });
+
+                _vertexCount += vertices.Count;
+                _indexCount += indexScratch.Length;
+                _solidVoxels += CountSolid(content.Span);
             }
         }
+
+        // Slot order is not page order, and the submission loop needs the pages contiguous:
+        // A run breaks when either buffer changes, so ordering groups the chunks that share a pair.
+        _chunks.Sort(CompareChunksByBuffer);
+        Console.WriteLine($"World: {_chunks.Count} chunk(s), {_chunksX * _chunkCells * VoxelSize} x {_chunksZ * _chunkCells * VoxelSize} m, {_vertexCount} verts, {_indexCount} indices, {_solidVoxels} solid voxels");
+        Console.WriteLine($"Draws: {CountRuns()} run(s) over {CountBufferPairs()} buffer pair(s)");
+    }
+
+    /// <summary>
+    ///     Orders the chunks so that every run of chunks sharing a pair of buffers is contiguous.
+    /// </summary>
+    private static int CompareChunksByBuffer(Chunk left, Chunk right)
+    {
+        var byVertexAllocator = left.Allocation.Vertices.Allocator.CompareTo(right.Allocation.Vertices.Allocator);
+
+        if (byVertexAllocator != 0)
+        {
+            return byVertexAllocator;
+        }
+
+        var byVertexPage = left.Allocation.Vertices.Page.CompareTo(right.Allocation.Vertices.Page);
+
+        if (byVertexPage != 0)
+        {
+            return byVertexPage;
+        }
+
+        var byIndexAllocator = left.Allocation.Indices.Allocator.CompareTo(right.Allocation.Indices.Allocator);
+
+        if (byIndexAllocator != 0)
+        {
+            return byIndexAllocator;
+        }
+
+        var byIndexPage = left.Allocation.Indices.Page.CompareTo(right.Allocation.Indices.Page);
+
+        return byIndexPage != 0 ? byIndexPage : left.Allocation.Vertices.Slot.CompareTo(right.Allocation.Vertices.Slot);
+    }
+
+    /// <summary>
+    ///     The number of indirect draws the submission loop will issue, which is one per change of buffer pair.
+    /// </summary>
+    private int CountRuns()
+    {
+        var runs = 0;
+        VkBuffer? vertexBuffer = null;
+        VkBuffer? indexBuffer = null;
+
+        foreach (var chunk in _chunks)
+        {
+            if (!ReferenceEquals(chunk.Allocation.Vertices.Buffer, vertexBuffer) ||
+                !ReferenceEquals(chunk.Allocation.Indices.Buffer, indexBuffer))
+            {
+                runs++;
+                vertexBuffer = chunk.Allocation.Vertices.Buffer;
+                indexBuffer = chunk.Allocation.Indices.Buffer;
+            }
+        }
+
+        return runs;
+    }
+
+    /// <summary>
+    ///     The number of distinct buffer pairs in use. When it is larger than the run count the ordering failed to gather a pair into one run, which would draw a chunk from another chunk's buffers.
+    /// </summary>
+    private int CountBufferPairs()
+    {
+        var pairs = new HashSet<(VkBuffer, VkBuffer)>();
+
+        foreach (var chunk in _chunks)
+        {
+            pairs.Add((chunk.Allocation.Vertices.Buffer, chunk.Allocation.Indices.Buffer));
+        }
+
+        return pairs.Count;
+    }
+
+    private static int CountSolid(Span3D<byte> content)
+    {
+        var solid = 0;
+        var data = content.Data;
+
+        for (var index = 0; index < data.Length; index++)
+        {
+            if (data[index] > 127)
+            {
+                solid++;
+            }
+        }
+
+        return solid;
     }
 
     private void DisposeDepthTextures()
@@ -426,6 +656,6 @@ internal sealed unsafe class WorldLayer : IDisposable
         _overlayQuadRenderer3D.Dispose();
         _lineRenderer3D.Dispose();
         _pipeline.Dispose();
-        _mesh?.Dispose();
+        _arena?.Dispose();
     }
 }

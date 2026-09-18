@@ -103,7 +103,9 @@ public sealed unsafe class VkDevice : IDisposable
             PNext = &vk11Features,
             Features = new PhysicalDeviceFeatures
             {
-                SamplerAnisotropy = true
+                SamplerAnisotropy = true,
+                MultiDrawIndirect = true,
+                DrawIndirectFirstInstance = true
             }
         };
         
@@ -292,7 +294,9 @@ public sealed unsafe class VkDevice : IDisposable
                   && vk12Features.DescriptorBindingPartiallyBound
                   && vk12Features.DescriptorBindingUpdateUnusedWhilePending
                   && vk13Features.DynamicRendering
-                  && features2.Features.SamplerAnisotropy))
+                  && features2.Features.SamplerAnisotropy
+                  && features2.Features.MultiDrawIndirect
+                  && features2.Features.DrawIndirectFirstInstance))
             {
                 return null;
             }

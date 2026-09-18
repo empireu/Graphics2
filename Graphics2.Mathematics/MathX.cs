@@ -1,4 +1,5 @@
-﻿using System.Runtime.CompilerServices;
+﻿using System.Diagnostics;
+using System.Runtime.CompilerServices;
 
 namespace Graphics2.Mathematics;
 
@@ -82,4 +83,19 @@ public static class MathX
     ///     Requires a positive divisor, and the value cannot be <see cref="int.MinValue"/>, which has no positive counterpart to negate.
     /// </summary>
     public static int CeilDiv(int value, int divisor) => -FloorDiv(-value, divisor);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool IsPowerOfTwo(int value) => value > 0 && (value & (value - 1)) == 0;
+    
+    /// <summary>
+    ///     Applies <see cref="alignment"/> to the <see cref="value"/> (address or size).
+    ///     The <see cref="alignment"/> must be power-of-two.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int AlignUp2(int value, int alignment)
+    {
+        Debug.Assert(IsPowerOfTwo(alignment), $"{nameof(AlignUp2)} takes a power-of-two alignment");
+        
+        return (value + (alignment - 1)) & ~(alignment - 1);
+    }
 }

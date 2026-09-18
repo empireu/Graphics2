@@ -1,5 +1,6 @@
 ﻿using System.Reflection;
 using System.Runtime.CompilerServices;
+using Graphics2.Core.Resources;
 
 namespace Graphics2.Core;
 
@@ -71,4 +72,11 @@ public static unsafe class Helpers
     {
         return Unsafe.As<Silk.NET.Maths.Matrix4X4<float>, System.Numerics.Matrix4x4>(ref source);
     }
+
+    public static int Stride(this IndexType indexType) => indexType switch
+    {
+        IndexType.UInt16 => 2,
+        IndexType.UInt32 => 4,
+        _ => throw new ArgumentOutOfRangeException(nameof(indexType), indexType, null)
+    };
 }
