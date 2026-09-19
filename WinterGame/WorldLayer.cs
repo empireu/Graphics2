@@ -51,7 +51,20 @@ internal sealed unsafe class WorldLayer : IDisposable
     private int _chunksX = 4;
     private int _chunksZ = 4;
 
+    private float _snowLine = 16.0f;
+    private float _snowLineFade = 3.0f;
+    private float _snowSlopeMin = 0.80f;
+    private float _snowSlopeMax = 0.95f;
+    private float _rockSlopeMin = 0.45f;
+    private float _rockSlopeMax = 0.70f;
+
+    /// <summary>
+    ///     Has to match the material volume array size in Shader.slang, which BindTextureArray checks.
+    /// </summary>
+    private const int VolumeSlots = 1024;
+
     private MeshArena? _arena;
+    private VolumeArena? _volumes;
     private readonly List<Chunk> _chunks = [];   
     private bool _rebuildRequested = true;
     private long _solidVoxels;
@@ -63,6 +76,7 @@ internal sealed unsafe class WorldLayer : IDisposable
     {
         public Vector3i Origin;
         public MeshAllocation Allocation;
+        public VolumeHandle Volume;
         public int VertexCount;
         public int IndexCount;
     }
@@ -332,6 +346,9 @@ internal sealed unsafe class WorldLayer : IDisposable
                 });
 
                 var arena = _arena!;
+                var volumes = _volumes!;
+
+                worldPass.BindTextureArray("materialVolumes", volumes.Array);
 
                 var records = frame.AllocateStorage(_chunks.Count * Unsafe.SizeOf<DrawRecord>());
                 var recordSpan = MemoryMarshal.Cast<byte, DrawRecord>(records.Data);
@@ -341,7 +358,11 @@ internal sealed unsafe class WorldLayer : IDisposable
                     recordSpan[index] = new DrawRecord
                     {
                         Origin = new Vector3(chunk.Origin.X, chunk.Origin.Y, chunk.Origin.Z),
-                        VoxelSize = VoxelSize
+                        VoxelSize = VoxelSize,
+                        MaterialVolume = chunk.Volume.Index,
+                        MaterialSizeX = (uint)volumes.SizeX,
+                        MaterialSizeY = (uint)volumes.SizeY,
+                        MaterialSizeZ = (uint)volumes.SizeZ
                     };
                 }
 
@@ -426,6 +447,28 @@ internal sealed unsafe class WorldLayer : IDisposable
                 _rebuildRequested = true;
             }
 
+            ImGui.Separator();
+            ImGui.Text("Material:");
+            ImGui.InputFloat("Snow line", ref _snowLine, 0.5f);
+            ImGui.InputFloat("Snow fade", ref _snowLineFade, 0.5f);
+            ImGui.InputFloat("Snow slope min", ref _snowSlopeMin, 0.01f);
+            ImGui.InputFloat("Snow slope max", ref _snowSlopeMax, 0.01f);
+            ImGui.InputFloat("Rock slope min", ref _rockSlopeMin, 0.01f);
+            ImGui.InputFloat("Rock slope max", ref _rockSlopeMax, 0.01f);
+
+            _snowLineFade = MathF.Max(_snowLineFade, 0.0f);
+            _snowSlopeMin = Math.Clamp(_snowSlopeMin, 0.0f, 1.0f);
+            _snowSlopeMax = Math.Clamp(_snowSlopeMax, 0.0f, 1.0f);
+            _rockSlopeMin = Math.Clamp(_rockSlopeMin, 0.0f, 1.0f);
+            _rockSlopeMax = Math.Clamp(_rockSlopeMax, 0.0f, 1.0f);
+
+            if (_volumes != null)
+            {
+                var volumeStats = _volumes.GetStats();
+
+                ImGui.Text($"Volumes: {volumeStats.UsedSlots} used, {volumeStats.Created} created of {volumeStats.SlotCount} slot(s), {volumeStats.Bytes / 1024} KiB");
+            }
+
             var gpuOnly = _app.Factory.GetAllocatorStats(AllocatorFamily.GpuOnly);
             var cpuToGpu = _app.Factory.GetAllocatorStats(AllocatorFamily.CpuToGpu);
 
@@ -448,6 +491,7 @@ internal sealed unsafe class WorldLayer : IDisposable
         foreach (var chunk in _chunks)
         {
             arena.MarkFree(frame, chunk.Allocation);
+            _volumes?.MarkFree(frame, chunk.Volume);
         }
 
         _chunks.Clear();
@@ -455,14 +499,22 @@ internal sealed unsafe class WorldLayer : IDisposable
         _vertexCount = 0;
         _indexCount = 0;
 
+        var cellCount = new Vector3i(_chunkCells, _chunkCells, _chunkCells);
+
+        // Every chunk reads the same window shape, so the volume extent comes from the same box the content is built from:
+        var window = SurfaceNetsMesher.GetSampleRange(Vector3i.Zero, cellCount);
+        var volumes = EnsureVolumeArena(frame, window.Max.X - window.Min.X + 1, window.Max.Y - window.Min.Y + 1, window.Max.Z - window.Min.Z + 1);
+
         var generator = new FbmTerrainGenerator(
             _seed,
             _voxelsPerUnit,
             _surfaceHeight,
-            _reliefVoxels
+            _reliefVoxels,
+            new SurfaceMaterialClassifier(_snowLine, _snowLineFade, _snowSlopeMin, _snowSlopeMax, _rockSlopeMin, _rockSlopeMax)
         );
 
-        var cellCount = new Vector3i(_chunkCells, _chunkCells, _chunkCells);
+        Span<long> materialCounts = stackalloc long[SurfaceMaterial.Count];
+        long interiorCount = 0;
 
         for (var chunkZ = 0; chunkZ < _chunksZ; chunkZ++)
         {
@@ -508,10 +560,14 @@ internal sealed unsafe class WorldLayer : IDisposable
                     MemoryMarshal.AsBytes(indexScratch.AsSpan())
                 );
 
+                // The material window is exactly the box the mesher read, so a volume texel is a sample and the shader indexes it with the mesh's own coordinates:
+                var volume = volumes.Upload(frame, material.Span.Data);
+
                 _chunks.Add(new Chunk
                 {
                     Origin = box.Min,
                     Allocation = allocation,
+                    Volume = volume,
                     VertexCount = vertices.Count,
                     IndexCount = indexScratch.Length
                 });
@@ -519,6 +575,7 @@ internal sealed unsafe class WorldLayer : IDisposable
                 _vertexCount += vertices.Count;
                 _indexCount += indexScratch.Length;
                 _solidVoxels += CountSolid(content.Span);
+                CountMaterials(content.Span, material.Span, materialCounts, ref interiorCount);
             }
         }
 
@@ -526,7 +583,35 @@ internal sealed unsafe class WorldLayer : IDisposable
         // A run breaks when either buffer changes, so ordering groups the chunks that share a pair.
         _chunks.Sort(CompareChunksByBuffer);
         Console.WriteLine($"World: {_chunks.Count} chunk(s), {_chunksX * _chunkCells * VoxelSize} x {_chunksZ * _chunkCells * VoxelSize} m, {_vertexCount} verts, {_indexCount} indices, {_solidVoxels} solid voxels");
+        Console.WriteLine($"Materials: rock={materialCounts[SurfaceMaterial.Rock]}, ice={materialCounts[SurfaceMaterial.Ice]}, snow={materialCounts[SurfaceMaterial.Snow]} near the surface, {interiorCount} interior sample(s)");
         Console.WriteLine($"Draws: {CountRuns()} run(s) over {CountBufferPairs()} buffer pair(s)");
+    }
+
+    /// <summary>
+    ///     The arena the material volumes live in. Its extent has to equal the mesh window, so a change of the chunk size replaces it, because an image cannot be resized.
+    /// </summary>
+    private VolumeArena EnsureVolumeArena(Frame frame, int sizeX, int sizeY, int sizeZ)
+    {
+        if (_volumes != null && _volumes.SizeX == sizeX && _volumes.SizeY == sizeY && _volumes.SizeZ == sizeZ)
+        {
+            return _volumes;
+        }
+
+        if (_volumes != null)
+        {
+            // The frames in flight may still read the images of the old extent, so it is retired through the frame rather than destroyed here:
+            frame.DisposeLater(_volumes);
+        }
+
+        _volumes = new VolumeArena(_app.Factory, new VolumeArenaDescription
+        {
+            SlotCount = VolumeSlots,
+            SizeX = sizeX,
+            SizeY = sizeY,
+            SizeZ = sizeZ
+        });
+
+        return _volumes;
     }
 
     /// <summary>
@@ -614,6 +699,37 @@ internal sealed unsafe class WorldLayer : IDisposable
         return solid;
     }
 
+    /// <summary>
+    ///     Counts the ids of the samples the reconstruction can read, which are the solid ones within a voxel of the surface.
+    ///     Anything deeper has a saturated field and no gradient, and the volume's interior is never sampled, so counting it would drown the visible split.
+    /// </summary>
+    private static void CountMaterials(Span3D<byte> content, Span3D<byte> material, Span<long> counts, ref long interiorCount)
+    {
+        var contentData = content.Data;
+        var materialData = material.Data;
+
+        for (var index = 0; index < materialData.Length; index++)
+        {
+            var id = materialData[index];
+
+            if (id == SurfaceMaterial.Null)
+            {
+                continue;
+            }
+
+            if (contentData[index] == 255)
+            {
+                interiorCount++;
+                continue;
+            }
+
+            if (id < counts.Length)
+            {
+                counts[id]++;
+            }
+        }
+    }
+
     private void DisposeDepthTextures()
     {
         if (_depthTextures == null)
@@ -657,5 +773,6 @@ internal sealed unsafe class WorldLayer : IDisposable
         _lineRenderer3D.Dispose();
         _pipeline.Dispose();
         _arena?.Dispose();
+        _volumes?.Dispose();
     }
 }

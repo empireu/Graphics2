@@ -49,6 +49,19 @@ public static class MathX
     public static float Lerp(float a, float b, float t) => a + (b - a) * t;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static float SmoothStep(float edge0, float edge1, float value)
+    {
+        if (edge0 == edge1)
+        {
+            return value < edge0 ? 0.0f : 1.0f;
+        }
+
+        var t = Math.Clamp((value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+
+        return t * t * (3.0f - (2.0f * t));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static double Lerp(double a, double b, double t) => a + (b - a) * t;
     
     /// <summary>

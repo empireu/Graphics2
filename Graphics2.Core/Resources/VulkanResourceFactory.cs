@@ -375,7 +375,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
             return;
         }
 
-        var pixelSize = TextureFormatPixelSize(dst.Format);
+        var pixelSize = dst.Format.TexelSize();
         var expectedSize = (long)dst.Width * dst.Height * dst.Depth * pixelSize;
         if (data.Length != expectedSize)
         {
@@ -546,19 +546,6 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
 
         vk.FreeCommandBuffers(_device.Device, _transferPool, 1, &cmd);
     }
-
-    private static uint TextureFormatPixelSize(TextureFormat format) => format switch
-    {
-        TextureFormat.R8Unorm => 1,
-        TextureFormat.R8G8B8A8Unorm => 4,
-        TextureFormat.R8G8B8A8Srgb => 4,
-        TextureFormat.B8G8R8A8Srgb => 4,
-        TextureFormat.R32G32B32A32Sfloat => 16,
-        TextureFormat.D32Sfloat => 4,
-        TextureFormat.D24UnormS8Uint => 4,
-        TextureFormat.R8Uint => 1,
-        _ => throw new ArgumentOutOfRangeException(nameof(format))
-    };
 
     private DescriptorSetLayout[] CreateDescriptorSetLayouts(ShaderReflection reflection)
     {

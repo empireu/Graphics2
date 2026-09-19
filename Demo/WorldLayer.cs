@@ -295,7 +295,8 @@ internal sealed unsafe class WorldLayer : IDisposable
             _seed,
             _voxelsPerUnit,
             _surfaceHeight,
-            _reliefVoxels
+            _reliefVoxels,
+            new SurfaceMaterialClassifier(_surfaceHeight)
         );
         
         var sampleSize = _size + 4;
