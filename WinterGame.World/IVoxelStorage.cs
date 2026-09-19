@@ -1,7 +1,7 @@
 using Graphics2.Data;
 using Graphics2.Mathematics;
 
-namespace Graphics2.Voxels;
+namespace WinterGame.World;
 
 /// <summary>
 ///     Reader for a voxel world. Reads in a box-shaped region, containing content and material.

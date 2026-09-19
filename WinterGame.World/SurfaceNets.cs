@@ -21,7 +21,7 @@ using Graphics2.Mathematics;
     The CubeEdges lists the three edges from corner 0 first, so a cell's three base edges are bits 0, 1 and 2 of that mask.
 */
 
-namespace Graphics2.Voxels;
+namespace WinterGame.World;
 
 /// <summary>
 ///     One vertex per cell that crosses the iso level, in sample coordinates with an outward unit normal.

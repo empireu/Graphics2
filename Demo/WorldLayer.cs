@@ -9,10 +9,10 @@ using Graphics2.Mathematics;
 using Graphics2.Renderer.Quads;
 using Graphics2.Renderer.Lines;
 using Graphics2.Renderer.Text;
-using Graphics2.Voxels;
 using Graphics2.Windowing.Input;
 using ImGuiNET;
 using Silk.NET.Maths;
+using WinterGame.World;
 
 // ReSharper disable ForCanBeConvertedToForeach
 

@@ -4,6 +4,8 @@
         <TargetFramework>net11.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
+        <AssemblyName>WinterGame.World</AssemblyName>
+        <RootNamespace>WinterGame.World</RootNamespace>
     </PropertyGroup>
 
     <ItemGroup>

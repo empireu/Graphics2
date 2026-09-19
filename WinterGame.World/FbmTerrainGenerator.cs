@@ -2,7 +2,7 @@ using Graphics2.Data;
 using Graphics2.Mathematics;
 using Graphics2.Mathematics.Noise;
 
-namespace Graphics2.Voxels;
+namespace WinterGame.World;
 
 public sealed class FbmTerrainGenerator
 {

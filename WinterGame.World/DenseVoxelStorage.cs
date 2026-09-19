@@ -1,7 +1,7 @@
 using Graphics2.Data;
 using Graphics2.Mathematics;
 
-namespace Graphics2.Voxels;
+namespace WinterGame.World;
 
 /// <summary>
 ///     A dense uniform grid, one byte per voxel per channel.

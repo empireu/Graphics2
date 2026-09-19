@@ -20,7 +20,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Graphics2.Renderer", "Graph
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Graphics2.Mathematics", "Graphics2.Mathematics\Graphics2.Mathematics.csproj", "{2B78F41F-7BF5-47ED-A82E-ED2064BE876A}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Graphics2.Voxels", "Graphics2.Voxels\Graphics2.Voxels.csproj", "{5E33EE57-A2AA-4BD0-9567-462D1BF834DA}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WinterGame.World", "WinterGame.World\WinterGame.World.csproj", "{5E33EE57-A2AA-4BD0-9567-462D1BF834DA}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Graphics2.Data", "Graphics2.Data\Graphics2.Data.csproj", "{EDFC0F8D-D0F2-4142-9B71-C1C1C1F65AA4}"
 EndProject
