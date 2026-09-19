@@ -29,16 +29,39 @@ public enum TextureLayout
     Present
 }
 
+internal static class TextureLayoutMapping
+{
+    /// <summary>
+    ///     The Vulkan layout a tracked layout maps to.
+    /// </summary>
+    internal static ImageLayout ToVk(this TextureLayout layout) => layout switch
+    {
+        TextureLayout.ColorAttachment => ImageLayout.ColorAttachmentOptimal,
+        TextureLayout.ShaderRead => ImageLayout.ShaderReadOnlyOptimal,
+        TextureLayout.Present => ImageLayout.PresentSrcKhr,
+        TextureLayout.None => ImageLayout.Undefined,
+        TextureLayout.DepthAttachment => ImageLayout.DepthAttachmentOptimal,
+        _ => ImageLayout.ColorAttachmentOptimal
+    };
+}
+
 public class VkTexture
 {
     internal readonly Image Image;
     internal readonly ImageView View;
+
+    /// <summary>
+    ///     How many axes the image has, which is what a shader's declared resource shape has to agree with.
+    /// </summary>
+    public readonly TextureType Type;
+
     internal ImageLayout CurrentLayout;
 
-    internal VkTexture(Image image, ImageView view, ImageLayout initialLayout)
+    internal VkTexture(Image image, ImageView view, TextureType type, ImageLayout initialLayout)
     {
         Image = image;
         View = view;
+        Type = type;
         CurrentLayout = initialLayout;
     }
 }
@@ -66,8 +89,9 @@ public sealed unsafe class Texture : VkTexture, IDeviceResource
         uint height,
         uint depth,
         TextureFormat format,
-        TextureUsage usage)
-        : base(image, view, ImageLayout.Undefined)
+        TextureUsage usage,
+        TextureType type)
+        : base(image, view, type, ImageLayout.Undefined)
     {
         _device = device;
         _allocator = allocator;

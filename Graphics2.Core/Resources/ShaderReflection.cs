@@ -54,7 +54,8 @@ public readonly struct ShaderParameterReflection(
     ShaderParameterKind kind,
     uint elementCount,
     uint elementStride,
-    SsboFieldReflection[]? elementFields)
+    SsboFieldReflection[]? elementFields,
+    TextureType? textureType)
 {
     public readonly string Name = name;
     public readonly uint BindingIndex = bindingIndex;
@@ -66,6 +67,12 @@ public readonly struct ShaderParameterReflection(
     ///     <c>1</c> for non-array parameters, <c>N</c> for fixed-size arrays (e.g. <c>Texture2D textures[1024]</c>), <c>0</c> for unsized arrays (unsupported by the pipeline creation).
     /// </summary>
     public readonly uint ElementCount = elementCount;
+
+    /// <summary>
+    ///     For sampled and storage images: how many axes the shader declared, which the bound image has to match.
+    ///     <c>null</c> for every other kind of parameter, and for image shapes whose axes this does not describe, such as a cube or a buffer.
+    /// </summary>
+    public readonly TextureType? TextureType = textureType;
 
     /// <summary>
     ///     For storage buffers: the per-element stride in bytes as the shader sees it (std430 layout).

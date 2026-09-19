@@ -178,7 +178,7 @@ public sealed class ShaderCompiler : IDisposable
 
     private static ShaderParameterReflection MapParameter(VariableLayoutReflection param)
     {
-        var kind = MapParameterKind(param);
+        var (kind, textureType) = MapParameterKind(param);
         var elementCount = GetElementCount(param);
 
         uint elementStride = 0;
@@ -196,7 +196,8 @@ public sealed class ShaderCompiler : IDisposable
             kind,
             elementCount,
             elementStride,
-            elementFields
+            elementFields,
+            textureType
         );
     }
 
@@ -242,7 +243,7 @@ public sealed class ShaderCompiler : IDisposable
         return (uint)count;
     }
 
-    private static ShaderParameterKind MapParameterKind(VariableLayoutReflection param)
+    private static (ShaderParameterKind Kind, TextureType? TextureType) MapParameterKind(VariableLayoutReflection param)
     {
         var type = param.Type;
 
@@ -253,22 +254,22 @@ public sealed class ShaderCompiler : IDisposable
 
         return type.Kind switch
         {
-            SlangTypeKind.ConstantBuffer => ShaderParameterKind.UniformBuffer,
-            SlangTypeKind.SamplerState => ShaderParameterKind.Sampler,
+            SlangTypeKind.ConstantBuffer => (ShaderParameterKind.UniformBuffer, null),
+            SlangTypeKind.SamplerState => (ShaderParameterKind.Sampler, null),
             SlangTypeKind.Resource => MapResourceKind(type),
-            SlangTypeKind.ShaderStorageBuffer => ShaderParameterKind.StorageBuffer,
+            SlangTypeKind.ShaderStorageBuffer => (ShaderParameterKind.StorageBuffer, null),
             _ => throw new NotSupportedException($"Unsupported shader parameter type kind: {type.Kind}")
         };
     }
 
-    private static ShaderParameterKind MapResourceKind(TypeReflection type)
+    private static (ShaderParameterKind Kind, TextureType? TextureType) MapResourceKind(TypeReflection type)
     {
         var shape = type.ResourceShape & SlangResourceShape.BaseShapeMask;
         var access = type.ResourceAccess;
 
         if (shape == SlangResourceShape.StructuredBuffer || shape == SlangResourceShape.ByteAddressBuffer)
         {
-            return ShaderParameterKind.StorageBuffer;
+            return (ShaderParameterKind.StorageBuffer, null);
         }
 
         if (shape is
@@ -278,9 +279,19 @@ public sealed class ShaderCompiler : IDisposable
             SlangResourceShape.TextureCube or
             SlangResourceShape.TextureBuffer)
         {
-            return (access & SlangResourceAccess.Write) != 0
+            var kind = (access & SlangResourceAccess.Write) != 0
                 ? ShaderParameterKind.StorageImage
                 : ShaderParameterKind.SampledImage;
+
+            // Only the 2D and 3D shapes map onto our two image types, so those are the ones a bind can be checked against:
+            var textureType = shape switch
+            {
+                SlangResourceShape.Texture2D => TextureType.Texture2D,
+                SlangResourceShape.Texture3D => TextureType.Texture3D,
+                _ => (TextureType?)null
+            };
+
+            return (kind, textureType);
         }
 
         throw new NotSupportedException($"Unsupported resource shape: {shape}");

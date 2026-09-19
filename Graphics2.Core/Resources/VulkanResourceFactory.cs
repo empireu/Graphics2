@@ -186,18 +186,29 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
 
     public Texture CreateTexture(TextureDescription description)
     {
+        description.Validate();
+
         var vk = _device.Instance.Vk;
         var format = TextureFormatToVk(description.Format);
         var usage = TextureUsageToVk(description.Usage);
 
+        // A 3D image is one layer of depth slices, so its array layer count is always 1 and its third extent carries the depth:
+        var isVolume = description.Type == TextureType.Texture3D;
+        var arrayLayers = isVolume ? 1u : description.ArrayLayers;
+        var viewType = isVolume
+            ? ImageViewType.Type3D
+            : arrayLayers > 1
+                ? ImageViewType.Type2DArray
+                : ImageViewType.Type2D;
+
         var createInfo = new ImageCreateInfo
         {
             SType = StructureType.ImageCreateInfo,
-            ImageType = ImageType.Type2D,
+            ImageType = isVolume ? ImageType.Type3D : ImageType.Type2D,
             Format = format,
             Extent = new Extent3D(description.Width, description.Height, description.Depth),
             MipLevels = description.MipLevels,
-            ArrayLayers = description.ArrayLayers,
+            ArrayLayers = arrayLayers,
             Samples = SampleCountFlags.Count1Bit,
             Tiling = ImageTiling.Optimal,
             Usage = usage,
@@ -244,7 +255,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         {
             SType = StructureType.ImageViewCreateInfo,
             Image = imageHandle,
-            ViewType = ImageViewType.Type2D,
+            ViewType = viewType,
             Format = format,
             Components = new ComponentMapping
             {
@@ -259,7 +270,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
                 BaseMipLevel = 0,
                 LevelCount = description.MipLevels,
                 BaseArrayLayer = 0,
-                LayerCount = description.ArrayLayers
+                LayerCount = arrayLayers
             }
         };
 
@@ -270,7 +281,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
             throw new VkAllocationException("Failed to create image view.");
         }
 
-        return new Texture(_device, _gpuOnly, imageHandle, viewHandle, allocation, description.Width, description.Height, description.Depth, description.Format, description.Usage);
+        return new Texture(_device, _gpuOnly, imageHandle, viewHandle, allocation, description.Width, description.Height, description.Depth, description.Format, description.Usage, description.Type);
     }
 
     public VkSampler CreateSampler(SamplerDescription description)
@@ -280,11 +291,11 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
 
     /// <summary>
     ///     Creates a bindless texture registry with the given capacity.
-    ///     The capacity must match the array size declared in the shader (e.g. <c>Texture2D textures[1024]</c> requires capacity 1024).
+    ///     The capacity must match the array size declared in the shader (e.g. <c>Texture2D textures[1024]</c> requires capacity 1024), and every texture added to it has to have the registered <paramref name="type" />.
     /// </summary>
-    public TextureArray CreateTextureArray(uint capacity)
+    public TextureArray CreateTextureArray(uint capacity, TextureType type = TextureType.Texture2D)
     {
-        return TextureArray.Create(_device, capacity);
+        return TextureArray.Create(_device, capacity, type);
     }
 
     public Pipeline CreatePipeline(PipelineDescription description)
@@ -545,6 +556,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         TextureFormat.R32G32B32A32Sfloat => 16,
         TextureFormat.D32Sfloat => 4,
         TextureFormat.D24UnormS8Uint => 4,
+        TextureFormat.R8Uint => 1,
         _ => throw new ArgumentOutOfRangeException(nameof(format))
     };
 
@@ -1174,6 +1186,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
     private static Format TextureFormatToVk(TextureFormat format) => format switch
     {
         TextureFormat.R8Unorm => Format.R8Unorm,
+        TextureFormat.R8Uint => Format.R8Uint,
         TextureFormat.R8G8B8A8Unorm => Format.R8G8B8A8Unorm,
         TextureFormat.R8G8B8A8Srgb => Format.R8G8B8A8Srgb,
         TextureFormat.B8G8R8A8Srgb => Format.B8G8R8A8Srgb,

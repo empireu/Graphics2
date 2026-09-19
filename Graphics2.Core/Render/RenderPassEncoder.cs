@@ -440,6 +440,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
             throw new ArgumentException($"Shader parameter \"{name}\" is {parameter.Kind}, not SampledImage.", nameof(name));
         }
 
+        RequireTextureType(name, parameter, texture);
         RequireBindableLayout(name, texture, ImageLayout.ShaderReadOnlyOptimal);
         RequireNotAttachment(name, -1, texture);
 
@@ -488,6 +489,11 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         if (parameter.ElementCount != array.Capacity)
         {
             throw new ArgumentException($"Texture registry capacity ({array.Capacity}) does not match shader array size ({parameter.ElementCount}).", nameof(array));
+        }
+
+        if (parameter.TextureType != null && parameter.TextureType.Value != array.Type)
+        {
+            throw new ArgumentException($"Shader parameter \"{name}\" is a {parameter.TextureType} array and the registry holds {array.Type} textures.", nameof(array));
         }
 
         // A registered texture that is also one of this pass's attachments would be sampled and written at once, and the array's descriptors are written once at Add, so the attachment's layout transition cannot be reflected in them:
@@ -569,6 +575,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
             throw new ArgumentException($"Shader parameter \"{name}\" is {parameter.Kind}, not StorageImage.", nameof(name));
         }
 
+        RequireTextureType(name, parameter, texture);
         RequireBindableLayout(name, texture, ImageLayout.General);
         RequireNotAttachment(name, -1, texture);
 
@@ -1098,15 +1105,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         _pendingImageCopies.Clear();
     }
 
-    private static ImageLayout ToVkLayout(TextureLayout layout) => layout switch
-    {
-        TextureLayout.ColorAttachment => ImageLayout.ColorAttachmentOptimal,
-        TextureLayout.ShaderRead => ImageLayout.ShaderReadOnlyOptimal,
-        TextureLayout.Present => ImageLayout.PresentSrcKhr,
-        TextureLayout.None => ImageLayout.Undefined,
-        TextureLayout.DepthAttachment => ImageLayout.DepthAttachmentOptimal,
-        _ => ImageLayout.ColorAttachmentOptimal
-    };
+    private static ImageLayout ToVkLayout(TextureLayout layout) => layout.ToVk();
 
     /// <summary>
     ///     The stages and accesses a layout implies, used for both sides of a transition.
@@ -1127,6 +1126,20 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         ImageLayout.TransferDstOptimal => (PipelineStageFlags2.CopyBit, AccessFlags2.TransferWriteBit),
         _ => (PipelineStageFlags2.AllCommandsBit, AccessFlags2.MemoryReadBit | AccessFlags2.MemoryWriteBit)
     };
+
+    /// <summary>
+    ///     A shader declares how many axes its image has, and Vulkan rejects a view whose type disagrees at draw time, so it is refused here where the parameter name is known.
+    ///     A shape this does not describe, such as a cube or a buffer, carries no type to check against.
+    /// </summary>
+    private static void RequireTextureType(string name, in ShaderParameterReflection parameter, VkTexture texture)
+    {
+        if (parameter.TextureType == null || parameter.TextureType.Value == texture.Type)
+        {
+            return;
+        }
+
+        throw new ArgumentException($"Shader parameter \"{name}\" is a {parameter.TextureType} and the texture is a {texture.Type}.", nameof(texture));
+    }
 
     /// <summary>
     ///     A texture bound before the first draw is transitioned to a layout its binding can use when the pass opens.

@@ -121,6 +121,15 @@ public sealed unsafe class Frame
 
     public void CopyBufferToImage(VkBuffer src, ulong srcOffset, VkTexture dst, uint x, uint y, uint width, uint height)
     {
+        CopyBufferToImage(src, srcOffset, dst, x, y, 0, width, height, 1);
+    }
+
+    /// <summary>
+    ///     Copies a region of a buffer into a region of an image.
+    ///     The region is a single layer and a single mip level, which for a 3D image is the whole volume at the given z offset, because a volume has one array layer.
+    /// </summary>
+    public void CopyBufferToImage(VkBuffer src, ulong srcOffset, VkTexture dst, uint x, uint y, uint z, uint width, uint height, uint depth)
+    {
         ValidateNotInRenderPass();
 
         var vk = Device.Instance.Vk;
@@ -170,8 +179,8 @@ public sealed unsafe class Frame
                 BaseArrayLayer = 0,
                 LayerCount = 1
             },
-            ImageOffset = new Offset3D((int)x, (int)y, 0),
-            ImageExtent = new Extent3D(width, height, 1)
+            ImageOffset = new Offset3D((int)x, (int)y, (int)z),
+            ImageExtent = new Extent3D(width, height, depth)
         };
 
         vk.CmdCopyBufferToImage(CommandBuffer, src.Handle, dst.Image, ImageLayout.TransferDstOptimal, 1, &region);
@@ -181,7 +190,12 @@ public sealed unsafe class Frame
 
     public void CopyBufferToImage(RingAllocation src, VkTexture dst, uint x, uint y, uint width, uint height)
     {
-        CopyBufferToImage(src.Buffer, src.Offset, dst, x, y, width, height);
+        CopyBufferToImage(src.Buffer, src.Offset, dst, x, y, 0, width, height, 1);
+    }
+
+    public void CopyBufferToImage(RingAllocation src, VkTexture dst, uint x, uint y, uint z, uint width, uint height, uint depth)
+    {
+        CopyBufferToImage(src.Buffer, src.Offset, dst, x, y, z, width, height, depth);
     }
 
     public RenderPassEncoder BeginRenderPass(RenderPassDescription description) => RenderPassEncoder.Begin(this, description);

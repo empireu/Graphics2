@@ -9,8 +9,8 @@ namespace Graphics2.Core.Render;
 ///     Owns a single descriptor set with one <c>SampledImage[capacity]</c> binding.
 ///     Textures are added at load time and referenced by index from the shader.
 ///     The registry does not own the textures themselves. It only holds their image views in the descriptor set.
-///     A texture has to be in <see cref="ImageLayout.ShaderReadOnlyOptimal" /> when it is added and has to stay there while it is registered, because the descriptor records that layout once and is not rewritten afterwards.
-///     A texture that a frame writes, as an attachment or as a copy destination, cannot be registered until those writes are done for good.
+///     A descriptor records the layout its texture is declared to be read in, and the pass open verifies that every registered texture is really in it, because the descriptor is not rewritten afterwards.
+///     A texture that a frame writes, as an attachment, cannot be registered until those writes are done for good; a copy destination is allowed, because the flush at the pass open is what makes the declared layout true.
 /// </summary>
 public sealed unsafe class TextureArray : IDeviceResource
 {
@@ -32,6 +32,11 @@ public sealed unsafe class TextureArray : IDeviceResource
     /// </summary>
     public uint Count { get; private set; }
 
+    /// <summary>
+    ///     How many axes every texture in this registry has, which the shader's declared array has to agree with.
+    /// </summary>
+    public readonly TextureType Type;
+
     internal readonly DescriptorSetLayout Layout;
 
     internal readonly DescriptorSet Set;
@@ -41,10 +46,11 @@ public sealed unsafe class TextureArray : IDeviceResource
     /// </summary>
     internal ReadOnlySpan<VkTexture?> Textures => _textures;
 
-    private TextureArray(VkDevice device, uint capacity, DescriptorPool pool, DescriptorSetLayout layout, DescriptorSet set)
+    private TextureArray(VkDevice device, uint capacity, TextureType type, DescriptorPool pool, DescriptorSetLayout layout, DescriptorSet set)
     {
         _device = device;
         Capacity = capacity;
+        Type = type;
         _pool = pool;
         Layout = layout;
         Set = set;
@@ -58,7 +64,7 @@ public sealed unsafe class TextureArray : IDeviceResource
         }
     }
 
-    internal static TextureArray Create(VkDevice device, uint capacity)
+    internal static TextureArray Create(VkDevice device, uint capacity, TextureType type)
     {
         if (capacity == 0)
         {
@@ -137,14 +143,15 @@ public sealed unsafe class TextureArray : IDeviceResource
             throw new VkException("Failed to allocate descriptor set for TextureRegistry.");
         }
 
-        return new TextureArray(device, capacity, pool, layout, set);
+        return new TextureArray(device, capacity, type, pool, layout, set);
     }
 
     /// <summary>
     ///     Adds a texture to the registry and writes its image view into the descriptor set.
     ///     The returned index is what the shader will use to sample this texture (e.g. <c>textures[index].Sample(...)</c>).
+    ///     <see cref="layout"/> is the layout the descriptor declares, and it has to be the layout the texture is in or, when a copy into it was recorded this frame, the layout that copy's flush will put it in.
     /// </summary>
-    public uint Add(VkTexture texture)
+    public uint Add(VkTexture texture, TextureLayout layout = TextureLayout.ShaderRead)
     {
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
 
@@ -158,17 +165,27 @@ public sealed unsafe class TextureArray : IDeviceResource
             throw new InvalidOperationException("TextureRegistry is full.");
         }
 
-        if (texture.CurrentLayout != ImageLayout.ShaderReadOnlyOptimal)
+        if (texture.Type != Type)
+        {
+            throw new ArgumentException(
+                $"Texture is a {texture.Type} and this registry holds {Type} textures, so the shader's declared array cannot sample it.",
+                nameof(texture)
+            );
+        }
+
+        var recordedLayout = layout.ToVk();
+
+        if (texture.CurrentLayout != recordedLayout && texture.CurrentLayout != ImageLayout.TransferDstOptimal)
         {
             throw new InvalidOperationException(
-                $"Texture is in {texture.CurrentLayout} and cannot be registered. It has to be in {ImageLayout.ShaderReadOnlyOptimal} when it is added, because the descriptor records that layout once and is never rewritten. Upload it with UpdateTexture, or register it after a render pass has begun so the read transition after a copy has already been emitted."
+                $"Texture is in {texture.CurrentLayout} and cannot be registered as {recordedLayout}. Register it in the layout its descriptor declares, or in the same frame as a copy into it, whose flush at the pass open is what establishes that layout."
             );
         }
 
         var index = _freeIndices.Pop();
-        WriteDescriptor(index, texture);
+        WriteDescriptor(index, texture, recordedLayout);
         _textures[index] = texture;
-        _recordedLayouts[index] = texture.CurrentLayout;
+        _recordedLayouts[index] = recordedLayout;
         Count++;
         return index;
     }
@@ -194,8 +211,8 @@ public sealed unsafe class TextureArray : IDeviceResource
     }
 
     /// <summary>
-    ///     Checks that every registered texture is still in the layout its descriptor records, which the binding needs because the descriptor is written once, at add time.
-    ///     A texture the frame has since used as an attachment or as a copy destination reports its new layout here rather than sampling with a false layout.
+    ///     Checks that every registered texture is still in the layout its descriptor declares, which the binding needs because the descriptor is written once, at add time.
+    ///     A texture the frame has since used as an attachment reports its new layout here rather than sampling with a false layout; a copy destination is in its declared layout by now, because the flush ran just before this.
     /// </summary>
     internal void ValidateRecordedLayouts(string parameterName)
     {
@@ -214,13 +231,13 @@ public sealed unsafe class TextureArray : IDeviceResource
         }
     }
 
-    private void WriteDescriptor(uint index, VkTexture texture)
+    private void WriteDescriptor(uint index, VkTexture texture, ImageLayout layout)
     {
         var imageInfo = new DescriptorImageInfo
         {
             Sampler = default,
             ImageView = texture.View,
-            ImageLayout = texture.CurrentLayout
+            ImageLayout = layout
         };
 
         var write = new WriteDescriptorSet

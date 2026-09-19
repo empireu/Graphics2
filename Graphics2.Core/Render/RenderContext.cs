@@ -299,7 +299,7 @@ public sealed unsafe class RenderContext : IDisposable
         _swapchainTargets = new VkTexture[Swapchain.ImageCount];
         for (var i = 0; i < _swapchainTargets.Length; i++)
         {
-            _swapchainTargets[i] = new VkTexture(Swapchain.Images[i], Swapchain.Views[i], ImageLayout.Undefined);
+            _swapchainTargets[i] = new VkTexture(Swapchain.Images[i], Swapchain.Views[i], TextureType.Texture2D, ImageLayout.Undefined);
         }
     }
 

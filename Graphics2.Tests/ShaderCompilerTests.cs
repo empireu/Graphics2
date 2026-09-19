@@ -72,6 +72,7 @@ public class ShaderCompilerTests
         Assert.Equal(1u, tex.BindingIndex);
         Assert.Equal(ShaderParameterKind.SampledImage, tex.Kind);
         Assert.Equal(1u, tex.ElementCount);
+        Assert.Equal(TextureType.Texture2D, tex.TextureType);
 
         var samp = compiled.Reflection.Parameters[2];
         Assert.Equal("samp", samp.Name);
@@ -97,6 +98,43 @@ public class ShaderCompilerTests
         Assert.Equal("color", vs.VertexInputs[1].Name);
         Assert.Equal(1u, vs.VertexInputs[1].Location);
         Assert.Equal(VertexAttributeFormat.Float3, vs.VertexInputs[1].Format);
+    }
+
+    [Fact]
+    public void ShaderCompiler_ReflectsVolumeArray()
+    {
+        const string volumeShader = """
+        struct VertexInput {
+            float3 position : POSITION;
+        };
+
+        struct VertexOutput {
+            float4 position : SV_POSITION;
+        };
+
+        Texture3D<uint> volumes[8];
+
+        [shader("vertex")]
+        VertexOutput vsMain(VertexInput input) {
+            VertexOutput output;
+            output.position = float4(input.position, 1.0);
+            return output;
+        }
+
+        [shader("fragment")]
+        float4 fsMain(VertexOutput input) : SV_TARGET {
+            return float4(volumes[0].Load(int4(0, 0, 0, 0)).xxx, 1.0);
+        }
+        """;
+
+        using var compiler = new ShaderCompiler();
+        var compiled = compiler.Compile(volumeShader, "vsMain", "fsMain");
+
+        var volumes = compiled.Reflection.Parameters.Single();
+        Assert.Equal("volumes", volumes.Name);
+        Assert.Equal(ShaderParameterKind.SampledImage, volumes.Kind);
+        Assert.Equal(8u, volumes.ElementCount);
+        Assert.Equal(TextureType.Texture3D, volumes.TextureType);
     }
 
     [Fact]
