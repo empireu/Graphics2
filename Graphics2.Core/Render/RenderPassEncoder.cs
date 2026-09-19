@@ -75,13 +75,20 @@ public sealed unsafe class RenderPassEncoder : IDisposable
                 continue;
             }
 
+            var (srcStages, srcAccess) = LayoutScope(oldLayout);
+
+            // The acquire semaphore is waited on at the color attachment stage (RenderContext.EndFrame), so including that stage is what orders this transition, and the pass it guards, after the acquire:
+            srcStages |= PipelineStageFlags2.ColorAttachmentOutputBit;
+
+            var (dstStages, dstAccess) = LayoutScope(ImageLayout.ColorAttachmentOptimal);
+
             preBarriers[preCount++] = new ImageMemoryBarrier2
             {
                 SType = StructureType.ImageMemoryBarrier2,
-                SrcStageMask = PipelineStageFlags2.ColorAttachmentOutputBit,
-                SrcAccessMask = AccessFlags2.None,
-                DstStageMask = PipelineStageFlags2.ColorAttachmentOutputBit,
-                DstAccessMask = AccessFlags2.ColorAttachmentWriteBit,
+                SrcStageMask = srcStages,
+                SrcAccessMask = srcAccess,
+                DstStageMask = dstStages,
+                DstAccessMask = dstAccess,
                 OldLayout = oldLayout,
                 NewLayout = ImageLayout.ColorAttachmentOptimal,
                 SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
@@ -106,13 +113,16 @@ public sealed unsafe class RenderPassEncoder : IDisposable
 
             if (oldLayout != ImageLayout.DepthAttachmentOptimal)
             {
+                var (srcStages, srcAccess) = LayoutScope(oldLayout);
+                var (dstStages, dstAccess) = LayoutScope(ImageLayout.DepthAttachmentOptimal);
+
                 preBarriers[preCount++] = new ImageMemoryBarrier2
                 {
                     SType = StructureType.ImageMemoryBarrier2,
-                    SrcStageMask = PipelineStageFlags2.EarlyFragmentTestsBit | PipelineStageFlags2.LateFragmentTestsBit,
-                    SrcAccessMask = AccessFlags2.DepthStencilAttachmentWriteBit,
-                    DstStageMask = PipelineStageFlags2.EarlyFragmentTestsBit | PipelineStageFlags2.LateFragmentTestsBit,
-                    DstAccessMask = AccessFlags2.DepthStencilAttachmentReadBit | AccessFlags2.DepthStencilAttachmentWriteBit,
+                    SrcStageMask = srcStages,
+                    SrcAccessMask = srcAccess,
+                    DstStageMask = dstStages,
+                    DstAccessMask = dstAccess,
                     OldLayout = oldLayout,
                     NewLayout = ImageLayout.DepthAttachmentOptimal,
                     SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
@@ -379,6 +389,8 @@ public sealed unsafe class RenderPassEncoder : IDisposable
             throw new ArgumentException($"Shader parameter \"{name}\" is {parameter.Kind}, not SampledImage.", nameof(name));
         }
 
+        RequireReadableLayout(name, texture);
+
         _pendingWrites.Add(new PendingDescriptorWrite
         {
             Set = parameter.BindingSpace,
@@ -425,6 +437,8 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         {
             throw new ArgumentException($"Texture registry capacity ({array.Capacity}) does not match shader array size ({parameter.ElementCount}).", nameof(array));
         }
+
+        array.ValidateRecordedLayouts(name);
 
         foreach (var param in _pipeline.Reflection.Parameters)
         {
@@ -482,6 +496,8 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         {
             throw new ArgumentException($"Shader parameter \"{name}\" is {parameter.Kind}, not StorageImage.", nameof(name));
         }
+
+        RequireReadableLayout(name, texture);
 
         _pendingWrites.Add(new PendingDescriptorWrite
         {
@@ -664,13 +680,16 @@ public sealed unsafe class RenderPassEncoder : IDisposable
                 continue;
             }
 
+            var (srcStages, srcAccess) = LayoutScope(ImageLayout.ColorAttachmentOptimal);
+            var (dstStages, dstAccess) = LayoutScope(finalVkLayout);
+
             postBarriers[postCount++] = new ImageMemoryBarrier2
             {
                 SType = StructureType.ImageMemoryBarrier2,
-                SrcStageMask = PipelineStageFlags2.ColorAttachmentOutputBit,
-                SrcAccessMask = AccessFlags2.ColorAttachmentWriteBit,
-                DstStageMask = PipelineStageFlags2.ColorAttachmentOutputBit,
-                DstAccessMask = AccessFlags2.None,
+                SrcStageMask = srcStages,
+                SrcAccessMask = srcAccess,
+                DstStageMask = dstStages,
+                DstAccessMask = dstAccess,
                 OldLayout = ImageLayout.ColorAttachmentOptimal,
                 NewLayout = finalVkLayout,
                 SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
@@ -698,13 +717,16 @@ public sealed unsafe class RenderPassEncoder : IDisposable
             }
             else
             {
+                var (srcStages, srcAccess) = LayoutScope(ImageLayout.DepthAttachmentOptimal);
+                var (dstStages, dstAccess) = LayoutScope(finalVkLayout);
+
                 postBarriers[postCount++] = new ImageMemoryBarrier2
                 {
                     SType = StructureType.ImageMemoryBarrier2,
-                    SrcStageMask = PipelineStageFlags2.EarlyFragmentTestsBit | PipelineStageFlags2.LateFragmentTestsBit,
-                    SrcAccessMask = AccessFlags2.DepthStencilAttachmentWriteBit,
-                    DstStageMask = PipelineStageFlags2.EarlyFragmentTestsBit | PipelineStageFlags2.LateFragmentTestsBit,
-                    DstAccessMask = AccessFlags2.None,
+                    SrcStageMask = srcStages,
+                    SrcAccessMask = srcAccess,
+                    DstStageMask = dstStages,
+                    DstAccessMask = dstAccess,
                     OldLayout = ImageLayout.DepthAttachmentOptimal,
                     NewLayout = finalVkLayout,
                     SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
@@ -1006,6 +1028,42 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         TextureLayout.DepthAttachment => ImageLayout.DepthAttachmentOptimal,
         _ => ImageLayout.ColorAttachmentOptimal
     };
+
+    /// <summary>
+    ///     The stages and accesses a layout implies, used for both sides of a transition.
+    ///     The source side comes from the layout the image is leaving and the destination side from the layout it is entering, so that a write this frame is ordered against a sampled read in a later pass.
+    ///     Present is ordered by the acquire and present semaphores, which is why it carries no access of its own.
+    ///     Undefined discards the contents, and the callers skip the barrier for it.
+    /// </summary>
+    private static (PipelineStageFlags2 Stages, AccessFlags2 Access) LayoutScope(ImageLayout layout) => layout switch
+    {
+        ImageLayout.Undefined => (PipelineStageFlags2.None, AccessFlags2.None),
+        ImageLayout.PresentSrcKhr => (PipelineStageFlags2.ColorAttachmentOutputBit, AccessFlags2.None),
+        ImageLayout.ColorAttachmentOptimal => (PipelineStageFlags2.ColorAttachmentOutputBit, AccessFlags2.ColorAttachmentWriteBit),
+        ImageLayout.DepthAttachmentOptimal => (
+            PipelineStageFlags2.EarlyFragmentTestsBit | PipelineStageFlags2.LateFragmentTestsBit,
+            AccessFlags2.DepthStencilAttachmentReadBit | AccessFlags2.DepthStencilAttachmentWriteBit
+        ),
+        ImageLayout.ShaderReadOnlyOptimal => (PipelineStageFlags2.AllGraphicsBit, AccessFlags2.ShaderReadBit),
+        ImageLayout.TransferDstOptimal => (PipelineStageFlags2.CopyBit, AccessFlags2.TransferWriteBit),
+        _ => (PipelineStageFlags2.AllCommandsBit, AccessFlags2.MemoryReadBit | AccessFlags2.MemoryWriteBit)
+    };
+
+    /// <summary>
+    ///     A texture has to be readable before the pass that binds it begins, because nothing can transition it once dynamic rendering is open.
+    ///     Binding therefore never emits a barrier, and a texture that is still in a write layout here is an ordering mistake in the frame rather than something the encoder can repair.
+    /// </summary>
+    private static void RequireReadableLayout(string name, VkTexture texture)
+    {
+        if (texture.CurrentLayout is ImageLayout.ShaderReadOnlyOptimal or ImageLayout.General)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"Texture \"{name}\" is in {texture.CurrentLayout} and cannot be sampled. It has to be in a read layout before BeginRenderPass, because a barrier cannot be recorded inside a render pass."
+        );
+    }
 
     private static Silk.NET.Vulkan.IndexType IndexTypeToVk(IndexType indexType) => indexType switch
     {
