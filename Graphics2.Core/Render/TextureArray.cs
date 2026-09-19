@@ -36,6 +36,11 @@ public sealed unsafe class TextureArray : IDeviceResource
 
     internal readonly DescriptorSet Set;
 
+    /// <summary>
+    ///     The textures currently registered, indexed by the value the shader samples them with. Null where an index is free.
+    /// </summary>
+    internal ReadOnlySpan<VkTexture?> Textures => _textures;
+
     private TextureArray(VkDevice device, uint capacity, DescriptorPool pool, DescriptorSetLayout layout, DescriptorSet set)
     {
         _device = device;

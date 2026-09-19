@@ -4,8 +4,8 @@ using Silk.NET.Maths;
 using Silk.NET.Vulkan;
 using IndexType = Graphics2.Core.Resources.IndexType;
 using Pipeline = Graphics2.Core.Resources.Pipeline;
-// ReSharper disable LoopCanBeConvertedToQuery
 
+// ReSharper disable LoopCanBeConvertedToQuery
 // ReSharper disable ForCanBeConvertedToForeach
 
 namespace Graphics2.Core.Render;
@@ -23,7 +23,9 @@ public sealed unsafe class RenderPassEncoder : IDisposable
     private readonly HashSet<VkTexture> _pendingImageCopies;
     private Pipeline? _pipeline;
     private readonly List<PendingDescriptorWrite> _pendingWrites = [];
+    private readonly List<(string Name, TextureArray Array)> _boundTextureArrays = [];
     private bool _descriptorsDirty;
+    private bool _passOpened;
     private bool _ended;
 
     private RenderPassEncoder(Frame frame, RenderPassDescription description)
@@ -42,11 +44,11 @@ public sealed unsafe class RenderPassEncoder : IDisposable
     internal static RenderPassEncoder Begin(Frame frame, RenderPassDescription description)
     {
         var encoder = new RenderPassEncoder(frame, description);
-        encoder.BeginPass();
+        encoder.ValidateDescription();
         return encoder;
     }
 
-    private void BeginPass()
+    private void ValidateDescription()
     {
         var colors = _description.ColorAttachments;
         if (colors == null || colors.Length == 0)
@@ -54,6 +56,24 @@ public sealed unsafe class RenderPassEncoder : IDisposable
             throw new ArgumentException("RenderPassDescriptor requires at least one color attachment for now", nameof(_description));
         }
 
+        // A pass is requested here even though nothing is recorded yet, because a copy recorded between this call and the first draw would need a barrier that dynamic rendering forbids:
+        _frame.PassOpen = true;
+    }
+
+    /// <summary>
+    ///     Records everything the pass needs before dynamic rendering opens, then opens it.
+    ///     Deferring this to the first draw is what lets the encoder see the bindings and put their transitions in front of the pass, which BeginRenderPass cannot do because no binding has happened yet.
+    /// </summary>
+    private void EnsurePassOpen()
+    {
+        if (_passOpened)
+        {
+            return;
+        }
+
+        _passOpened = true;
+
+        var colors = _description.ColorAttachments;
         var depth = _description.DepthAttachment;
 
         var area = _description.RenderArea ?? new Box2D<int>(Vector2D<int>.Zero, _defaultExtent);
@@ -79,6 +99,9 @@ public sealed unsafe class RenderPassEncoder : IDisposable
 
             // The acquire semaphore is waited on at the color attachment stage (RenderContext.EndFrame), so including that stage is what orders this transition, and the pass it guards, after the acquire:
             srcStages |= PipelineStageFlags2.ColorAttachmentOutputBit;
+
+            // A Clear discards the contents and so reports Undefined, but the transition is itself a write and still has to be ordered after the store the previous pass left in the image:
+            srcAccess |= AccessFlags2.ColorAttachmentWriteBit;
 
             var (dstStages, dstAccess) = LayoutScope(ImageLayout.ColorAttachmentOptimal);
 
@@ -114,6 +137,11 @@ public sealed unsafe class RenderPassEncoder : IDisposable
             if (oldLayout != ImageLayout.DepthAttachmentOptimal)
             {
                 var (srcStages, srcAccess) = LayoutScope(oldLayout);
+
+                // Same as the color path, the transition of a cleared depth attachment is a write, so its source scope has to cover the fragment tests that performed the previous pass's depth store:
+                srcStages |= PipelineStageFlags2.EarlyFragmentTestsBit | PipelineStageFlags2.LateFragmentTestsBit;
+                srcAccess |= AccessFlags2.DepthStencilAttachmentWriteBit;
+
                 var (dstStages, dstAccess) = LayoutScope(ImageLayout.DepthAttachmentOptimal);
 
                 preBarriers[preCount++] = new ImageMemoryBarrier2
@@ -153,6 +181,30 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         }
 
         FlushCopyBarriers();
+
+        // The copy flush is what returns a texture uploaded this frame to the layout the array's descriptor recorded, so a bound array is checked here rather than at bind time:
+        for (var i = 0; i < _boundTextureArrays.Count; i++)
+        {
+            var (name, array) = _boundTextureArrays[i];
+            array.ValidateRecordedLayouts(name);
+        }
+
+        // Every image bound to this pass has to be in a layout its binding can use before dynamic rendering opens, because a barrier cannot be recorded inside it:
+        TransitionBoundImages();
+
+        // The tracked layout describes the pass while it is open, so a bind after the first draw sees the layout the image is actually in rather than a stale one:
+        for (var i = 0; i < colors.Length; i++)
+        {
+            colors[i].Target.CurrentLayout = ImageLayout.ColorAttachmentOptimal;
+        }
+
+        if (depth != null)
+        {
+            depth.Target.CurrentLayout = ImageLayout.DepthAttachmentOptimal;
+        }
+
+        // The descriptor records the layout read here, so it has to be the layout the image will be in while the pass runs:
+        FlushDescriptors();
 
         var attachments = stackalloc RenderingAttachmentInfo[colors.Length];
         for (var i = 0; i < colors.Length; i++)
@@ -231,7 +283,6 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         }
 
         _vk.CmdBeginRendering(_cmd, &renderingInfo);
-        _frame.PassOpen = true;
     }
 
     public void SetPipeline(Pipeline pipeline)
@@ -389,7 +440,8 @@ public sealed unsafe class RenderPassEncoder : IDisposable
             throw new ArgumentException($"Shader parameter \"{name}\" is {parameter.Kind}, not SampledImage.", nameof(name));
         }
 
-        RequireReadableLayout(name, texture);
+        RequireBindableLayout(name, texture, ImageLayout.ShaderReadOnlyOptimal);
+        RequireNotAttachment(name, -1, texture);
 
         _pendingWrites.Add(new PendingDescriptorWrite
         {
@@ -397,7 +449,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
             Binding = parameter.BindingIndex,
             Type = DescriptorType.SampledImage,
             ImageView = texture.View,
-            ImageLayout = texture.CurrentLayout
+            Texture = texture
         });
 
         _descriptorsDirty = true;
@@ -438,7 +490,27 @@ public sealed unsafe class RenderPassEncoder : IDisposable
             throw new ArgumentException($"Texture registry capacity ({array.Capacity}) does not match shader array size ({parameter.ElementCount}).", nameof(array));
         }
 
-        array.ValidateRecordedLayouts(name);
+        // A registered texture that is also one of this pass's attachments would be sampled and written at once, and the array's descriptors are written once at Add, so the attachment's layout transition cannot be reflected in them:
+        var registeredTextures = array.Textures;
+        for (var index = 0; index < registeredTextures.Length; index++)
+        {
+            var registered = registeredTextures[index];
+
+            if (registered != null)
+            {
+                RequireNotAttachment(name, index, registered);
+            }
+        }
+
+        // A bind after the first draw cannot be re-checked at the open, because that has already happened:
+        if (_passOpened)
+        {
+            array.ValidateRecordedLayouts(name);
+        }
+        else
+        {
+            _boundTextureArrays.Add((name, array));
+        }
 
         foreach (var param in _pipeline.Reflection.Parameters)
         {
@@ -497,7 +569,8 @@ public sealed unsafe class RenderPassEncoder : IDisposable
             throw new ArgumentException($"Shader parameter \"{name}\" is {parameter.Kind}, not StorageImage.", nameof(name));
         }
 
-        RequireReadableLayout(name, texture);
+        RequireBindableLayout(name, texture, ImageLayout.General);
+        RequireNotAttachment(name, -1, texture);
 
         _pendingWrites.Add(new PendingDescriptorWrite
         {
@@ -505,7 +578,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
             Binding = parameter.BindingIndex,
             Type = DescriptorType.StorageImage,
             ImageView = texture.View,
-            ImageLayout = texture.CurrentLayout
+            Texture = texture
         });
 
         _descriptorsDirty = true;
@@ -562,6 +635,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
 
     public void Draw(uint vertexCount, uint instanceCount = 1, uint firstVertex = 0, uint firstInstance = 0)
     {
+        EnsurePassOpen();
         FlushDescriptors();
         _vk.CmdDraw(_cmd, vertexCount, instanceCount, firstVertex, firstInstance);
     }
@@ -579,6 +653,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
 
     public void DrawIndexed(uint indexCount, uint instanceCount = 1, uint firstIndex = 0, int vertexOffset = 0, uint firstInstance = 0)
     {
+        EnsurePassOpen();
         FlushDescriptors();
         _vk.CmdDrawIndexed(_cmd, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
     }
@@ -597,6 +672,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
             throw new ArgumentException($"Stride must be at least {DrawIndexedIndirectCommand.SizeInBytes} bytes and a multiple of 4.", nameof(stride));
         }
 
+        EnsurePassOpen();
         FlushDescriptors();
         
         _vk.CmdDrawIndexedIndirect(_cmd, args.Handle, offset, drawCount, stride);
@@ -660,6 +736,9 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         }
 
         _ended = true;
+
+        // An empty pass is a legitimate clear, so the open has to happen here when no draw did it:
+        EnsurePassOpen();
 
         _vk.CmdEndRendering(_cmd);
         _frame.PassOpen = false;
@@ -896,7 +975,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
                     {
                         Sampler = write.Sampler,
                         ImageView = write.ImageView,
-                        ImageLayout = write.ImageLayout
+                        ImageLayout = write.Texture?.CurrentLayout ?? ImageLayout.Undefined
                     };
 
                     writes[idx] = new WriteDescriptorSet
@@ -1033,7 +1112,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
     ///     The stages and accesses a layout implies, used for both sides of a transition.
     ///     The source side comes from the layout the image is leaving and the destination side from the layout it is entering, so that a write this frame is ordered against a sampled read in a later pass.
     ///     Present is ordered by the acquire and present semaphores, which is why it carries no access of its own.
-    ///     Undefined discards the contents, and the callers skip the barrier for it.
+    ///     Undefined carries nothing of its own, because leaving it discards the contents, so a caller whose transition still has to be ordered against an earlier write adds that write's access itself.
     /// </summary>
     private static (PipelineStageFlags2 Stages, AccessFlags2 Access) LayoutScope(ImageLayout layout) => layout switch
     {
@@ -1050,19 +1129,120 @@ public sealed unsafe class RenderPassEncoder : IDisposable
     };
 
     /// <summary>
-    ///     A texture has to be readable before the pass that binds it begins, because nothing can transition it once dynamic rendering is open.
-    ///     Binding therefore never emits a barrier, and a texture that is still in a write layout here is an ordering mistake in the frame rather than something the encoder can repair.
+    ///     A texture bound before the first draw is transitioned to a layout its binding can use when the pass opens.
+    ///     A texture bound after that has no legal place for the barrier it would need, so it has to be in that layout already.
+    ///     Undefined is refused either way, because an image that was never written has no contents to read.
     /// </summary>
-    private static void RequireReadableLayout(string name, VkTexture texture)
+    private void RequireBindableLayout(string name, VkTexture texture, ImageLayout target)
     {
-        if (texture.CurrentLayout is ImageLayout.ShaderReadOnlyOptimal or ImageLayout.General)
+        if (texture.CurrentLayout == ImageLayout.Undefined)
         {
-            return;
+            throw new InvalidOperationException(
+                $"Texture \"{name}\" has never been written, so it cannot be read. Upload it or render into it before binding it."
+            );
         }
 
-        throw new InvalidOperationException(
-            $"Texture \"{name}\" is in {texture.CurrentLayout} and cannot be sampled. It has to be in a read layout before BeginRenderPass, because a barrier cannot be recorded inside a render pass."
+        if (_passOpened && texture.CurrentLayout != target && texture.CurrentLayout != ImageLayout.General)
+        {
+            throw new InvalidOperationException(
+                $"Texture \"{name}\" is in {texture.CurrentLayout} and is bound after dynamic rendering opened, where a barrier cannot be recorded. Bind it before the first draw of the pass so the encoder can transition it."
+            );
+        }
+    }
+
+    /// <summary>
+    ///     A texture that is one of the pass's own attachments cannot also be bound for sampling or storage, because the pass would read and write it at once.
+    ///     The comparison is on the image handle, since the same image can be wrapped by more than one view.
+    /// </summary>
+    private void RequireNotAttachment(string name, int elementIndex, VkTexture texture)
+    {
+        var colors = _description.ColorAttachments;
+
+        for (var i = 0; i < colors.Length; i++)
+        {
+            if (colors[i].Target.Image.Handle == texture.Image.Handle)
+            {
+                throw FeedbackLoop(name, elementIndex, $"color attachment {i}");
+            }
+        }
+
+        if (_description.DepthAttachment != null && _description.DepthAttachment.Target.Image.Handle == texture.Image.Handle)
+        {
+            throw FeedbackLoop(name, elementIndex, "the depth attachment");
+        }
+    }
+
+    private static InvalidOperationException FeedbackLoop(string name, int elementIndex, string attachment)
+    {
+        var bound = elementIndex >= 0
+            ? $"Texture array element {elementIndex} bound to \"{name}\""
+            : $"Texture \"{name}\"";
+
+        return new InvalidOperationException(
+            $"{bound} is {attachment} of this pass, so binding it would be a read-write feedback loop. Use a separate image."
         );
+    }
+
+    /// <summary>
+    ///     Moves every image bound to this pass into a layout its binding can use.
+    ///     This is what makes a texture that a copy or an earlier pass wrote in this frame bindable, and it is the reason the pass is opened at the first draw rather than at BeginRenderPass.
+    /// </summary>
+    private void TransitionBoundImages()
+    {
+        for (var i = 0; i < _pendingWrites.Count; i++)
+        {
+            var write = _pendingWrites[i];
+            var texture = write.Texture;
+
+            if (texture == null)
+            {
+                continue;
+            }
+
+            var isStorageImage = write.Type == DescriptorType.StorageImage;
+            var target = isStorageImage ? ImageLayout.General : ImageLayout.ShaderReadOnlyOptimal;
+
+            // General is a legal sample layout and the storage-image layout, so an image already there does not move:
+            if (texture.CurrentLayout == target || (!isStorageImage && texture.CurrentLayout == ImageLayout.General))
+            {
+                continue;
+            }
+
+            var (srcStages, srcAccess) = LayoutScope(texture.CurrentLayout);
+            var (dstStages, dstAccess) = LayoutScope(target);
+
+            var barrier = new ImageMemoryBarrier2
+            {
+                SType = StructureType.ImageMemoryBarrier2,
+                SrcStageMask = srcStages,
+                SrcAccessMask = srcAccess,
+                DstStageMask = dstStages,
+                DstAccessMask = dstAccess,
+                OldLayout = texture.CurrentLayout,
+                NewLayout = target,
+                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                Image = texture.Image,
+                SubresourceRange = new ImageSubresourceRange
+                {
+                    AspectMask = ImageAspectFlags.ColorBit,
+                    BaseMipLevel = 0,
+                    LevelCount = 1,
+                    BaseArrayLayer = 0,
+                    LayerCount = 1
+                }
+            };
+
+            var dependencyInfo = new DependencyInfo
+            {
+                SType = StructureType.DependencyInfo,
+                ImageMemoryBarrierCount = 1,
+                PImageMemoryBarriers = &barrier
+            };
+
+            _vk.CmdPipelineBarrier2(_cmd, &dependencyInfo);
+            texture.CurrentLayout = target;
+        }
     }
 
     private static Silk.NET.Vulkan.IndexType IndexTypeToVk(IndexType indexType) => indexType switch
@@ -1082,6 +1262,6 @@ public sealed unsafe class RenderPassEncoder : IDisposable
         public ulong Range;
         public ImageView ImageView;
         public Silk.NET.Vulkan.Sampler Sampler;
-        public ImageLayout ImageLayout;
+        public VkTexture? Texture;
     }
 }
