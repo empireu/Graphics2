@@ -259,6 +259,8 @@ internal sealed unsafe class WorldLayer : IDisposable
         frame.CopyBuffer(staging.Buffer, staging.Offset, destination, (ulong)destinationOffset, (ulong)data.Length);
     }
 
+    private readonly FrameTimeTracker _tracker = new(4000 * 5);
+    
     private void ImGuiPass(Frame frame)
     {
         using var imGuiPass = frame.BeginRenderPass(new RenderPassDescription
@@ -404,12 +406,29 @@ internal sealed unsafe class WorldLayer : IDisposable
                 DrawRun(worldPass, args, runFirstCommand, _chunks.Count - runFirstCommand);
             }
         }
-        
+
         ImGui.PushStyleColor(ImGuiCol.WindowBg, new Vector4(0, 0, 0, 0));
         ImGui.DockSpaceOverViewport(0U, (ImGuiViewport*) null, ImGuiDockNodeFlags.PassthruCentralNode, (ImGuiWindowClass*) null);
         ImGui.PopStyleColor();
+
+        _tracker.Update();
+
+        if (ImGui.Begin("Tracker"))
+        {
+            ImGui.Text($"Frames: {_tracker.TotalFrames}/{_tracker.WindowFrames}");
+            ImGui.Separator();
+            ImGui.Text("Time (window):");
+            ImGui.Text($"  Avg: {_tracker.AverageMilliseconds * 1000:F2}us");
+            ImGui.Text($"  Min: {_tracker.MinimumMilliseconds * 1000:F2}us");
+            ImGui.Text($"  Max: {_tracker.MaximumMilliseconds * 1000:F2}us");
+            ImGui.Text($"  P50: {_tracker.MedianMilliseconds * 1000:F2}us");
+            ImGui.Text($"  P95: {_tracker.P95Milliseconds * 1000:F2}us");
+            ImGui.Text($"  P99: {_tracker.P99Milliseconds * 1000:F2}us");
+        }
         
-         if (ImGui.Begin("Generator"))
+        ImGui.End();
+        
+        if (ImGui.Begin("Generator"))
         {
             ImGui.InputInt("Chunk cells", ref _chunkCells, 8);
             ImGui.InputInt("Chunks X", ref _chunksX, 1);
