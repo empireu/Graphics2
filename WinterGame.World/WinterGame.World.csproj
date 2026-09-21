@@ -15,6 +15,7 @@
     
     <ItemGroup>
         <InternalsVisibleTo Include="Graphics2.Tests"/>
+        <InternalsVisibleTo Include="WinterGame.Tests"/>
     </ItemGroup>
     
 </Project>

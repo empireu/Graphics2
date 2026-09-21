@@ -4,7 +4,7 @@ using Graphics2.Mathematics.Noise;
 
 namespace WinterGame.World;
 
-public sealed class FbmTerrainGenerator
+public sealed class FbmTerrainGenerator : IVoxelSource
 {
     public const byte IsoLevel = 127;
 
@@ -25,6 +25,8 @@ public sealed class FbmTerrainGenerator
         _surfaceHeight = surfaceHeight;
         _reliefVoxels = reliefVoxels;
     }
+
+    public byte SampleContent(Vector3i position) => ContentAt(position.X, position.Y, position.Z);
 
     public void Generate(Vector3i min, Vector3i maxInclusive, Span3D<byte> content, Span3D<byte> material)
     {
@@ -49,24 +51,30 @@ public sealed class FbmTerrainGenerator
 
         for (var z = 0; z < countZ; z++)
         {
-            var noiseZ = (min.Z + z) * _inverseVoxelsPerNoiseUnit;
-
             for (var y = 0; y < countY; y++)
             {
-                var noiseY = (min.Y + y) * _inverseVoxelsPerNoiseUnit;
-
                 for (var x = 0; x < countX; x++)
                 {
-                    var noiseX = (min.X + x) * _inverseVoxelsPerNoiseUnit;
-                    var surface = _surfaceHeight + _noise.Sample(noiseX, noiseY, noiseZ) * _reliefVoxels;
-                    var distance = min.Y + y - surface;
-
-                    content[x, y, z] = (byte)Math.Clamp(127.0f - (distance * 127.0f), 0.0f, 255.0f);
+                    content[x, y, z] = ContentAt(min.X + x, min.Y + y, min.Z + z);
                 }
             }
         }
 
         ClassifyMaterial(min, content, material);
+    }
+
+    /// <summary>
+    ///     The density at one voxel, shared by the interface's point read and the box fill's inner loop, so the two can never disagree about a position.
+    /// </summary>
+    private byte ContentAt(int x, int y, int z)
+    {
+        var surface = _surfaceHeight + _noise.Sample(
+            x * _inverseVoxelsPerNoiseUnit,
+            y * _inverseVoxelsPerNoiseUnit,
+            z * _inverseVoxelsPerNoiseUnit
+        ) * _reliefVoxels;
+
+        return (byte)Math.Clamp(127.0f - ((y - surface) * 127.0f), 0.0f, 255.0f);
     }
 
     /// <summary>
@@ -104,10 +112,8 @@ public sealed class FbmTerrainGenerator
                     var gradientY = content[x, yHigh, z] - content[x, yLow, z];
                     var gradientZ = content[x, y, zHigh] - content[x, y, zLow];
 
-                    // The outward normal is opposite the content gradient, so a flat top comes out as +y:
                     var lengthSquared = (gradientX * gradientX) + (gradientY * gradientY) + (gradientZ * gradientZ);
 
-                    // Deep inside the solid the field is saturated and has no gradient at all, so the sample is treated as flat:
                     var slope = lengthSquared > 0 ? -gradientY / MathF.Sqrt(lengthSquared) : 1.0f;
 
                     material[x, y, z] = _classifier.Classify(slope, min.Y + y);

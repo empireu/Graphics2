@@ -1,8 +1,5 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Runtime.Intrinsics;
-// ReSharper disable ForCanBeConvertedToForeach
 
 namespace WinterGame.World.Storage;
 
@@ -15,10 +12,12 @@ public enum BrickType : byte
     ///     Invalid descriptor.
     /// </summary>
     None = 0,
+
     /// <summary>
     ///     Nothing is stored; the data is provided by the world generator.
     /// </summary>
     Provider = 1,
+
     /// <summary>
     ///     One value across the whole brick.
     /// </summary>
@@ -31,156 +30,192 @@ public enum BrickType : byte
 }
 
 /// <summary>
-///     Which of a brick's two stored fields a type or a value describes.
+///     Handle for a section. The backing data lives in the owning <see cref="SectionArena"/>.
 /// </summary>
-public enum VoxelChannel : byte
-{
-    /// <summary>
-    ///     The normalized signed distance, where larger values are closer to solid.
-    /// </summary>
-    Content = 0,
-
-    /// <summary>
-    ///     An index into the material table, with 255 meaning no material.
-    /// </summary>
-    Material = 1
-}
-
 public readonly struct Section
 {
-    private const int BrickTypeWidthLog = 1;
-    private const int BitsPerBrickType = 1 << BrickTypeWidthLog;
-    
-    private const uint BrickTypeMask = (1u << BitsPerBrickType) - 1;
-    
     /// <summary>
-    ///     6 is <c>log2(64)</c> (the segment size in bits).
-    /// </summary>
-    private const int IndexToSegmentShift = 6 - BrickTypeWidthLog;
-    
-    /// <summary>
-    ///     Number of brick types stored per 64-bit segment.
-    /// </summary>
-    public const int BrickTypesPerSegment = 64 / BitsPerBrickType;
-    
-    /// <summary>
-    ///     Number of channels a brick stores a type and a value for.
+    ///     Number of channels a brick stores a descriptor for.
     /// </summary>
     public const int VoxelChannelCount = 2;
-    
-    /// <summary>
-    ///     Number of 64-bit segments needed to store one channel's brick types.
-    /// </summary>
-    public const int BrickTypeSegmentsPerChannel = (Bricks + (BrickTypesPerSegment - 1)) >> IndexToSegmentShift;
-    
-    /// <summary>
-    ///     Number of 64-bit segments one section owns in the slab: one bitmap per channel.
-    /// </summary>
-    public const int BrickTypeSegmentsPerSection = BrickTypeSegmentsPerChannel * VoxelChannelCount;
-    
+
     public const int BrickLog = 2;
     public const int BrickSize = 1 << BrickLog;
     public const int BricksPerAxis = SectionPos.SectionSize / BrickSize;
     public const int Bricks = BricksPerAxis * BricksPerAxis * BricksPerAxis;
 
-    public readonly SectionPos Pos;
+    /// <summary>
+    ///     Number of descriptors one channel stores, one per brick.
+    /// </summary>
+    public const int DescriptorsPerChannel = Bricks;
 
-    private readonly ulong[] _brickTypeStorage;
-    private readonly int _brickTypeStorageOffset;
+    /// <summary>
+    ///     Number of descriptors one section owns in the slab: one channel's descriptors after the other.
+    /// </summary>
+    public const int DescriptorsPerSection = DescriptorsPerChannel * VoxelChannelCount;
     
-    public Section(SectionPos pos, ulong[] brickTypeStorage, int brickTypeStorageOffset)
-    {
-        ArgumentNullException.ThrowIfNull(brickTypeStorage);
-        ArgumentOutOfRangeException.ThrowIfNegative(brickTypeStorageOffset);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(
-            brickTypeStorageOffset + BrickTypeSegmentsPerSection,
-            brickTypeStorage.Length,
-            nameof(brickTypeStorageOffset)
-        );
+    /// <summary>
+    ///     Number of voxels one brick stores, which is the size of a dense array.
+    /// </summary>
+    public const int VoxelsPerBrick = BrickSize * BrickSize * BrickSize;
+    
+    /// <summary>
+    ///     The arena that allocated the Section, for accessing the underlying storage.
+    /// </summary>
+    public readonly SectionArena Arena;
+    
+    /// <summary>
+    ///     The unique position of the section. No other sections with this key exist in the arena.
+    /// </summary>
+    public readonly SectionPos Position;
+    
+    /// <summary>
+    ///     Holds the actual reference to the array as well, since it doesn't move.
+    /// </summary>
+    public readonly DescriptorArray DescriptorArray;
 
-        Pos = pos;
-        _brickTypeStorage = brickTypeStorage;
-        _brickTypeStorageOffset = brickTypeStorageOffset;
-    }
-    
-    public void FillBrickType(VoxelChannel channel, BrickType value)
+    /// <summary>
+    ///     Handle to the voxel storage for a section of the world.
+    /// </summary>
+    public Section(SectionArena arena, SectionPos position, DescriptorArray descriptorArray)
     {
-        DebugValidateChannel(channel);
-        Debug.Assert(value != BrickType.None, "Brick type None is a poison value and cannot be written.");
-        
-        var destination = _brickTypeStorage.AsSpan(
-            _brickTypeStorageOffset + GetChannelWordOffset(channel),
-            BrickTypeSegmentsPerChannel
-        );
-        
-        destination.Fill(GetBrickTypeWord(value));
+        Arena = arena;
+        Position = position;
+        DescriptorArray = descriptorArray;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public BrickType GetBrickType(VoxelChannel channel, int brickIndex)
     {
-        DebugValidateBrickType(channel, brickIndex);
-        
-        var wordIndex = _brickTypeStorageOffset + GetChannelWordOffset(channel) + (brickIndex >> IndexToSegmentShift);
-        var shift = (brickIndex << BrickTypeWidthLog) & 63;
-        
-        var segment = _brickTypeStorage[wordIndex];
-        var type = (BrickType)((segment >> shift) & BrickTypeMask);
-        
-        Debug.Assert(type != BrickType.None, "Brick type None is a poison value and was never written.");
-        
-        return type;
+        DebugValidateBrickIndex(channel, brickIndex);
+
+        var descriptor = ReadDescriptor(channel, brickIndex);
+
+        Debug.Assert(descriptor.Type != BrickType.None, "Brick type None is a poison value and was never written.");
+
+        return descriptor.Type;
     }
     
+    /// <summary>
+    ///     Gets the uniform value of a brick whose type is <see cref="BrickType.Uniform"/>.
+    ///     Illegal to call if the brick is of another type.
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void SetBrickType(VoxelChannel channel, int brickIndex, BrickType value)
+    public byte GetUniformValue(VoxelChannel channel, int brickIndex)
     {
-        DebugValidateBrickType(channel, brickIndex, value);
-        
-        var wordIndex = _brickTypeStorageOffset + GetChannelWordOffset(channel) + (brickIndex >> IndexToSegmentShift);
-        var shift = (brickIndex << BrickTypeWidthLog) & 63;
-        
-        var clearMask = ~((ulong)BrickTypeMask << shift);
-        var insertValue = ((ulong)value & BrickTypeMask) << shift;
-        
-        _brickTypeStorage[wordIndex] = (_brickTypeStorage[wordIndex] & clearMask) | insertValue;
+        DebugValidateBrickIndex(channel, brickIndex);
+
+        var descriptor = ReadDescriptor(channel, brickIndex);
+
+        Debug.Assert(
+            descriptor.Type == BrickType.Uniform,
+            $"Brick {brickIndex} of {channel} is {descriptor.Type}, not Uniform."
+        );
+
+        return (byte)descriptor.UserData;
+    }
+
+    /// <summary>
+    ///     Gets the voxel array of a brick whose type is <see cref="BrickType.Dense"/>.
+    ///     Illegal to call if the brick is of another type.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public VoxelArray GetDense(VoxelChannel channel, int brickIndex)
+    {
+        DebugValidateBrickIndex(channel, brickIndex);
+
+        var descriptor = ReadDescriptor(channel, brickIndex);
+
+        Debug.Assert(
+            descriptor.Type == BrickType.Dense,
+            $"Brick {brickIndex} of {channel} is {descriptor.Type}, not Dense."
+        );
+
+        return Arena.GetVoxelArray(VoxelArrayHandle.Unpack(descriptor.UserData));
     }
     
+    /// <summary>
+    ///     Evicts any allocations the brick is holding.
+    ///     Doesn't mutate the descriptor; the caller is responsible for that.
+    /// </summary>
+    public void FreeStorage(VoxelChannel channel, int brickIndex)
+    {
+        DebugValidateBrickIndex(channel, brickIndex);
+
+        var descriptor = ReadDescriptor(channel, brickIndex);
+
+        switch (descriptor.Type)
+        {
+            case BrickType.None:
+            case BrickType.Provider:
+            case BrickType.Uniform:
+                // Ignored
+                break;
+            case BrickType.Dense:
+                Arena.FreeVoxelArray(VoxelArrayHandle.Unpack(descriptor.UserData));
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(brickIndex), $"The descriptor type is {descriptor.Type}");
+        }
+    }
+    
+    /// <summary>
+    ///     Evicts the dense array (if applicable) and sets the brick to be provider.
+    /// </summary>
+    public void SetProvider(VoxelChannel channel, int brickIndex)
+    {
+        DebugValidateBrickIndex(channel, brickIndex);
+        FreeStorage(channel, brickIndex);
+        WriteDescriptor(channel, brickIndex, BrickDescriptor.Pack(BrickType.Provider, 0));
+    }
+
+    /// <summary>
+    ///     Evicts the dense array (if applicable) and sets the brick to be uniform.
+    /// </summary>
+    /// <param name="channel"></param>
+    /// <param name="brickIndex"></param>
+    /// <param name="value"></param>
+    public void SetUniform(VoxelChannel channel, int brickIndex, byte value)
+    {
+        DebugValidateBrickIndex(channel, brickIndex);
+        FreeStorage(channel, brickIndex);
+        WriteDescriptor(channel, brickIndex, BrickDescriptor.Pack(BrickType.Uniform, value));
+    }
+
+    /// <summary>
+    ///     If the brick isn't dense, allocates a new array from the arena and sets it.
+    ///     Otherwise, this only clears the voxel values.
+    /// </summary>
+    public void SetDense(VoxelChannel channel, int brickIndex)
+    {
+        DebugValidateBrickIndex(channel, brickIndex);
+
+        var descriptor = ReadDescriptor(channel, brickIndex);
+
+        if (descriptor.Type != BrickType.Dense)
+        {
+            FreeStorage(channel, brickIndex);
+            var newArray = Arena.AllocateVoxelArray();
+            WriteDescriptor(channel, brickIndex, BrickDescriptor.Pack(BrickType.Dense, newArray.Handle.Pack()));
+        }
+
+        var array = GetDense(channel, brickIndex);
+        
+        array.Span.Fill(channel.GetClearValue());
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool AreAllBricksOfType(VoxelChannel channel, BrickType value)
     {
         DebugValidateChannel(channel);
+
+        var span = DescriptorArray.Span;
         
-        var expectedWord = GetBrickTypeWord(value);
-        var start = _brickTypeStorageOffset + GetChannelWordOffset(channel);
-        var slice = new ReadOnlySpan<ulong>(_brickTypeStorage, start, BrickTypeSegmentsPerChannel);
+        var start = GetChannelDescriptorOffset(channel);
 
-        if (Vector256.IsHardwareAccelerated && slice.Length >= 4)
+        for (var index = 0; index < DescriptorsPerChannel; index++)
         {
-            // Broadcasts the expected word:
-            var expectedVector = Vector256.Create(expectedWord);
-        
-            // Reinterprets the ulong span as a Vector256 span: 
-            var vectorSpan = MemoryMarshal.Cast<ulong, Vector256<ulong>>(slice);
-
-            for (var index = 0; index < vectorSpan.Length; index++)
-            {
-                ref readonly var vec = ref vectorSpan[index];
-                
-                if (vec != expectedVector)
-                {
-                    return false;
-                }
-            }
-
-            // Takes the scalar tail (which wouldn't actually exist):
-            slice = slice[(vectorSpan.Length * 4)..];
-        }
-
-        // Scalar implementation via word-level parallelism:
-        for (var index = 0; index < slice.Length; index++)
-        {
-            if (slice[index] != expectedWord)
+            if (span[start + index].Type != value)
             {
                 return false;
             }
@@ -188,7 +223,7 @@ public readonly struct Section
 
         return true;
     }
-    
+
     /// <summary>
     ///     Flat index of a local brick coordinate, x fastest, then y, then z.
     /// </summary>
@@ -196,29 +231,31 @@ public readonly struct Section
     public static int GetBrickIndex(int x, int y, int z)
     {
         DebugValidateBrickCoord(x, y, z);
-        
+
         return x + y * BricksPerAxis + z * BricksPerAxis * BricksPerAxis;
     }
-    
+
     /// <summary>
-    ///     Broadcasts a brick type into every 2-bit slot of a 64-bit segment.
-    ///     A type fits its own width, so the multiply cannot carry between slots.
+    ///     Descriptor offset of a channel's first brick, relative to the section's first descriptor.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static ulong GetBrickTypeWord(BrickType value)
+    private static int GetChannelDescriptorOffset(VoxelChannel channel)
     {
-        return (ulong)value * (ulong.MaxValue / BrickTypeMask);
+        return (int)channel * DescriptorsPerChannel;
     }
-    
-    /// <summary>
-    ///     Word offset of a channel's first segment, relative to the section's first word.
-    /// </summary>
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int GetChannelWordOffset(VoxelChannel channel)
+    private BrickDescriptor ReadDescriptor(VoxelChannel channel, int brickIndex)
     {
-        return (int)channel * BrickTypeSegmentsPerChannel;
+        return DescriptorArray.Span[GetChannelDescriptorOffset(channel) + brickIndex];
     }
-    
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void WriteDescriptor(VoxelChannel channel, int brickIndex, BrickDescriptor descriptor)
+    {
+        DescriptorArray.Span[GetChannelDescriptorOffset(channel) + brickIndex] = descriptor;
+    }
+
     [Conditional("DEBUG")]
     private static void DebugValidateChannel(VoxelChannel channel)
     {
@@ -227,9 +264,9 @@ public readonly struct Section
             $"Voxel channel {channel} is not a defined channel."
         );
     }
-    
+
     [Conditional("DEBUG")]
-    private static void DebugValidateBrickType(VoxelChannel channel, int brickIndex)
+    private static void DebugValidateBrickIndex(VoxelChannel channel, int brickIndex)
     {
         DebugValidateChannel(channel);
         Debug.Assert(
@@ -237,14 +274,7 @@ public readonly struct Section
             $"Brick index {brickIndex} is out of range [0, {Bricks})."
         );
     }
-    
-    [Conditional("DEBUG")]
-    private static void DebugValidateBrickType(VoxelChannel channel, int brickIndex, BrickType value)
-    {
-        DebugValidateBrickType(channel, brickIndex);
-        Debug.Assert(value != BrickType.None, "Brick type None is a poison value and cannot be written.");
-    }
-    
+
     [Conditional("DEBUG")]
     private static void DebugValidateBrickCoord(int x, int y, int z)
     {
