@@ -1,5 +1,6 @@
 ﻿using System.Diagnostics;
 using System.Runtime.CompilerServices;
+// ReSharper disable ForCanBeConvertedToForeach
 
 namespace Graphics2.Mathematics;
 
@@ -48,17 +49,40 @@ public static class MathX
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static float Lerp(float a, float b, float t) => a + (b - a) * t;
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static float SmoothStep(float edge0, float edge1, float value)
+    /// <summary>
+    ///     Maps <see cref="v"/> from a source range to a destination range.
+    /// </summary>
+    /// <param name="v"></param>
+    /// <param name="srcMin">The minimum value in <see cref="v"/>'s range.</param>
+    /// <param name="srcMax">The maximum value in <see cref="v"/>'s range.</param>
+    /// <param name="dstMin">The resulting range's minimum.</param>
+    /// <param name="dstMax">The resulting range's maximum.</param>
+    /// <returns>The mapped value. If <see cref="v"/> is outside the specified bounds, so will the result.</returns>
+    public static float Map(float v, float srcMin, float srcMax, float dstMin, float dstMax)
     {
-        if (edge0 == edge1)
-        {
-            return value < edge0 ? 0.0f : 1.0f;
-        }
-
+        return dstMin + (v - srcMin) * (dstMax - dstMin) / (srcMax - srcMin);
+    }
+    
+    /// <summary>
+    ///     Re-mapped smoothstep with the parameter <see cref="value"/> between <see cref="edge0"/> and <see cref="edge1"/>, clamped.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static float CheckedMapSmoothStepNonsingular(float edge0, float edge1, float value)
+    {
         var t = Math.Clamp((value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
 
-        return t * t * (3.0f - (2.0f * t));
+        return t * t * (3.0f - 2.0f * t);
+    }
+    
+    /// <summary>
+    ///     Re-mapped smoothstep with the parameter <see cref="value"/> between <see cref="edge0"/> and <see cref="edge1"/>, clamped, and singularity removal for <see cref="edge0"/> ≈ <see cref="edge1"/>.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static float CheckedMapSmoothStepSingular(float edge0, float edge1, float value)
+    {
+        var t = Math.Clamp(SnzE(value - edge0) / SnzE(edge1 - edge0), 0.0f, 1.0f);
+
+        return t * t * (3.0f - 2.0f * t);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -82,6 +106,7 @@ public static class MathX
     ///     Division rounded toward negative infinity. The division operator truncates toward zero instead, so the two differ when the quotient is negative.
     ///     Requires a positive divisor.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int FloorDiv(int value, int divisor)
     {
         var quotient = value / divisor;
@@ -95,6 +120,7 @@ public static class MathX
     ///     Division rounded toward positive infinity, the counterpart of <see cref="FloorDiv"/>.
     ///     Requires a positive divisor, and the value cannot be <see cref="int.MinValue"/>, which has no positive counterpart to negate.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int CeilDiv(int value, int divisor) => -FloorDiv(-value, divisor);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -110,5 +136,42 @@ public static class MathX
         Debug.Assert(IsPowerOfTwo(alignment), $"{nameof(AlignUp2)} takes a power-of-two alignment");
         
         return (value + (alignment - 1)) & ~(alignment - 1);
+    }
+    
+    /// <summary>
+    ///     Derives a distinct seed from a base seed and a salt.
+    ///     A golden-ratio (Weyl) combine followed by a truncated lowbias32 avalanche, so nearby salts do not produce correlated fields.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int MixSeed(int seed, int salt)
+    {
+        unchecked
+        {
+            var hash = ((uint)seed * 0x9E3779B1u) + (uint)salt;
+            hash ^= hash >> 16;
+            hash *= 0x7FEB352Du;
+            hash ^= hash >> 15;
+
+            return (int)hash;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int Fnv1A(string value)
+    {
+        ReadOnlySpan<char> str = value;
+        
+        unchecked
+        {
+            var hash = 2166136261u;
+
+            for (var index = 0; index < str.Length; index++)
+            {
+                hash ^= str[index];
+                hash *= 16777619u;
+            }
+
+            return (int)hash;
+        }
     }
 }

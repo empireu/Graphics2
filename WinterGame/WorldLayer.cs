@@ -41,18 +41,18 @@ internal sealed unsafe class WorldLayer : IDisposable
 
     private readonly Pipeline _pipeline;
 
-    private const float VoxelSize = 0.25f;
-
     private int _seed = 3141;
-    private float _voxelsPerUnit = 16.0f;
-    private float _surfaceHeight = 16.0f;
-    private float _reliefVoxels = 12.0f; 
+    private float _baseHeight = 4.0f;
+    private float _continentalAmplitude = 8.0f;
+    private float _hillAmplitude = 1.5f;
+    private float _mountainAmplitude = 12.0f;
     private int _chunkCells = 32;
     private int _chunksX = 4;
     private int _chunksZ = 4;
+    private bool _cameraPlaced;
 
-    private float _snowLine = 16.0f;
-    private float _snowLineFade = 3.0f;
+    private float _snowLine = 4.0f;
+    private float _snowLineFade = 0.75f;
     private float _snowSlopeMin = 0.80f;
     private float _snowSlopeMax = 0.95f;
     private float _rockSlopeMin = 0.45f;
@@ -360,7 +360,7 @@ internal sealed unsafe class WorldLayer : IDisposable
                     recordSpan[index] = new DrawRecord
                     {
                         Origin = new Vector3(chunk.Origin.X, chunk.Origin.Y, chunk.Origin.Z),
-                        VoxelSize = VoxelSize,
+                        VoxelSize = WorldConstants.VoxelSize,
                         MaterialVolume = chunk.Volume.Index,
                         MaterialSizeX = (uint)volumes.SizeX,
                         MaterialSizeY = (uint)volumes.SizeY,
@@ -433,20 +433,24 @@ internal sealed unsafe class WorldLayer : IDisposable
             ImGui.InputInt("Chunk cells", ref _chunkCells, 8);
             ImGui.InputInt("Chunks X", ref _chunksX, 1);
             ImGui.InputInt("Chunks Z", ref _chunksZ, 1);
-            ImGui.InputFloat("Unit", ref _voxelsPerUnit, 1.0f);
-            ImGui.InputFloat("Height", ref _surfaceHeight, 0.5f);
-            ImGui.InputFloat("Relief", ref _reliefVoxels, 0.5f);
+            ImGui.InputFloat("Base height (m)", ref _baseHeight, 1.0f);
+            ImGui.InputFloat("Continental amp (m)", ref _continentalAmplitude, 1.0f);
+            ImGui.InputFloat("Hill amp (m)", ref _hillAmplitude, 0.25f);
+            ImGui.InputFloat("Mountain amp (m)", ref _mountainAmplitude, 1.0f);
 
             _chunkCells = Math.Clamp(_chunkCells, 1, 64);
             _chunksX = Math.Clamp(_chunksX, 1, 16);
             _chunksZ = Math.Clamp(_chunksZ, 1, 16);
-            _voxelsPerUnit = MathF.Max(_voxelsPerUnit, 0.01f);
+            _baseHeight = MathF.Max(_baseHeight, 0.0f);
+            _continentalAmplitude = MathF.Max(_continentalAmplitude, 0.0f);
+            _hillAmplitude = MathF.Max(_hillAmplitude, 0.0f);
+            _mountainAmplitude = MathF.Max(_mountainAmplitude, 0.0f);
 
             ImGui.Separator();
             ImGui.Text("World state:");
             ImGui.Text($"Chunks: {_chunks.Count}");
-            ImGui.Text($"Voxel size: {VoxelSize} m");
-            ImGui.Text($"World: {_chunksX * _chunkCells * VoxelSize} x {_chunksZ * _chunkCells * VoxelSize} m");
+            ImGui.Text($"Voxel size: {WorldConstants.VoxelSize} m");
+            ImGui.Text($"World: {_chunksX * _chunkCells * WorldConstants.VoxelSize} x {_chunksZ * _chunkCells * WorldConstants.VoxelSize} m");
             ImGui.Text($"Solid Voxels: {_solidVoxels}");
             ImGui.Text($"Vertices: {_vertexCount}");
             ImGui.Text($"Indices: {_indexCount}");
@@ -524,13 +528,30 @@ internal sealed unsafe class WorldLayer : IDisposable
         var window = SurfaceNetsMesher.GetSampleRange(Vector3i.Zero, cellCount);
         var volumes = EnsureVolumeArena(frame, window.Max.X - window.Min.X + 1, window.Max.Y - window.Min.Y + 1, window.Max.Z - window.Min.Z + 1);
 
-        var generator = new FbmTerrainGenerator(
-            _seed,
-            _voxelsPerUnit,
-            _surfaceHeight,
-            _reliefVoxels,
-            new SurfaceMaterialClassifier(_snowLine, _snowLineFade, _snowSlopeMin, _snowSlopeMax, _rockSlopeMin, _rockSlopeMax)
-        );
+        var classifier = new SurfaceMaterialClassifier(_snowLine, _snowLineFade, _snowSlopeMin, _snowSlopeMax, _rockSlopeMin, _rockSlopeMax);
+
+        var config = new TerrainConfig
+        {
+            BaseHeight = _baseHeight,
+            ContinentalAmplitude = _continentalAmplitude,
+            HillAmplitude = _hillAmplitude,
+            MountainAmplitude = _mountainAmplitude
+        };
+
+        var generator = new TerrainGraphSource(_seed, config, classifier);
+
+        // The world is meshed as one slab, so the slab is centred on the terrain at the world centre until the world band exists:
+        var centreX = _chunksX * _chunkCells / 2;
+        var centreZ = _chunksZ * _chunkCells / 2;
+        var centreHeight = generator.Elevation(centreX, centreZ);
+        var originY = (int)MathF.Floor(centreHeight / WorldConstants.VoxelSize) - _chunkCells / 2;
+
+        if (!_cameraPlaced)
+        {
+            _cameraPlaced = true;
+            _camera.Position = new Vector3(centreX * WorldConstants.VoxelSize, centreHeight + 4.0f, -3.0f);
+            _camera.Pitch = -0.35f;
+        }
 
         Span<long> materialCounts = stackalloc long[SurfaceMaterial.Count];
         long interiorCount = 0;
@@ -539,7 +560,7 @@ internal sealed unsafe class WorldLayer : IDisposable
         {
             for (var chunkX = 0; chunkX < _chunksX; chunkX++)
             {
-                var cellMin = new Vector3i(chunkX * _chunkCells, 0, chunkZ * _chunkCells);
+                var cellMin = new Vector3i(chunkX * _chunkCells, originY, chunkZ * _chunkCells);
                 var box = SurfaceNetsMesher.GetSampleRange(cellMin, cellCount);
 
                 var content = Memory3D<byte>.Allocate(
@@ -601,7 +622,7 @@ internal sealed unsafe class WorldLayer : IDisposable
         // Slot order is not page order, and the submission loop needs the pages contiguous:
         // A run breaks when either buffer changes, so ordering groups the chunks that share a pair.
         _chunks.Sort(CompareChunksByBuffer);
-        Console.WriteLine($"World: {_chunks.Count} chunk(s), {_chunksX * _chunkCells * VoxelSize} x {_chunksZ * _chunkCells * VoxelSize} m, {_vertexCount} verts, {_indexCount} indices, {_solidVoxels} solid voxels");
+        Console.WriteLine($"World: {_chunks.Count} chunk(s), {_chunksX * _chunkCells * WorldConstants.VoxelSize} x {_chunksZ * _chunkCells * WorldConstants.VoxelSize} m, {_vertexCount} verts, {_indexCount} indices, {_solidVoxels} solid voxels");
         Console.WriteLine($"Materials: rock={materialCounts[SurfaceMaterial.Rock]}, ice={materialCounts[SurfaceMaterial.Ice]}, snow={materialCounts[SurfaceMaterial.Snow]} near the surface, {interiorCount} interior sample(s)");
         Console.WriteLine($"Draws: {CountRuns()} run(s) over {CountBufferPairs()} buffer pair(s)");
     }

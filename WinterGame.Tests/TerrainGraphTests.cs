@@ -1,0 +1,152 @@
+using Graphics2.Mathematics;
+using WinterGame.World;
+using WinterGame.World.Generation;
+using Xunit.Abstractions;
+
+namespace WinterGame.Tests;
+
+public class TerrainGraphTests(ITestOutputHelper output)
+{
+    private static readonly TerrainConfig Config = new();
+
+    [Fact]
+    public void Content_MatchesTheHandWrittenGenerator()
+    {
+        const int seed = 7;
+        const float spacing = WorldConstants.VoxelSize;
+
+        var generator = new TerrainGenerator(seed, new SurfaceMaterialClassifier(snowLine: 4.0f), Config);
+        var sampler = new DensitySampler(TerrainGraph.Build(seed, Config, interpolate: false).Density);
+
+        var min = new Vector3i(-4, 0, -4);
+        var max = new Vector3i(31, 0, 31);
+
+        CoverTheSurface(generator.Elevation, ref min, ref max);
+
+        var samples = 0;
+        var mismatches = 0;
+        var maxContentDelta = 0;
+        var maxDensityDelta = 0.0f;
+
+        for (var z = min.Z; z <= max.Z; z++)
+        {
+            for (var x = min.X; x <= max.X; x++)
+            {
+                var elevation = generator.Elevation(x, z);
+
+                for (var y = min.Y; y <= max.Y; y++)
+                {
+                    var position = new Vector3i(x, y, z);
+                    var density = sampler.Sample(position, 0);
+                    var expected = generator.SampleContent(position);
+                    var actual = DensitySampler.ContentFromDensity(density, 0);
+                    var delta = Math.Abs(expected - actual);
+
+                    samples++;
+                    maxContentDelta = Math.Max(maxContentDelta, delta);
+                    maxDensityDelta = MathF.Max(maxDensityDelta, MathF.Abs(elevation - y * spacing - density));
+
+                    if (delta != 0)
+                    {
+                        mismatches++;
+                    }
+                }
+            }
+        }
+
+        output.WriteLine($"samples={samples} maxContentDelta={maxContentDelta} nonExact={mismatches} maxDensityDelta={maxDensityDelta:G6} m");
+
+        Assert.True(maxDensityDelta <= 1e-4f, $"The graph's distance and the hand-written generator's differ by {maxDensityDelta:G6} m.");
+        Assert.True(mismatches * 100 <= samples, $"{mismatches} of {samples} samples differ, which is more than one percent.");
+    }
+
+    [Fact]
+    public void Cells_KeepTheSurfaceWithinAFewBytes()
+    {
+        const int seed = 7;
+
+        var direct = new DensitySampler(TerrainGraph.Build(seed, Config, interpolate: false).Density);
+        var celled = new DensitySampler(TerrainGraph.Build(seed, Config, interpolate: true).Density);
+        var elevation = new DensitySampler(TerrainGraph.Build(seed, Config, interpolate: false).Elevation);
+
+        var min = new Vector3i(-4, 0, -4);
+        var max = new Vector3i(31, 0, 31);
+
+        CoverTheSurface((x, z) => elevation.Sample(new Vector3i(x, 0, z), 0), ref min, ref max);
+
+        var samples = 0;
+        var maxDelta = 0;
+        var surfaceMaxDelta = 0;
+        var totalDelta = 0L;
+
+        for (var z = min.Z; z <= max.Z; z++)
+        {
+            for (var y = min.Y; y <= max.Y; y++)
+            {
+                for (var x = min.X; x <= max.X; x++)
+                {
+                    var position = new Vector3i(x, y, z);
+                    var expected = DensitySampler.ContentFromDensity(direct.Sample(position, 0), 0);
+                    var actual = DensitySampler.ContentFromDensity(celled.Sample(position, 0), 0);
+                    var delta = Math.Abs(expected - actual);
+
+                    samples++;
+                    maxDelta = Math.Max(maxDelta, delta);
+                    totalDelta += delta;
+
+                    if (Math.Abs(expected - WorldConstants.ContentIsoLevel) <= 32)
+                    {
+                        surfaceMaxDelta = Math.Max(surfaceMaxDelta, delta);
+                    }
+                }
+            }
+        }
+
+        output.WriteLine($"samples={samples} maxDelta={maxDelta} surfaceMaxDelta={surfaceMaxDelta} meanDelta={(double)totalDelta / samples:F4}");
+
+        Assert.True(maxDelta <= 24, $"The cells move the content by {maxDelta} units, which is more than the 24 the cell size should cost.");
+    }
+
+    /// <summary>
+    ///     Grows the box's y range to hold every column's surface, so the comparison is not all saturation.
+    /// </summary>
+    private static void CoverTheSurface(Func<int, int, float> elevationAt, ref Vector3i min, ref Vector3i max)
+    {
+        min = new Vector3i(min.X, int.MaxValue, min.Z);
+        max = new Vector3i(max.X, int.MinValue, max.Z);
+
+        for (var x = min.X; x <= max.X; x++)
+        {
+            for (var z = min.Z; z <= max.Z; z++)
+            {
+                var surface = (int)MathF.Floor(elevationAt(x, z) / WorldConstants.VoxelSize);
+
+                min.Y = Math.Min(min.Y, surface - 2);
+                max.Y = Math.Max(max.Y, surface + 2);
+            }
+        }
+    }
+
+    [Fact]
+    public void Elevation_IsWhereTheDensityCrossesZero()
+    {
+        const int seed = 7;
+
+        var graph = TerrainGraph.Build(seed, Config, interpolate: false);
+        var elevation = new DensitySampler(graph.Elevation);
+        var density = new DensitySampler(graph.Density);
+        var spacing = DensitySampler.SampleSpacing(0);
+
+        for (var x = -32; x <= 32; x += 8)
+        {
+            for (var z = -32; z <= 32; z += 8)
+            {
+                var height = elevation.Sample(new Vector3i(x, 0, z), 0);
+                var surface = (int)MathF.Floor(height / spacing);
+
+                Assert.InRange(density.Sample(new Vector3i(x, surface, z), 0), 0.0f, spacing);
+                Assert.InRange(density.Sample(new Vector3i(x, surface + 1, z), 0), -spacing, 0.0f);
+            }
+        }
+    }
+}
