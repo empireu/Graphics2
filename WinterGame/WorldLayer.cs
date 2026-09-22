@@ -15,6 +15,7 @@ using ImGuiNET;
 using Silk.NET.Maths;
 using WinterGame.Core;
 using WinterGame.World;
+using WinterGame.World.Generation;
 
 // ReSharper disable ForCanBeConvertedToForeach
 
@@ -47,16 +48,34 @@ internal sealed unsafe class WorldLayer : IDisposable
     private float _hillAmplitude = 1.5f;
     private float _mountainAmplitude = 12.0f;
     private int _chunkCells = 32;
-    private int _chunksX = 4;
-    private int _chunksZ = 4;
+    private int _sectionsX = 4;
+    private int _sectionsY = 10;
+    private int _sectionsZ = 4;
     private bool _cameraPlaced;
 
-    private float _snowLine = 4.0f;
-    private float _snowLineFade = 0.75f;
-    private float _snowSlopeMin = 0.80f;
-    private float _snowSlopeMax = 0.95f;
-    private float _rockSlopeMin = 0.45f;
-    private float _rockSlopeMax = 0.70f;
+    // A short province wavelength keeps two provinces inside the prototype world, where a shipping one would leave it inside a single province:
+    private float _provinceWavelength = 24.0f;
+    private float _provinceHalfWidth = 0.3f;
+    private float _foldAmplitude = 4.0f;
+    private float _foldWavelength = 48.0f;
+    private float _snowThickness = 0.35f;
+    private float _iceThickness = 0.65f;
+
+    // The prototype cuts a notch out of the near corner so the strata are visible from the camera, which is not a worldgen stage:
+    private bool _cutEnabled = true;
+    private float _cutWidth = 24.0f;
+    private float _cutDepth = 12.0f;
+    private float _cutFloorY = -34.0f;
+
+    private static readonly string[] MaterialNames =
+    [
+        "rock", "ice", "snow", "sandstone", "shale", "limestone", "basalt", "gneiss"
+    ];
+
+    /// <summary>
+    ///     The most sections one build may produce. It caps the indirect argument list and it may not exceed the material volume array size in Shader.slang.
+    /// </summary>
+    private const int MaxSections = 1024;
 
     /// <summary>
     ///     Has to match the material volume array size in Shader.slang, which BindTextureArray checks.
@@ -191,7 +210,7 @@ internal sealed unsafe class WorldLayer : IDisposable
         {
             _argBuffers[index] = factory.CreateBuffer(new BufferDescription
             {
-                Size = 20 * 1000,
+                Size = DrawIndexedIndirectCommand.SizeInBytes * MaxSections,
                 Usage = BufferUsage.IndirectHostVisible
             });
         }
@@ -431,26 +450,27 @@ internal sealed unsafe class WorldLayer : IDisposable
         if (ImGui.Begin("Generator"))
         {
             ImGui.InputInt("Chunk cells", ref _chunkCells, 8);
-            ImGui.InputInt("Chunks X", ref _chunksX, 1);
-            ImGui.InputInt("Chunks Z", ref _chunksZ, 1);
+            ImGui.InputInt("Sections X", ref _sectionsX, 1);
+            ImGui.InputInt("Sections Y", ref _sectionsY, 1);
+            ImGui.InputInt("Sections Z", ref _sectionsZ, 1);
             ImGui.InputFloat("Base height (m)", ref _baseHeight, 1.0f);
             ImGui.InputFloat("Continental amp (m)", ref _continentalAmplitude, 1.0f);
             ImGui.InputFloat("Hill amp (m)", ref _hillAmplitude, 0.25f);
             ImGui.InputFloat("Mountain amp (m)", ref _mountainAmplitude, 1.0f);
 
             _chunkCells = Math.Clamp(_chunkCells, 1, 64);
-            _chunksX = Math.Clamp(_chunksX, 1, 16);
-            _chunksZ = Math.Clamp(_chunksZ, 1, 16);
             _baseHeight = MathF.Max(_baseHeight, 0.0f);
             _continentalAmplitude = MathF.Max(_continentalAmplitude, 0.0f);
             _hillAmplitude = MathF.Max(_hillAmplitude, 0.0f);
             _mountainAmplitude = MathF.Max(_mountainAmplitude, 0.0f);
+            ClampSectionCounts();
 
             ImGui.Separator();
             ImGui.Text("World state:");
-            ImGui.Text($"Chunks: {_chunks.Count}");
+            ImGui.Text($"Sections: {_sectionsX} x {_sectionsY} x {_sectionsZ} = {_sectionsX * _sectionsY * _sectionsZ} of {MaxSections}");
+            ImGui.Text($"Drawn: {_chunks.Count}");
             ImGui.Text($"Voxel size: {WorldConstants.VoxelSize} m");
-            ImGui.Text($"World: {_chunksX * _chunkCells * WorldConstants.VoxelSize} x {_chunksZ * _chunkCells * WorldConstants.VoxelSize} m");
+            ImGui.Text($"World: {_sectionsX * _chunkCells * WorldConstants.VoxelSize} x {_sectionsY * _chunkCells * WorldConstants.VoxelSize} x {_sectionsZ * _chunkCells * WorldConstants.VoxelSize} m");
             ImGui.Text($"Solid Voxels: {_solidVoxels}");
             ImGui.Text($"Vertices: {_vertexCount}");
             ImGui.Text($"Indices: {_indexCount}");
@@ -472,18 +492,25 @@ internal sealed unsafe class WorldLayer : IDisposable
 
             ImGui.Separator();
             ImGui.Text("Material:");
-            ImGui.InputFloat("Snow line", ref _snowLine, 0.5f);
-            ImGui.InputFloat("Snow fade", ref _snowLineFade, 0.5f);
-            ImGui.InputFloat("Snow slope min", ref _snowSlopeMin, 0.01f);
-            ImGui.InputFloat("Snow slope max", ref _snowSlopeMax, 0.01f);
-            ImGui.InputFloat("Rock slope min", ref _rockSlopeMin, 0.01f);
-            ImGui.InputFloat("Rock slope max", ref _rockSlopeMax, 0.01f);
+            ImGui.InputFloat("Province wavelength (m)", ref _provinceWavelength, 4.0f);
+            ImGui.InputFloat("Province half width", ref _provinceHalfWidth, 0.05f);
+            ImGui.InputFloat("Fold amplitude (m)", ref _foldAmplitude, 0.25f);
+            ImGui.InputFloat("Fold wavelength (m)", ref _foldWavelength, 8.0f);
+            ImGui.InputFloat("Snow thickness (m)", ref _snowThickness, 0.05f);
+            ImGui.InputFloat("Ice thickness (m)", ref _iceThickness, 0.05f);
 
-            _snowLineFade = MathF.Max(_snowLineFade, 0.0f);
-            _snowSlopeMin = Math.Clamp(_snowSlopeMin, 0.0f, 1.0f);
-            _snowSlopeMax = Math.Clamp(_snowSlopeMax, 0.0f, 1.0f);
-            _rockSlopeMin = Math.Clamp(_rockSlopeMin, 0.0f, 1.0f);
-            _rockSlopeMax = Math.Clamp(_rockSlopeMax, 0.0f, 1.0f);
+            _provinceWavelength = MathF.Max(_provinceWavelength, 1.0f);
+            _provinceHalfWidth = Math.Clamp(_provinceHalfWidth, 0.0f, 0.5f);
+            _foldWavelength = MathF.Max(_foldWavelength, 1.0f);
+            _snowThickness = MathF.Max(_snowThickness, 0.0f);
+            _iceThickness = MathF.Max(_iceThickness, 0.0f);
+
+            ImGui.Separator();
+            ImGui.Text("Prototype cut:");
+            ImGui.Checkbox("Cut enabled", ref _cutEnabled);
+            ImGui.InputFloat("Cut width (m)", ref _cutWidth, 1.0f);
+            ImGui.InputFloat("Cut depth (m)", ref _cutDepth, 1.0f);
+            ImGui.InputFloat("Cut floor (m)", ref _cutFloorY, 1.0f);
 
             if (_volumes != null)
             {
@@ -509,6 +536,7 @@ internal sealed unsafe class WorldLayer : IDisposable
   
     private void BuildWorld(Frame frame)
     {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         var arena = _arena!;
 
         foreach (var chunk in _chunks)
@@ -524,107 +552,222 @@ internal sealed unsafe class WorldLayer : IDisposable
 
         var cellCount = new Vector3i(_chunkCells, _chunkCells, _chunkCells);
 
-        // Every chunk reads the same window shape, so the volume extent comes from the same box the content is built from:
+        // Every section reads the same window shape, so the volume extent comes from the same box the content is built from:
         var window = SurfaceNetsMesher.GetSampleRange(Vector3i.Zero, cellCount);
         var volumes = EnsureVolumeArena(frame, window.Max.X - window.Min.X + 1, window.Max.Y - window.Min.Y + 1, window.Max.Z - window.Min.Z + 1);
-
-        var classifier = new SurfaceMaterialClassifier(_snowLine, _snowLineFade, _snowSlopeMin, _snowSlopeMax, _rockSlopeMin, _rockSlopeMax);
 
         var config = new TerrainConfig
         {
             BaseHeight = _baseHeight,
             ContinentalAmplitude = _continentalAmplitude,
             HillAmplitude = _hillAmplitude,
-            MountainAmplitude = _mountainAmplitude
+            MountainAmplitude = _mountainAmplitude,
+            ProvinceWavelength = _provinceWavelength,
+            FoldAmplitude = _foldAmplitude,
+            FoldWavelength = _foldWavelength,
+            SnowThickness = _snowThickness,
+            IceThickness = _iceThickness,
+            Provinces = new StrataSet(_provinceHalfWidth, TerrainStrata.Tables)
         };
 
-        var generator = new TerrainGraphSource(_seed, config, classifier);
+        var generator = new TerrainGraphSource(_seed, config);
 
-        // The world is meshed as one slab, so the slab is centred on the terrain at the world centre until the world band exists:
-        var centreX = _chunksX * _chunkCells / 2;
-        var centreZ = _chunksZ * _chunkCells / 2;
+        // The column is centred on the surface at the world center, so it reaches well below the strata anchor and above every peak:
+        var centreX = _sectionsX * _chunkCells / 2;
+        var centreZ = _sectionsZ * _chunkCells / 2;
         var centreHeight = generator.Elevation(centreX, centreZ);
-        var originY = (int)MathF.Floor(centreHeight / WorldConstants.VoxelSize) - _chunkCells / 2;
+        var originY = (int)MathF.Floor(centreHeight / WorldConstants.VoxelSize) - _sectionsY * _chunkCells / 2;
+
+        var cutMaxX = _cutEnabled ? (int)(_cutWidth / WorldConstants.VoxelSize) : 0;
+        var cutMaxZ = _cutEnabled ? (int)(_cutDepth / WorldConstants.VoxelSize) : 0;
+        var cutMinY = _cutEnabled ? (int)MathF.Floor(_cutFloorY / WorldConstants.VoxelSize) : 0;
 
         if (!_cameraPlaced)
         {
             _cameraPlaced = true;
-            _camera.Position = new Vector3(centreX * WorldConstants.VoxelSize, centreHeight + 4.0f, -3.0f);
-            _camera.Pitch = -0.35f;
+            _camera.Position = new Vector3(
+                _sectionsX * _chunkCells * WorldConstants.VoxelSize * 0.5f,
+                _cutFloorY + 14.0f,
+                -8.0f
+            );
+            _camera.Pitch = -0.2f;
         }
 
         Span<long> materialCounts = stackalloc long[SurfaceMaterial.Count];
+        Span<long> solidCounts = stackalloc long[SurfaceMaterial.Count];
         long interiorCount = 0;
 
-        for (var chunkZ = 0; chunkZ < _chunksZ; chunkZ++)
+        for (var sectionY = 0; sectionY < _sectionsY; sectionY++)
         {
-            for (var chunkX = 0; chunkX < _chunksX; chunkX++)
+            for (var sectionZ = 0; sectionZ < _sectionsZ; sectionZ++)
             {
-                var cellMin = new Vector3i(chunkX * _chunkCells, originY, chunkZ * _chunkCells);
-                var box = SurfaceNetsMesher.GetSampleRange(cellMin, cellCount);
-
-                var content = Memory3D<byte>.Allocate(
-                    box.Max.X - box.Min.X + 1,
-                    box.Max.Y - box.Min.Y + 1,
-                    box.Max.Z - box.Min.Z + 1
-                );
-
-                var material = Memory3D<byte>.Allocate(content.SizeX, content.SizeY, content.SizeZ);
-
-                generator.Generate(box.Min, box.Max, content.Span, material.Span);
-
-                var vertices = new List<SurfaceNetsVertex>();
-                var indices = new List<int>();
-
-                SurfaceNetsMesher.Mesh(new SurfaceNetsMeshingDescription
+                for (var sectionX = 0; sectionX < _sectionsX; sectionX++)
                 {
-                    Content = content,
-                    IsoLevel = 127,
-                    Vertices = vertices,
-                    Indices = indices
-                });
+                    var cellMin = new Vector3i(sectionX * _chunkCells, originY + sectionY * _chunkCells, sectionZ * _chunkCells);
+                    var box = SurfaceNetsMesher.GetSampleRange(cellMin, cellCount);
 
-                // A chunk holds far fewer than 65536 vertices, so its indices stay 16 bits and slot-relative:
-                var indexScratch = new ushort[indices.Count];
-                for (var index = 0; index < indices.Count; index++)
-                {
-                    indexScratch[index] = (ushort)indices[index];
+                    var content = Memory3D<byte>.Allocate(
+                        box.Max.X - box.Min.X + 1,
+                        box.Max.Y - box.Min.Y + 1,
+                        box.Max.Z - box.Min.Z + 1
+                    );
+
+                    var material = Memory3D<byte>.Allocate(content.SizeX, content.SizeY, content.SizeZ);
+
+                    generator.Generate(box.Min, box.Max, content.Span, material.Span);
+
+                    if (_cutEnabled)
+                    {
+                        ClearCut(content.Span, material.Span, box.Min, cutMaxX, cutMaxZ, cutMinY);
+                    }
+
+                    _solidVoxels += CountSolid(content.Span);
+                    CountMaterials(content.Span, material.Span, materialCounts, solidCounts, ref interiorCount);
+
+                    var vertices = new List<SurfaceNetsVertex>();
+                    var indices = new List<int>();
+
+                    SurfaceNetsMesher.Mesh(new SurfaceNetsMeshingDescription
+                    {
+                        Content = content,
+                        IsoLevel = WorldConstants.ContentIsoLevel,
+                        Vertices = vertices,
+                        Indices = indices
+                    });
+
+                    if (indices.Count == 0)
+                    {
+                        // A fully solid or fully air section emits no geometry, so it costs neither an arena slot nor a material volume:
+                        continue;
+                    }
+
+                    // A chunk holds far fewer than 65536 vertices, so its indices stay 16 bits and slot-relative:
+                    var indexScratch = new ushort[indices.Count];
+                    for (var index = 0; index < indices.Count; index++)
+                    {
+                        indexScratch[index] = (ushort)indices[index];
+                    }
+
+                    var allocation = arena.Allocate(vertices.Count, indexScratch.Length);
+
+                    UploadMesh(
+                        frame,
+                        allocation,
+                        MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(vertices)),
+                        MemoryMarshal.AsBytes(indexScratch.AsSpan())
+                    );
+
+                    // The material window is exactly the box the mesher read, so a volume texel is a sample and the shader indexes it with the mesh's own coordinates:
+                    var volume = volumes.Upload(frame, material.Span.Data);
+
+                    _chunks.Add(new Chunk
+                    {
+                        Origin = box.Min,
+                        Allocation = allocation,
+                        Volume = volume,
+                        VertexCount = vertices.Count,
+                        IndexCount = indexScratch.Length
+                    });
+
+                    _vertexCount += vertices.Count;
+                    _indexCount += indexScratch.Length;
                 }
-
-                var allocation = arena.Allocate(vertices.Count, indexScratch.Length);
-
-                UploadMesh(
-                    frame,
-                    allocation,
-                    MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(vertices)),
-                    MemoryMarshal.AsBytes(indexScratch.AsSpan())
-                );
-
-                // The material window is exactly the box the mesher read, so a volume texel is a sample and the shader indexes it with the mesh's own coordinates:
-                var volume = volumes.Upload(frame, material.Span.Data);
-
-                _chunks.Add(new Chunk
-                {
-                    Origin = box.Min,
-                    Allocation = allocation,
-                    Volume = volume,
-                    VertexCount = vertices.Count,
-                    IndexCount = indexScratch.Length
-                });
-
-                _vertexCount += vertices.Count;
-                _indexCount += indexScratch.Length;
-                _solidVoxels += CountSolid(content.Span);
-                CountMaterials(content.Span, material.Span, materialCounts, ref interiorCount);
             }
         }
 
         // Slot order is not page order, and the submission loop needs the pages contiguous:
         // A run breaks when either buffer changes, so ordering groups the chunks that share a pair.
         _chunks.Sort(CompareChunksByBuffer);
-        Console.WriteLine($"World: {_chunks.Count} chunk(s), {_chunksX * _chunkCells * WorldConstants.VoxelSize} x {_chunksZ * _chunkCells * WorldConstants.VoxelSize} m, {_vertexCount} verts, {_indexCount} indices, {_solidVoxels} solid voxels");
-        Console.WriteLine($"Materials: rock={materialCounts[SurfaceMaterial.Rock]}, ice={materialCounts[SurfaceMaterial.Ice]}, snow={materialCounts[SurfaceMaterial.Snow]} near the surface, {interiorCount} interior sample(s)");
+
+        watch.Stop();
+
+        Console.WriteLine($"Build: {watch.Elapsed.TotalMilliseconds:F0} ms for {_sectionsX * _sectionsY * _sectionsZ} section(s)");
+        Console.WriteLine($"World: {_chunks.Count} section(s) drawn of {_sectionsX * _sectionsY * _sectionsZ}, {_sectionsX * _chunkCells * WorldConstants.VoxelSize} x {_sectionsY * _chunkCells * WorldConstants.VoxelSize} x {_sectionsZ * _chunkCells * WorldConstants.VoxelSize} m, {_vertexCount} verts, {_indexCount} indices, {_solidVoxels} solid voxels");
+        Console.WriteLine($"Materials: {FormatMaterialCounts(solidCounts)} over every solid sample");
+        Console.WriteLine($"Materials: {FormatMaterialCounts(materialCounts)} within a sample of the surface, {interiorCount} saturated interior sample(s)");
         Console.WriteLine($"Draws: {CountRuns()} run(s) over {CountBufferPairs()} buffer pair(s)");
+    }
+
+    private void ClampSectionCounts()
+    {
+        _sectionsX = Math.Clamp(_sectionsX, 1, 16);
+        _sectionsY = Math.Clamp(_sectionsY, 1, 32);
+        _sectionsZ = Math.Clamp(_sectionsZ, 1, 16);
+
+        while (_sectionsX * _sectionsY * _sectionsZ > MaxSections)
+        {
+            if (_sectionsY > 1)
+            {
+                _sectionsY--;
+            }
+            else if (_sectionsX > 1)
+            {
+                _sectionsX--;
+            }
+            else if (_sectionsZ > 1)
+            {
+                _sectionsZ--;
+            }
+            else
+            {
+                break;
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Clears a notch out of the near corner of the world so the strata are visible, which is a prototype aid rather than a worldgen stage.
+    ///     It runs after generation and before the mesh, and it clears the material too, because the shader's reconstruction skips only the null id.
+    /// </summary>
+    private static void ClearCut(Span3D<byte> content, Span3D<byte> material, Vector3i boxMin, int cutMaxX, int cutMaxZ, int cutMinY)
+    {
+        for (var z = 0; z < content.SizeZ; z++)
+        {
+            var worldZ = boxMin.Z + z;
+
+            if (worldZ >= cutMaxZ)
+            {
+                continue;
+            }
+
+            for (var y = 0; y < content.SizeY; y++)
+            {
+                var worldY = boxMin.Y + y;
+
+                if (worldY <= cutMinY)
+                {
+                    continue;
+                }
+
+                for (var x = 0; x < content.SizeX; x++)
+                {
+                    if (boxMin.X + x >= cutMaxX)
+                    {
+                        continue;
+                    }
+
+                    content[x, y, z] = 0;
+                    material[x, y, z] = SurfaceMaterial.Null;
+                }
+            }
+        }
+    }
+
+    private static string FormatMaterialCounts(ReadOnlySpan<long> counts)
+    {
+        var builder = new System.Text.StringBuilder();
+
+        for (var id = 0; id < counts.Length; id++)
+        {
+            if (id > 0)
+            {
+                builder.Append(", ");
+            }
+
+            builder.Append(MaterialNames[id]).Append('=').Append(counts[id]);
+        }
+
+        return builder.ToString();
     }
 
     /// <summary>
@@ -740,10 +883,10 @@ internal sealed unsafe class WorldLayer : IDisposable
     }
 
     /// <summary>
-    ///     Counts the ids of the samples the reconstruction can read, which are the solid ones within a voxel of the surface.
-    ///     Anything deeper has a saturated field and no gradient, and the volume's interior is never sampled, so counting it would drown the visible split.
+    ///     Counts the ids of the samples the reconstruction can read, which are the solid ones within a voxel of the surface, and fills <paramref name="solidCounts" /> with every solid sample.
+    ///     Anything deeper has a saturated field and no gradient, and the volume's interior is never sampled, so the near-surface counts are the ones the shader can show.
     /// </summary>
-    private static void CountMaterials(Span3D<byte> content, Span3D<byte> material, Span<long> counts, ref long interiorCount)
+    private static void CountMaterials(Span3D<byte> content, Span3D<byte> material, Span<long> surfaceCounts, Span<long> solidCounts, ref long interiorCount)
     {
         var contentData = content.Data;
         var materialData = material.Data;
@@ -757,15 +900,20 @@ internal sealed unsafe class WorldLayer : IDisposable
                 continue;
             }
 
+            if (id < solidCounts.Length)
+            {
+                solidCounts[id]++;
+            }
+
             if (contentData[index] == 255)
             {
                 interiorCount++;
                 continue;
             }
 
-            if (id < counts.Length)
+            if (id < surfaceCounts.Length)
             {
-                counts[id]++;
+                surfaceCounts[id]++;
             }
         }
     }

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Graphics2.Data;
 using Graphics2.Mathematics;
@@ -8,20 +7,27 @@ namespace WinterGame.World.Generation;
 
 /// <summary>
 ///     Evaluates a compiled <see cref="DensityGraph"/> at sample positions and over sample boxes, with the cell interpolation the graph was compiled for.
-///     Owns the slot and corner buffers it evaluates into, so it's not thread-safe.
+///     The graph, the noise table and the side tables are immutable, so one sampler may be shared, but the buffers it evaluates into live in a <see cref="DensityScratch"/>, so a thread needs its own scratch.
 /// </summary>
 public sealed class DensitySampler
 {
     private readonly FastNoiseLite[] _noises;
-    private readonly float[] _cornerValues;
-    private readonly float[] _sampleValues;
-    private float[] _cornerCache = [];
+    private readonly DensityScratch _scratch;
 
-    public DensitySampler(DensityGraph graph)
+    /// <summary>
+    ///     Creates a sampler with a scratch of its own, which makes it safe to use on one thread only.
+    /// </summary>
+    public DensitySampler(DensityGraph graph) : this(graph, new DensityScratch(graph))
+    {
+    }
+
+    public DensitySampler(DensityGraph graph, DensityScratch scratch)
     {
         ArgumentNullException.ThrowIfNull(graph);
+        ArgumentNullException.ThrowIfNull(scratch);
 
         Graph = graph;
+        _scratch = scratch;
         _noises = new FastNoiseLite[graph.Noises.Length];
 
         for (var index = 0; index < _noises.Length; index++)
@@ -36,9 +42,6 @@ public sealed class DensitySampler
 
             _noises[index] = noise;
         }
-
-        _cornerValues = new float[Math.Max(graph.CornerSlotCount, DensityGraph.FirstProgramSlot)];
-        _sampleValues = new float[graph.SampleSlotCount];
     }
 
     public DensityGraph Graph { get; }
@@ -49,9 +52,11 @@ public sealed class DensitySampler
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static float SampleSpacing(int lod)
     {
-        Debug.Assert(lod >= 0, $"Invalid LOD {lod}");
-        Debug.Assert(lod < 30, $"LOD {lod} too large");
-       
+        if (lod is < 0 or >= 30)
+        {
+            throw new ArgumentOutOfRangeException(nameof(lod), lod, "A LOD level has to be in [0, 30).");
+        }
+
         return WorldConstants.VoxelSize * (1 << lod);
     }
 
@@ -72,82 +77,142 @@ public sealed class DensitySampler
     }
 
     /// <summary>
-    ///     Samples a point. The <see cref="position"/> is in sample indices at <see cref="lod"/>, so the world voxel it stands for is <c>position &lt;&lt; lod</c>.
-    ///     A point query inside a cell evaluates that cell's eight corners, because the corner lattice is what the interpolation is defined on.
+    ///     The value of every root at one position, in the order the graph was compiled with.
+    ///     The <see cref="position"/> is in sample indices at <see cref="lod"/>, so the world voxel it stands for is <c>position &lt;&lt; lod</c>.
+    ///     A sample-side root inside a cell evaluates that cell's eight corners, because the corner lattice is what the interpolation is defined on, and a corner-side root runs the corner program at the exact position instead.
     /// </summary>
-    public float Sample(Vector3i position, int lod)
+    public void Sample(Vector3i position, int lod, Span<float> roots)
     {
+        if (roots.Length != Graph.RootCount)
+        {
+            throw new ArgumentException($"The graph has {Graph.RootCount} root(s), so the destination needs that many values.", nameof(roots));
+        }
+
         var spacing = SampleSpacing(lod);
         var x = position.X * spacing;
         var y = position.Y * spacing;
         var z = position.Z * spacing;
 
-        if (!Graph.HasInterpolation)
-        {
-            Run(Graph.SampleProgram, _sampleValues, x, y, z);
+        var values = _scratch.SampleValues;
+        var cornerValues = _scratch.CornerValues;
 
-            return _sampleValues[Graph.SampleRoot];
+        if (Graph.HasInterpolation && Graph.UsesBoundary)
+        {
+            var cellX = MathX.FloorDiv(position.X, Graph.CellX);
+            var cellY = MathX.FloorDiv(position.Y, Graph.CellY);
+            var cellZ = MathX.FloorDiv(position.Z, Graph.CellZ);
+
+            for (var corner = 0; corner < DensityGraph.CornerCount; corner++)
+            {
+                Run(
+                    Graph.CornerProgram,
+                    cornerValues,
+                    (cellX + (corner & 1)) * Graph.CellX * spacing,
+                    (cellY + ((corner >> 1) & 1)) * Graph.CellY * spacing,
+                    (cellZ + ((corner >> 2) & 1)) * Graph.CellZ * spacing
+                );
+
+                values[DensityGraph.CornerSlotBase + corner] = cornerValues[Graph.BoundaryRoot];
+            }
+
+            values[DensityGraph.FractionSlotX] = (position.X - cellX * Graph.CellX) / (float)Graph.CellX;
+            values[DensityGraph.FractionSlotY] = (position.Y - cellY * Graph.CellY) / (float)Graph.CellY;
+            values[DensityGraph.FractionSlotZ] = (position.Z - cellZ * Graph.CellZ) / (float)Graph.CellZ;
+        }
+        else if (Graph.HasInterpolation)
+        {
+            for (var corner = 0; corner < DensityGraph.CornerCount; corner++)
+            {
+                values[DensityGraph.CornerSlotBase + corner] = 0.0f;
+            }
+
+            values[DensityGraph.FractionSlotX] = 0.0f;
+            values[DensityGraph.FractionSlotY] = 0.0f;
+            values[DensityGraph.FractionSlotZ] = 0.0f;
         }
 
-        var cellX = MathX.FloorDiv(position.X, Graph.CellX);
-        var cellY = MathX.FloorDiv(position.Y, Graph.CellY);
-        var cellZ = MathX.FloorDiv(position.Z, Graph.CellZ);
+        Run(Graph.SampleProgram, values, x, y, z);
 
-        for (var corner = 0; corner < DensityGraph.CornerCount; corner++)
+        for (var root = 0; root < roots.Length; root++)
         {
-            Run(
-                Graph.CornerProgram,
-                _cornerValues,
-                (cellX + (corner & 1)) * Graph.CellX * spacing,
-                (cellY + ((corner >> 1) & 1)) * Graph.CellY * spacing,
-                (cellZ + ((corner >> 2) & 1)) * Graph.CellZ * spacing
-            );
-
-            _sampleValues[DensityGraph.CornerSlotBase + corner] = _cornerValues[Graph.CornerRoot];
+            if (Graph.RootIsCorner[root])
+            {
+                // A corner root is the raw value below the boundary, so the corner program is run at the exact position rather than on the lattice:
+                Run(Graph.CornerProgram, cornerValues, x, y, z);
+                roots[root] = cornerValues[Graph.CornerRoots[root]];
+            }
+            else
+            {
+                roots[root] = values[Graph.SampleRoots[root]];
+            }
         }
-
-        _sampleValues[DensityGraph.FractionSlotX] = (position.X - cellX * Graph.CellX) / (float)Graph.CellX;
-        _sampleValues[DensityGraph.FractionSlotY] = (position.Y - cellY * Graph.CellY) / (float)Graph.CellY;
-        _sampleValues[DensityGraph.FractionSlotZ] = (position.Z - cellZ * Graph.CellZ) / (float)Graph.CellZ;
-
-        Run(Graph.SampleProgram, _sampleValues, x, y, z);
-
-        return _sampleValues[Graph.SampleRoot];
     }
 
     /// <summary>
-    ///     Fills the inclusive box <c>[min, maxInclusive]</c> with densities.
-    ///     The coordinates and the destination are in sample indices at <paramref name="lod"/> (see <see cref="Sample"/>).
-    ///     The corner lattice reaches up to one cell outside the box, so a range fill evaluates slightly more positions than it writes.
+    ///     One root at one position, which is the first root unless another is named.
     /// </summary>
-    public void SampleRange(int lod, Vector3i min, Vector3i maxInclusive, Span3D<float> density)
+    public float Sample(Vector3i position, int lod, int rootIndex = 0)
     {
+        Sample(position, lod, _scratch.Roots);
+
+        return _scratch.Roots[rootIndex];
+    }
+
+    /// <summary>
+    ///     Fills the inclusive box [min, maxInclusive] with the value of every sample-side root.
+    ///     The corners are computed once for the whole box and shared between the cells that meet there, so the fill is cheaper than a point read per sample.
+    ///     The coordinates are in sample indices at <see cref="lod"/>.
+    ///     A corner root has no per-sample value and is left alone: it needs to be read with <see cref="Sample(Vector3i, int, int)"/>.
+    /// </summary>
+    public void SampleRange(int lod, Vector3i min, Vector3i maxInclusive)
+    {
+        ValidateBox(min, maxInclusive);
+
         var countX = maxInclusive.X - min.X + 1;
         var countY = maxInclusive.Y - min.Y + 1;
         var countZ = maxInclusive.Z - min.Z + 1;
 
-        if (countX < 1 || countY < 1 || countZ < 1)
-        {
-            throw new ArgumentOutOfRangeException(nameof(maxInclusive), "The box is empty.");
-        }
-
-        if (density.SizeX != countX || density.SizeY != countY || density.SizeZ != countZ)
-        {
-            throw new ArgumentException("The density box has to be maxInclusive - min + 1 on every axis.", nameof(density));
-        }
+        _scratch.PrepareRange(countX, countY, countZ);
 
         var spacing = SampleSpacing(lod);
+        var values = _scratch.SampleValues;
+        var cornerValues = _scratch.CornerValues;
 
         if (!Graph.HasInterpolation)
         {
+            var index = 0;
+
             for (var z = 0; z < countZ; z++)
             {
                 for (var y = 0; y < countY; y++)
                 {
                     for (var x = 0; x < countX; x++)
                     {
-                        Run(Graph.SampleProgram, _sampleValues, (min.X + x) * spacing, (min.Y + y) * spacing, (min.Z + z) * spacing);
-                        density[x, y, z] = _sampleValues[Graph.SampleRoot];
+                        Run(Graph.SampleProgram, values, (min.X + x) * spacing, (min.Y + y) * spacing, (min.Z + z) * spacing);
+                        WriteRoots(values, index++);
+                    }
+                }
+            }
+
+            return;
+        }
+
+        if (!Graph.UsesBoundary)
+        {
+            var withoutCorners = 0;
+
+            for (var z = 0; z < countZ; z++)
+            {
+                for (var y = 0; y < countY; y++)
+                {
+                    for (var x = 0; x < countX; x++)
+                    {
+                        values[DensityGraph.FractionSlotX] = 0.0f;
+                        values[DensityGraph.FractionSlotY] = 0.0f;
+                        values[DensityGraph.FractionSlotZ] = 0.0f;
+
+                        Run(Graph.SampleProgram, values, (min.X + x) * spacing, (min.Y + y) * spacing, (min.Z + z) * spacing);
+                        WriteRoots(values, withoutCorners++);
                     }
                 }
             }
@@ -165,10 +230,12 @@ public sealed class DensitySampler
 
         var cornerCount = cornerCountX * cornerCountY * cornerCountZ;
 
-        if (_cornerCache.Length < cornerCount)
+        if (_scratch.CornerCache.Length < cornerCount)
         {
-            _cornerCache = new float[cornerCount];
+            _scratch.CornerCache = new float[cornerCount];
         }
+
+        var cornerCache = _scratch.CornerCache;
 
         // ReSharper disable once InlineTemporaryVariable
         var cornerStrideY = cornerCountX;
@@ -182,16 +249,18 @@ public sealed class DensitySampler
                 {
                     Run(
                         Graph.CornerProgram,
-                        _cornerValues,
+                        cornerValues,
                         (firstCellX + x) * Graph.CellX * spacing,
                         (firstCellY + y) * Graph.CellY * spacing,
                         (firstCellZ + z) * Graph.CellZ * spacing
                     );
 
-                    _cornerCache[x + y * cornerStrideY + z * cornerStrideZ] = _cornerValues[Graph.CornerRoot];
+                    cornerCache[x + y * cornerStrideY + z * cornerStrideZ] = cornerValues[Graph.BoundaryRoot];
                 }
             }
         }
+
+        var sampleIndex = 0;
 
         for (var z = 0; z < countZ; z++)
         {
@@ -211,23 +280,78 @@ public sealed class DensitySampler
                     var cellX = MathX.FloorDiv(worldX, Graph.CellX) - firstCellX;
                     var fractionX = (worldX - (cellX + firstCellX) * Graph.CellX) / (float)Graph.CellX;
 
-                    _sampleValues[DensityGraph.FractionSlotX] = fractionX;
-                    _sampleValues[DensityGraph.FractionSlotY] = fractionY;
-                    _sampleValues[DensityGraph.FractionSlotZ] = fractionZ;
+                    values[DensityGraph.FractionSlotX] = fractionX;
+                    values[DensityGraph.FractionSlotY] = fractionY;
+                    values[DensityGraph.FractionSlotZ] = fractionZ;
 
                     var cornerIndex = cellX + cellY * cornerStrideY + cellZ * cornerStrideZ;
 
                     for (var corner = 0; corner < DensityGraph.CornerCount; corner++)
                     {
                         var offset = (corner & 1) + ((corner >> 1) & 1) * cornerStrideY + ((corner >> 2) & 1) * cornerStrideZ;
-                        _sampleValues[DensityGraph.CornerSlotBase + corner] = _cornerCache[cornerIndex + offset];
+                        values[DensityGraph.CornerSlotBase + corner] = cornerCache[cornerIndex + offset];
                     }
 
-                    Run(Graph.SampleProgram, _sampleValues, worldX * spacing, worldY * spacing, worldZ * spacing);
-
-                    density[x, y, z] = _sampleValues[Graph.SampleRoot];
+                    Run(Graph.SampleProgram, values, worldX * spacing, worldY * spacing, worldZ * spacing);
+                    WriteRoots(values, sampleIndex++);
                 }
             }
+        }
+    }
+
+    /// <summary>
+    ///     Fills one root of the inclusive box into <see cref="destination"/>, which has to be sized exactly like the box.
+    /// </summary>
+    public void SampleRange(int lod, Vector3i min, Vector3i maxInclusive, Span3D<float> destination, int rootIndex = 0)
+    {
+        ValidateBox(min, maxInclusive);
+
+        var countX = maxInclusive.X - min.X + 1;
+        var countY = maxInclusive.Y - min.Y + 1;
+        var countZ = maxInclusive.Z - min.Z + 1;
+
+        if (destination.SizeX != countX || destination.SizeY != countY || destination.SizeZ != countZ)
+        {
+            throw new ArgumentException("The destination box has to be maxInclusive - min + 1 on every axis.", nameof(destination));
+        }
+
+        if (Graph.RootIsCorner[rootIndex])
+        {
+            throw new ArgumentException("A corner root has no per-sample value, so it cannot be filled over a box.", nameof(rootIndex));
+        }
+
+        SampleRange(lod, min, maxInclusive);
+
+        var source = _scratch.RangeOutput(rootIndex);
+
+        for (var z = 0; z < countZ; z++)
+        {
+            for (var y = 0; y < countY; y++)
+            {
+                for (var x = 0; x < countX; x++)
+                {
+                    destination[x, y, z] = source[x + y * countX + z * countX * countY];
+                }
+            }
+        }
+    }
+
+    private void WriteRoots(float[] values, int index)
+    {
+        for (var root = 0; root < Graph.RootCount; root++)
+        {
+            if (!Graph.RootIsCorner[root])
+            {
+                _scratch.RangeOutputBuffer(root)[index] = values[Graph.SampleRoots[root]];
+            }
+        }
+    }
+
+    private static void ValidateBox(Vector3i min, Vector3i maxInclusive)
+    {
+        if (maxInclusive.X < min.X || maxInclusive.Y < min.Y || maxInclusive.Z < min.Z)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxInclusive), "The box is empty.");
         }
     }
 
@@ -257,6 +381,8 @@ public sealed class DensitySampler
                 DensityOp.Spline => Graph.Splines[instruction.Payload].Evaluate(values[instruction.Input0]),
                 DensityOp.YClampedGradient => Graph.Gradients[instruction.Payload].Evaluate(values[instruction.Input0]),
                 DensityOp.Blend => values[instruction.Input0] + (values[instruction.Input1] - values[instruction.Input0]) * values[instruction.Input2],
+                DensityOp.Select => values[instruction.Input0] > 0.0f ? values[instruction.Input1] : values[instruction.Input2],
+                DensityOp.BandedTable => Graph.StrataSets[instruction.Payload].Select(values[instruction.Input1], values[instruction.Input0]),
                 DensityOp.Interpolated => Interpolate(values),
                 DensityOp.InputX => throw new InvalidOperationException($"{DensityOp.InputX} is not valid for execution"),
                 DensityOp.InputY => throw new InvalidOperationException($"{DensityOp.InputY} is not valid for execution"),

@@ -89,9 +89,9 @@ public static class MathX
     public static double Lerp(double a, double b, double t) => a + (b - a) * t;
     
     /// <summary>
-    ///     The coordinate of <paramref name="world"/> inside the block of edge <c>2^log</c> that contains it, in [0, 1 &lt;&lt; log).
+    ///     The coordinate of <see cref="world"/> inside the block of edge <c>2^log</c> that contains it, in [0, 1 &lt;&lt; log).
     ///     Rounded down, so a negative world coordinate yields a non-negative local one, where the remainder operator would yield a negative index.
-    ///     Pair it with <c>world &gt;&gt; log</c> for the block index. Requires 0 &lt;= log &lt;= 30.
+    ///     Paired with <c>world &gt;&gt; log</c> for the block index. Requires 0 &lt;= log &lt;= 30.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int ReduceLocal(int world, int log)

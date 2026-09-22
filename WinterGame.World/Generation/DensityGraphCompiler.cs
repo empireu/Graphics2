@@ -1,49 +1,113 @@
-// ReSharper disable ConvertToPrimaryConstructor
-
 using Graphics2.Mathematics.Interpolation;
 
 namespace WinterGame.World.Generation;
 
-/// <summary>
-///     Turns an authored graph into the compiled programs.
-///     Does some analysis: reachability, constant folding, the cell split, slot allocation, dead instruction removal and the side tables.
-///     Author order is dependency order, so the emission is one forward pass over the author list.
-/// </summary>
 internal static class DensityGraphCompiler
 {
-    public static DensityGraph Compile(DensityGraphBuilder builder, int rootIndex, int cellX, int cellY, int cellZ)
+    public static DensityGraph Compile(DensityGraphBuilder builder, DensityNode[] roots, int cellX, int cellY, int cellZ)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(cellX);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(cellY);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(cellZ);
 
+        var rootIndices = new int[roots.Length];
+
+        for (var index = 0; index < roots.Length; index++)
+        {
+            rootIndices[index] = roots[index].Index;
+        }
+
         var emission = new Emission(builder);
-        var boundary = emission.FindInterpolationBoundary(rootIndex);
+        var boundary = emission.FindInterpolationBoundary(rootIndices);
         var hasInterpolation = boundary != DensityInstruction.NoSlot;
 
-        var cornerProgram = Array.Empty<DensityInstruction>();
-        var cornerRoot = DensityInstruction.NoSlot;
-        var cornerSlotCount = 0;
+        // A node below the boundary is only a corner value, so a root there is evaluated on the corner lattice rather than per sample:
+        var rootIsCorner = new bool[roots.Length];
+        var cornerInputs = new List<int>();
 
         if (hasInterpolation)
         {
+            var boundaryInput = builder.Nodes[boundary].Input0;
+            var cornerReachable = emission.ReachableFrom(boundaryInput);
+
+            cornerInputs.Add(boundaryInput);
+
+            for (var index = 0; index < rootIndices.Length; index++)
+            {
+                if (cornerReachable[rootIndices[index]])
+                {
+                    rootIsCorner[index] = true;
+                    cornerInputs.Add(rootIndices[index]);
+                }
+            }
+        }
+
+        var sampleInputs = new List<int>();
+
+        for (var index = 0; index < rootIndices.Length; index++)
+        {
+            if (!rootIsCorner[index])
+            {
+                sampleInputs.Add(rootIndices[index]);
+            }
+        }
+
+        var cornerProgram = Array.Empty<DensityInstruction>();
+        var cornerRootSlots = Array.Empty<int>();
+        var boundaryRoot = DensityInstruction.NoSlot;
+        var cornerSlotCount = 0;
+
+        if (cornerInputs.Count > 0)
+        {
             cornerProgram = emission.Emit(
-                builder.Nodes[boundary].Input0,
+                cornerInputs.ToArray(),
                 DensityGraph.FirstProgramSlot,
                 DensityInstruction.NoSlot,
-                out cornerRoot,
+                out cornerRootSlots,
                 out cornerSlotCount
             );
+
+            boundaryRoot = cornerRootSlots[0];
         }
 
         var sampleProgram = emission.Emit(
-            rootIndex,
+            sampleInputs.ToArray(),
             hasInterpolation ? DensityGraph.FirstInterpolatedSampleSlot : DensityGraph.FirstProgramSlot,
             boundary,
-            out var sampleRoot,
+            out var sampleRootSlots,
             out var sampleSlotCount
         );
+
+        var cornerRoots = new int[roots.Length];
+        var sampleRoots = new int[roots.Length];
+
+        for (var index = 0; index < rootIndices.Length; index++)
+        {
+            if (rootIsCorner[index])
+            {
+                var position = cornerInputs.IndexOf(rootIndices[index]);
+
+                cornerRoots[index] = cornerRootSlots[position];
+                sampleRoots[index] = DensityInstruction.NoSlot;
+            }
+            else
+            {
+                cornerRoots[index] = DensityInstruction.NoSlot;
+                sampleRoots[index] = sampleRootSlots[sampleInputs.IndexOf(rootIndices[index])];
+            }
+        }
+
+        var usesBoundary = false;
+
+        foreach (var instruction in sampleProgram)
+        {
+            if (instruction.Op == DensityOp.Interpolated)
+            {
+                usesBoundary = true;
+                break;
+            }
+        }
 
         var tables = new SideTables(builder, emission.Constants);
         cornerProgram = tables.Remap(cornerProgram);
@@ -52,18 +116,22 @@ internal static class DensityGraphCompiler
         return new DensityGraph(
             cornerProgram,
             sampleProgram,
-            cornerRoot,
-            sampleRoot,
+            boundaryRoot,
+            cornerRoots,
+            sampleRoots,
+            rootIsCorner,
             cornerSlotCount,
             sampleSlotCount,
             tables.Noises,
             tables.Constants,
             tables.Splines,
             tables.Gradients,
+            tables.StrataSets,
             cellX,
             cellY,
             cellZ,
-            hasInterpolation
+            hasInterpolation,
+            usesBoundary
         );
     }
 
@@ -98,11 +166,15 @@ internal static class DensityGraphCompiler
         /// <summary>
         ///     The boundary node, or <see cref="DensityInstruction.NoSlot" /> when the graph has none.
         /// </summary>
-        public int FindInterpolationBoundary(int rootIndex)
+        public int FindInterpolationBoundary(int[] rootIndices)
         {
             var visited = new bool[_graphBuilder.Nodes.Count];
             var pending = new Stack<int>();
-            pending.Push(rootIndex);
+
+            foreach (var rootIndex in rootIndices)
+            {
+                pending.Push(rootIndex);
+            }
 
             while (pending.Count > 0)
             {
@@ -130,9 +202,39 @@ internal static class DensityGraphCompiler
             return DensityInstruction.NoSlot;
         }
 
-        public DensityInstruction[] Emit(int rootIndex, int firstSlot, int boundaryIndex, out int rootSlot, out int slotCount)
+        /// <summary>
+        ///     Everything reachable from <see cref="rootIndex"/>, with no boundary stop, which is how a corner-side root is told apart from a sample-side one.
+        /// </summary>
+        public bool[] ReachableFrom(int rootIndex)
         {
-            MarkReachable(rootIndex, boundaryIndex);
+            var reachable = new bool[_graphBuilder.Nodes.Count];
+            var pending = new Stack<int>();
+
+            pending.Push(rootIndex);
+
+            while (pending.Count > 0)
+            {
+                var index = pending.Pop();
+
+                if (reachable[index])
+                {
+                    continue;
+                }
+
+                reachable[index] = true;
+
+                var node = _graphBuilder.Nodes[index];
+                PushIfPresent(pending, node.Input0);
+                PushIfPresent(pending, node.Input1);
+                PushIfPresent(pending, node.Input2);
+            }
+
+            return reachable;
+        }
+
+        public DensityInstruction[] Emit(int[] rootIndices, int firstSlot, int boundaryIndex, out int[] rootSlots, out int slotCount)
+        {
+            MarkReachable(rootIndices, boundaryIndex);
 
             Array.Fill(_slots, DensityInstruction.NoSlot);
             Array.Fill(_slotConstants, float.NaN);
@@ -148,21 +250,31 @@ internal static class DensityGraphCompiler
                 }
             }
 
-            rootSlot = _slots[rootIndex];
+            rootSlots = new int[rootIndices.Length];
+
+            for (var index = 0; index < rootIndices.Length; index++)
+            {
+                rootSlots[index] = _slots[rootIndices[index]];
+            }
+
             slotCount = _nextSlot;
 
-            return PruneUnread(_program.ToArray(), rootSlot, slotCount);
+            return PruneUnread(_program.ToArray(), rootSlots, slotCount);
         }
 
         /// <summary>
-        ///     Everything reachable from the root, stopping at the boundary because its input subtree belongs to the corner program.
+        ///     Everything reachable from the root set, stopping at the boundary because its input subtree belongs to the corner program.
         /// </summary>
-        private void MarkReachable(int rootIndex, int boundaryIndex)
+        private void MarkReachable(int[] rootIndices, int boundaryIndex)
         {
             Array.Fill(_reachable, false);
 
             var pending = new Stack<int>();
-            pending.Push(rootIndex);
+
+            foreach (var rootIndex in rootIndices)
+            {
+                pending.Push(rootIndex);
+            }
 
             while (pending.Count > 0)
             {
@@ -201,6 +313,8 @@ internal static class DensityGraphCompiler
                 DensityOp.Mul => EmitMul(_slots[node.Input0], _slots[node.Input1]),
                 DensityOp.Clamp => EmitClamp(_slots[node.Input0], _slots[node.Input1], _slots[node.Input2]),
                 DensityOp.Blend => EmitBlend(_slots[node.Input0], _slots[node.Input1], _slots[node.Input2]),
+                DensityOp.Select => EmitSelect(_slots[node.Input0], _slots[node.Input1], _slots[node.Input2]),
+                DensityOp.BandedTable => EmitInstruction(DensityOp.BandedTable, _slots[node.Input0], _slots[node.Input1], DensityInstruction.NoSlot, node.Payload),
                 DensityOp.Noise2D => EmitInstruction(DensityOp.Noise2D, _slots[node.Input0], _slots[node.Input1], DensityInstruction.NoSlot, node.Payload),
                 DensityOp.Noise3D => EmitInstruction(DensityOp.Noise3D, _slots[node.Input0], _slots[node.Input1], _slots[node.Input2], node.Payload),
                 DensityOp.Spline => EmitInstruction(DensityOp.Spline, _slots[node.Input0], DensityInstruction.NoSlot, DensityInstruction.NoSlot, node.Payload),
@@ -321,6 +435,19 @@ internal static class DensityGraphCompiler
             return EmitInstruction(DensityOp.Blend, from, to, weight, 0);
         }
 
+        /// <summary>
+        ///     Folds a constant condition, which is safe because the opcode picks one branch rather than interpolating between them.
+        /// </summary>
+        private int EmitSelect(int condition, int ifPositive, int ifNotPositive)
+        {
+            if (IsConstant(condition, out var conditionValue))
+            {
+                return conditionValue > 0.0f ? ifPositive : ifNotPositive;
+            }
+
+            return EmitInstruction(DensityOp.Select, condition, ifPositive, ifNotPositive, 0);
+        }
+
         private int EmitInstruction(DensityOp op, int input0, int input1, int input2, int payload)
         {
             var slot = _nextSlot++;
@@ -338,12 +465,19 @@ internal static class DensityGraphCompiler
 
         /// <summary>
         ///     Drops every instruction whose slot is read by nobody.
-        ///     Slots keep their numbers, so the pruned program has holes and <paramref name="slotCount"/> stays the bound.
+        ///     Slots keep their numbers, so the pruned program has holes and <paramref name="slotCount" /> stays the bound.
         /// </summary>
-        private static DensityInstruction[] PruneUnread(DensityInstruction[] program, int rootSlot, int slotCount)
+        private static DensityInstruction[] PruneUnread(DensityInstruction[] program, int[] rootSlots, int slotCount)
         {
             var needed = new bool[slotCount];
-            needed[rootSlot] = true;
+
+            foreach (var rootSlot in rootSlots)
+            {
+                if (rootSlot >= 0)
+                {
+                    needed[rootSlot] = true;
+                }
+            }
 
             var live = new bool[program.Length];
             var liveCount = 0;
@@ -416,15 +550,18 @@ internal static class DensityGraphCompiler
         private readonly List<NoiseSpec> _noises = [];
         private readonly List<CubicSpline> _splines = [];
         private readonly List<GradientSpec> _gradients = [];
+        private readonly List<StrataSet> _strataSets = [];
         private readonly Dictionary<float, int> _constantIndices = [];
         private readonly Dictionary<NoiseSpec, int> _noiseIndices = [];
         private readonly Dictionary<CubicSpline, int> _splineIndices = [];
         private readonly Dictionary<GradientSpec, int> _gradientIndices = [];
+        private readonly Dictionary<StrataSet, int> _strataIndices = [];
 
         public float[] Constants => _constants.ToArray();
         public NoiseSpec[] Noises => _noises.ToArray();
         public CubicSpline[] Splines => _splines.ToArray();
         public GradientSpec[] Gradients => _gradients.ToArray();
+        public StrataSet[] StrataSets => _strataSets.ToArray();
 
         public DensityInstruction[] Remap(DensityInstruction[] program)
         {
@@ -440,6 +577,7 @@ internal static class DensityGraphCompiler
                     DensityOp.Noise2D or DensityOp.Noise3D => NoiseIndex(builder.Noises[instruction.Payload]),
                     DensityOp.Spline => SplineIndex(builder.Splines[instruction.Payload]),
                     DensityOp.YClampedGradient => GradientIndex(builder.Gradients[instruction.Payload]),
+                    DensityOp.BandedTable => StrataIndex(builder.StrataSets[instruction.Payload]),
                     _ => 0
                 };
 
@@ -501,6 +639,20 @@ internal static class DensityGraphCompiler
             index = _gradients.Count;
             _gradients.Add(gradient);
             _gradientIndices[gradient] = index;
+
+            return index;
+        }
+
+        private int StrataIndex(StrataSet strata)
+        {
+            if (_strataIndices.TryGetValue(strata, out var index))
+            {
+                return index;
+            }
+
+            index = _strataSets.Count;
+            _strataSets.Add(strata);
+            _strataIndices[strata] = index;
 
             return index;
         }

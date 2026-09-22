@@ -13,7 +13,7 @@ public class DensityGraphTests
         var graph = builder.Compile(builder.X);
 
         Assert.Empty(graph.SampleProgram);
-        Assert.Equal(DensityGraph.PositionSlotX, graph.SampleRoot);
+        Assert.Equal(DensityGraph.PositionSlotX, graph.SampleRoots[0]);
         Assert.Equal(DensityGraph.FirstProgramSlot, graph.SampleSlotCount);
     }
 
@@ -28,7 +28,7 @@ public class DensityGraphTests
 
         Assert.Equal(DensityOp.Constant, instruction.Op);
         Assert.Equal(5.0f, graph.Constants[instruction.Payload]);
-        Assert.Equal(instruction.Output, graph.SampleRoot);
+        Assert.Equal(instruction.Output, graph.SampleRoots[0]);
     }
 
     [Fact]
@@ -92,7 +92,7 @@ public class DensityGraphTests
         Assert.Equal(DensityGraph.FirstInterpolatedSampleSlot, interpolated.Output);
         Assert.Equal(DensityGraph.FirstInterpolatedSampleSlot + 1, graph.SampleSlotCount);
         Assert.Equal(DensityOp.Constant, corner.Op);
-        Assert.Equal(corner.Output, graph.CornerRoot);
+        Assert.Equal(corner.Output, graph.BoundaryRoot);
         Assert.Equal(DensityGraph.FirstProgramSlot + 1, graph.CornerSlotCount);
     }
 
@@ -160,6 +160,58 @@ public class DensityGraphTests
         Assert.Equal(12, (int)Marshal.OffsetOf<DensityInstruction>(nameof(DensityInstruction.Input1)));
         Assert.Equal(16, (int)Marshal.OffsetOf<DensityInstruction>(nameof(DensityInstruction.Input2)));
         Assert.Equal(20, (int)Marshal.OffsetOf<DensityInstruction>(nameof(DensityInstruction.Payload)));
+    }
+
+    [Fact]
+    public void Compiler_CompilesARootSetIntoOneSharedProgram()
+    {
+        var builder = new DensityGraphBuilder(1);
+        var hills = builder.Noise2D("hills", frequency: 0.25f);
+        var graph = builder.Compile([builder.Add(hills, hills), builder.Mul(hills, builder.Constant(3.0f))]);
+
+        Assert.Equal(2, graph.RootCount);
+
+        // The shared noise is emitted once, so the two roots are drawn from one program:
+        var noiseCount = 0;
+
+        foreach (var instruction in graph.SampleProgram)
+        {
+            if (instruction.Op == DensityOp.Noise2D)
+            {
+                noiseCount++;
+            }
+        }
+
+        Assert.Equal(1, noiseCount);
+        Assert.NotEqual(graph.SampleRoots[0], graph.SampleRoots[1]);
+    }
+
+    [Fact]
+    public void Compiler_PutsARootBelowTheBoundaryInTheCornerProgram()
+    {
+        var builder = new DensityGraphBuilder(1);
+        var shape = builder.Mul(builder.Noise2D("shape", frequency: 0.25f), builder.Constant(8.0f));
+        var depth = builder.Interpolated(builder.Add(shape, builder.Mul(builder.Y, builder.Constant(-1.0f))));
+        var graph = builder.Compile([shape, depth]);
+
+        Assert.True(graph.RootIsCorner[0]);
+        Assert.False(graph.RootIsCorner[1]);
+        Assert.NotEqual(DensityInstruction.NoSlot, graph.CornerRoots[0]);
+        Assert.Equal(DensityInstruction.NoSlot, graph.SampleRoots[0]);
+        Assert.Equal(DensityInstruction.NoSlot, graph.CornerRoots[1]);
+    }
+
+    [Fact]
+    public void Compiler_FoldsASelectWithAConstantCondition()
+    {
+        var builder = new DensityGraphBuilder(1);
+        var root = builder.Select(builder.Constant(1.0f), builder.Constant(2.0f), builder.Constant(3.0f));
+        var graph = builder.Compile(root);
+
+        var instruction = Assert.Single(graph.SampleProgram);
+
+        Assert.Equal(DensityOp.Constant, instruction.Op);
+        Assert.Equal(2.0f, graph.Constants[instruction.Payload]);
     }
 
     private static DensityGraph TwoNoiseGraph(int seed)

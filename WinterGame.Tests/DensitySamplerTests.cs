@@ -235,6 +235,120 @@ public class DensitySamplerTests
         Assert.Equal(254, DensitySampler.ContentFromDensity(DensitySampler.SampleSpacing(1), 1));
     }
 
+    [Fact]
+    public void Sampler_FillsEverySampleSideRootInOnePass()
+    {
+        var builder = new DensityGraphBuilder(7);
+        var hills = builder.Noise2D("hills", frequency: 0.25f);
+        var graph = builder.Compile([builder.Add(hills, hills), builder.Mul(hills, builder.Constant(3.0f))]);
+
+        var scratch = new DensityScratch(graph);
+        var sampler = new DensitySampler(graph, scratch);
+
+        var min = new Vector3i(-3, -2, 5);
+        var max = new Vector3i(4, 3, 9);
+
+        sampler.SampleRange(0, min, max);
+
+        var first = scratch.RangeOutput(0);
+        var second = scratch.RangeOutput(1);
+        var index = 0;
+
+        for (var z = min.Z; z <= max.Z; z++)
+        {
+            for (var y = min.Y; y <= max.Y; y++)
+            {
+                for (var x = min.X; x <= max.X; x++)
+                {
+                    var position = new Vector3i(x, y, z);
+
+                    Assert.Equal(sampler.Sample(position, 0, 0), first[index]);
+                    Assert.Equal(sampler.Sample(position, 0, 1), second[index]);
+                    index++;
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public void Sampler_SelectIsNeverInterpolated()
+    {
+        var builder = new DensityGraphBuilder(3);
+        var depth = builder.Interpolated(builder.Add(builder.Constant(2.0f), builder.Mul(builder.Y, builder.Constant(-1.0f))));
+        var material = builder.Select(builder.Subtract(depth, builder.Constant(0.5f)), builder.Constant(20.0f), builder.Constant(10.0f));
+        var sampler = new DensitySampler(builder.Compile([depth, material]));
+
+        var sawShallow = false;
+        var sawDeep = false;
+
+        for (var y = -8; y <= 8; y++)
+        {
+            var value = sampler.Sample(new Vector3i(0, y, 0), 0, 1);
+
+            sawShallow |= value == 20.0f;
+            sawDeep |= value == 10.0f;
+
+            Assert.True(value is 20.0f or 10.0f, $"The material root returned {value}, which is neither branch.");
+        }
+
+        Assert.True(sawShallow && sawDeep, "The samples did not cross the select.");
+    }
+
+    [Fact]
+    public void Sampler_ReadsACornerRootAtTheExactPosition()
+    {
+        var builder = new DensityGraphBuilder(5);
+        var shape = builder.Mul(builder.Noise2D("shape", frequency: 0.25f), builder.Constant(8.0f));
+        var depth = builder.Interpolated(builder.Add(shape, builder.Mul(builder.Y, builder.Constant(-1.0f))));
+
+        var graph = builder.Compile([shape, depth]);
+        var direct = builder.Compile(shape);
+
+        var celled = new DensitySampler(graph);
+        var plain = new DensitySampler(direct);
+
+        Assert.True(graph.RootIsCorner[0]);
+
+        for (var z = -5; z <= 5; z += 3)
+        {
+            for (var x = -5; x <= 5; x += 3)
+            {
+                var position = new Vector3i(x, 3, z);
+
+                Assert.Equal(plain.Sample(position, 0), celled.Sample(position, 0, 0));
+            }
+        }
+    }
+
+    [Fact]
+    public void Sampler_ReusesItsBufferForASmallerBox()
+    {
+        var graph = HeightFieldGraph(interpolate: true);
+        var scratch = new DensityScratch(graph);
+        var sampler = new DensitySampler(graph, scratch);
+
+        sampler.SampleRange(0, new Vector3i(-8, -4, -8), new Vector3i(7, 3, 7));
+
+        var smallMin = new Vector3i(2, 0, 2);
+        var smallMax = new Vector3i(4, 1, 4);
+
+        sampler.SampleRange(0, smallMin, smallMax);
+
+        var small = scratch.RangeOutput(0);
+        var index = 0;
+
+        for (var z = smallMin.Z; z <= smallMax.Z; z++)
+        {
+            for (var y = smallMin.Y; y <= smallMax.Y; y++)
+            {
+                for (var x = smallMin.X; x <= smallMax.X; x++)
+                {
+                    Assert.Equal(sampler.Sample(new Vector3i(x, y, z), 0), small[index++]);
+                }
+            }
+        }
+    }
+
     private static DensityGraph HeightFieldGraph(bool interpolate)
     {
         var builder = new DensityGraphBuilder(3141);

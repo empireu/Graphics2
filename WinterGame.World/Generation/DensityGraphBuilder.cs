@@ -16,6 +16,7 @@ public sealed class DensityGraphBuilder
     private readonly List<CubicSpline> _splines = [];
     private readonly List<float> _constants = [];
     private readonly List<GradientSpec> _gradients = [];
+    private readonly List<StrataSet> _strataSets = [];
     private readonly HashSet<string> _noiseNames = [];
     private bool _hasInterpolationBoundary;
 
@@ -58,7 +59,8 @@ public sealed class DensityGraphBuilder
     }
 
     /// <summary>
-    ///     <paramref name="salt" /> fixes the noise's seed, so a stage keeps its field when its name or its neighbours change. Without one the salt is the name's hash.
+    ///     The <see cref="salt" /> fixes the noise's seed, so a stage keeps its field when its name or its neighbors change.
+    ///     Without one, the salt is the name's hash.
     /// </summary>
     public DensityNode Noise2D(
         string name,
@@ -88,7 +90,8 @@ public sealed class DensityGraphBuilder
     }
 
     /// <summary>
-    ///     <paramref name="salt" /> fixes the noise's seed, so a stage keeps its field when its name or its neighbours change. Without one the salt is the name's hash.
+    ///     The <see cref="salt"/> fixes the noise's seed, so a stage keeps its field when its name or its neighbors change.
+    ///     Without one, the salt is the name's hash.
     /// </summary>
     public DensityNode Noise3D(
         string name,
@@ -167,6 +170,37 @@ public sealed class DensityGraphBuilder
         return Append(new AuthorNode(DensityOp.Blend, "blend", from.Index, to.Index, weight.Index, 0));
     }
 
+    public DensityNode Subtract(DensityNode left, DensityNode right) => Add(left, Mul(right, Constant(-1.0f)));
+
+    /// <summary>
+    ///     Picks <see cref="ifPositive"/> when <see cref="condition"/> is above zero and <see cref="ifNotPositive"/> otherwise, with no interpolation.
+    ///     Used for discrete values.
+    /// </summary>
+    public DensityNode Select(DensityNode condition, DensityNode ifPositive, DensityNode ifNotPositive)
+    {
+        RequireOwn(condition);
+        RequireOwn(ifPositive);
+        RequireOwn(ifNotPositive);
+
+        return Append(new AuthorNode(DensityOp.Select, "select", condition.Index, ifPositive.Index, ifNotPositive.Index, 0));
+    }
+
+    /// <summary>
+    ///     The material bands of every province, looked up at <see cref="y"/> and chosen by the continuous <see cref="province"/> coordinate, whose integers are the province boundaries.
+    /// </summary>
+    public DensityNode BandedTable(DensityNode y, DensityNode province, StrataSet strata)
+    {
+        RequireOwn(y);
+        RequireOwn(province);
+        ArgumentNullException.ThrowIfNull(strata);
+
+        var payload = _strataSets.Count;
+
+        _strataSets.Add(strata);
+
+        return Append(new AuthorNode(DensityOp.BandedTable, "banded_table", y.Index, province.Index, DensityInstruction.NoSlot, payload));
+    }
+
     /// <summary>
     ///     Marks the cell boundary. Everything below is evaluated on the cell lattice and interpolated, and everything above is evaluated per sample.
     ///     A graph has at most one boundary.
@@ -189,7 +223,28 @@ public sealed class DensityGraphBuilder
     {
         RequireOwn(root);
 
-        return DensityGraphCompiler.Compile(this, root.Index, cellX, cellY, cellZ);
+        return DensityGraphCompiler.Compile(this, [root], cellX, cellY, cellZ);
+    }
+
+    /// <summary>
+    ///     Compiles a root set into one graph.
+    ///     The roots share every subexpression they have in common, and a root that is only reachable below the cell boundary is a corner root, so a shape and its material can come out of one program.
+    /// </summary>
+    public DensityGraph Compile(DensityNode[] roots, int cellX = 4, int cellY = 8, int cellZ = 4)
+    {
+        ArgumentNullException.ThrowIfNull(roots);
+
+        if (roots.Length == 0)
+        {
+            throw new ArgumentException("A graph needs at least one root.", nameof(roots));
+        }
+
+        foreach (var root in roots)
+        {
+            RequireOwn(root);
+        }
+
+        return DensityGraphCompiler.Compile(this, roots, cellX, cellY, cellZ);
     }
 
     internal IReadOnlyList<AuthorNode> Nodes => _nodes;
@@ -197,6 +252,7 @@ public sealed class DensityGraphBuilder
     internal IReadOnlyList<CubicSpline> Splines => _splines;
     internal IReadOnlyList<float> Constants => _constants;
     internal IReadOnlyList<GradientSpec> Gradients => _gradients;
+    internal IReadOnlyList<StrataSet> StrataSets => _strataSets;
 
     internal string NameOf(int index) => _nodes[index].Name;
 

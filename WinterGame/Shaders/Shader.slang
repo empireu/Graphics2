@@ -15,16 +15,26 @@ struct DrawRecord {
 static const uint MaterialRock = 0;
 static const uint MaterialIce = 1;
 static const uint MaterialSnow = 2;
-static const uint MaterialCount = 3;
+static const uint MaterialSandstone = 3;
+static const uint MaterialShale = 4;
+static const uint MaterialLimestone = 5;
+static const uint MaterialBasalt = 6;
+static const uint MaterialGneiss = 7;
+static const uint MaterialCount = 8;
 
 // Air carries no material, and a cell's reconstruction skips those corners:
 static const uint MaterialNull = 255;
 
 // Linear albedo, because the swapchain is an sRGB format and the write converts it:
 static const float3 MaterialAlbedo[MaterialCount] = {
-    float3(0.17, 0.11, 0.06),   // rock, reading as exposed dirt, which is far enough from the clear colour to be seen against it
+    float3(0.17, 0.11, 0.06),   // rock, the generic fallback
     float3(0.30, 0.38, 0.42),   // ice
-    float3(0.78, 0.82, 0.88)    // snow
+    float3(0.78, 0.82, 0.88),   // snow
+    float3(0.42, 0.31, 0.19),   // sandstone
+    float3(0.16, 0.18, 0.21),   // shale
+    float3(0.47, 0.46, 0.42),   // limestone
+    float3(0.10, 0.10, 0.12),   // basalt
+    float3(0.22, 0.20, 0.21)    // gneiss
 };
 
 struct VertexInput {

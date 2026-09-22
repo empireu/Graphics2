@@ -9,7 +9,7 @@ public class TerrainGraphSourceTests
 {
     private static TerrainGraphSource CreateSource(int seed = 11)
     {
-        return new TerrainGraphSource(seed, new TerrainConfig(), new SurfaceMaterialClassifier(snowLine: 4.0f));
+        return new TerrainGraphSource(seed, new TerrainConfig());
     }
 
     [Fact]

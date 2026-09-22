@@ -5,36 +5,33 @@ using WinterGame.World.Generation;
 namespace WinterGame.World;
 
 /// <summary>
-///     The <see cref="TerrainGraph"/> as a voxel source.
-///     The content channel is the graph's signed distance, and the material channel is the placeholder classifier on that field's own slope.
-///     Owns a density scratch one sample wider than the requested box on x and z, for the slope's finite differences.
+///     The <see cref="TerrainGraph" /> as a voxel source.
+///     The content channel is the graph's signed distance and the material channel is its material root, both filled by one range read of the shared graph.
+///     Owns its sampler and scratch, so one source serves one thread.
 /// </summary>
 public sealed class TerrainGraphSource : IVoxelSource
 {
-    private readonly DensitySampler _elevation;
-    private readonly DensitySampler _density;
-    private readonly SurfaceMaterialClassifier _classifier;
-    private Memory3D<float> _scratch;
+    private readonly TerrainGraph _graph;
+    private readonly DensitySampler _sampler;
+    private readonly DensityScratch _scratch;
 
-    public TerrainGraphSource(int seed, TerrainConfig config, SurfaceMaterialClassifier classifier)
+    public TerrainGraphSource(int seed, TerrainConfig config)
     {
-        ArgumentNullException.ThrowIfNull(classifier);
-
-        var graph = TerrainGraph.Build(seed, config);
-
-        _elevation = new DensitySampler(graph.Elevation);
-        _density = new DensitySampler(graph.Density);
-        _classifier = classifier;
+        _graph = TerrainGraph.Build(seed, config);
+        _scratch = new DensityScratch(_graph.Graph);
+        _sampler = new DensitySampler(_graph.Graph, _scratch);
     }
+
+    public TerrainGraph Graph => _graph;
 
     /// <summary>
     ///     The surface height in meters at one column, for placement.
     /// </summary>
-    public float Elevation(int x, int z) => _elevation.Sample(new Vector3i(x, 0, z), 0);
+    public float Elevation(int x, int z) => _sampler.Sample(new Vector3i(x, 0, z), 0, _graph.ElevationRoot);
 
     public byte SampleContent(Vector3i position)
     {
-        return DensitySampler.ContentFromDensity(_density.Sample(position, 0), 0);
+        return DensitySampler.ContentFromDensity(_sampler.Sample(position, 0, _graph.DensityRoot), 0);
     }
 
     public void Generate(Vector3i min, Vector3i maxInclusive, Span3D<byte> content, Span3D<byte> material)
@@ -58,37 +55,25 @@ public sealed class TerrainGraphSource : IVoxelSource
             throw new ArgumentException("The material box has to be maxInclusive - min + 1 on every axis.", nameof(material));
         }
 
-        var scratchCountX = countX + 2;
-        var scratchCountZ = countZ + 2;
+        _sampler.SampleRange(0, min, maxInclusive);
 
-        if (_scratch.SizeX != scratchCountX || _scratch.SizeY != countY || _scratch.SizeZ != scratchCountZ)
-        {
-            _scratch = Memory3D<float>.Allocate(scratchCountX, countY, scratchCountZ);
-        }
-
-        var scratchMin = new Vector3i(min.X - 1, min.Y, min.Z - 1);
-        var scratchMax = new Vector3i(maxInclusive.X + 1, maxInclusive.Y, maxInclusive.Z + 1);
-
-        _density.SampleRange(0, scratchMin, scratchMax, _scratch.Span);
-        var density = _scratch.Span;
-
-        var spacing = DensitySampler.SampleSpacing(0);
-        var step = 2.0f * spacing;
+        var density = _scratch.RangeOutput(_graph.DensityRoot);
+        var materialIds = _scratch.RangeOutput(_graph.MaterialRoot);
 
         for (var z = 0; z < countZ; z++)
         {
-            for (var x = 0; x < countX; x++)
+            for (var y = 0; y < countY; y++)
             {
-                for (var y = 0; y < countY; y++)
+                for (var x = 0; x < countX; x++)
                 {
-                    var value = density[x + 1, y, z + 1];
-                    var gradientX = (density[x + 2, y, z + 1] - density[x, y, z + 1]) / step;
-                    var gradientZ = (density[x + 1, y, z + 2] - density[x + 1, y, z]) / step;
-                    var slope = 1.0f / MathF.Sqrt(gradientX * gradientX + 1.0f + gradientZ * gradientZ);
+                    var index = x + y * countX + z * countX * countY;
+                    var contentByte = DensitySampler.ContentFromDensity(density[index], 0);
 
-                    content[x, y, z] = DensitySampler.ContentFromDensity(value, 0);
-                    material[x, y, z] = content[x, y, z] > WorldConstants.ContentIsoLevel
-                        ? _classifier.Classify(slope, (min.Y + y) * spacing)
+                    content[x, y, z] = contentByte;
+
+                    // Air carries no material, and the graph's root is already one of the table's ids, so the clamp only guards a bad table:
+                    material[x, y, z] = contentByte > WorldConstants.ContentIsoLevel
+                        ? (byte)Math.Clamp(materialIds[index], 0.0f, 254.0f)
                         : SurfaceMaterial.Null;
                 }
             }
