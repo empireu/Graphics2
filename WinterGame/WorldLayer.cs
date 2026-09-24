@@ -60,6 +60,9 @@ internal sealed unsafe class WorldLayer : IDisposable
     private float _foldWavelength = 48.0f;
     private float _snowThickness = 0.35f;
     private float _iceThickness = 0.65f;
+    private float _fairingRange = 0.5f;
+    private float _fairingStep = 0.5f;
+    private int _fairingIterations = 4;
 
     // The prototype cuts a notch out of the near corner so the strata are visible from the camera, which is not a worldgen stage:
     private bool _cutEnabled = true;
@@ -78,12 +81,11 @@ internal sealed unsafe class WorldLayer : IDisposable
     private const int MaxSections = 1024;
 
     /// <summary>
-    ///     Has to match the material volume array size in Shader.slang, which BindTextureArray checks.
+    ///     The relaxation margin is one cell per iteration, so the read box grows with it.
     /// </summary>
-    private const int VolumeSlots = 1024;
+    private const int MaxRelaxIterations = 8;
 
     private MeshArena? _arena;
-    private VolumeArena? _volumes;
     private readonly List<Chunk> _chunks = [];   
     private bool _rebuildRequested = true;
     private long _solidVoxels;
@@ -95,7 +97,6 @@ internal sealed unsafe class WorldLayer : IDisposable
     {
         public Vector3i Origin;
         public MeshAllocation Allocation;
-        public VolumeHandle Volume;
         public int VertexCount;
         public int IndexCount;
     }
@@ -175,7 +176,7 @@ internal sealed unsafe class WorldLayer : IDisposable
             FrontFace = FrontFace.CounterClockwise,
             Wireframe = false,
             Blends = [BlendState.None],
-            VertexLayout = VertexLayout.FromStruct<SurfaceNetsVertex>(),
+            VertexLayout = VertexLayout.FromStruct<VoxelVertex>(),
             PushConstantLayout = PushConstantLayout.FromStruct<PushConstants>(),
             SsboLayouts = new Dictionary<string, SsboLayout>
             {
@@ -185,7 +186,7 @@ internal sealed unsafe class WorldLayer : IDisposable
         
         _arena = new MeshArena(factory, new MeshArenaDescription
         {
-            VertexStride = sizeof(SurfaceNetsVertex),
+            VertexStride = sizeof(VoxelVertex),
             IndexType = IndexType.UInt16,
             VertexClasses =
             [
@@ -366,11 +367,6 @@ internal sealed unsafe class WorldLayer : IDisposable
                     ViewProj = _camera.ViewProj
                 });
 
-                var arena = _arena!;
-                var volumes = _volumes!;
-
-                worldPass.BindTextureArray("materialVolumes", volumes.Array);
-
                 var records = frame.AllocateStorage(_chunks.Count * Unsafe.SizeOf<DrawRecord>());
                 var recordSpan = MemoryMarshal.Cast<byte, DrawRecord>(records.Data);
                 for (var index = 0; index < _chunks.Count; index++)
@@ -379,11 +375,7 @@ internal sealed unsafe class WorldLayer : IDisposable
                     recordSpan[index] = new DrawRecord
                     {
                         Origin = new Vector3(chunk.Origin.X, chunk.Origin.Y, chunk.Origin.Z),
-                        VoxelSize = WorldConstants.VoxelSize,
-                        MaterialVolume = chunk.Volume.Index,
-                        MaterialSizeX = (uint)volumes.SizeX,
-                        MaterialSizeY = (uint)volumes.SizeY,
-                        MaterialSizeZ = (uint)volumes.SizeZ
+                        VoxelSize = WorldConstants.VoxelSize
                     };
                 }
 
@@ -475,6 +467,19 @@ internal sealed unsafe class WorldLayer : IDisposable
             ImGui.Text($"Vertices: {_vertexCount}");
             ImGui.Text($"Indices: {_indexCount}");
 
+            ImGui.Separator();
+            ImGui.Text("Camera:");
+
+            var forward = _camera.Forward;
+            var facing = MathF.Abs(forward.X) >= MathF.Abs(forward.Z)
+                ? forward.X >= 0.0f ? "+X" : "-X"
+                : forward.Z >= 0.0f ? "+Z" : "-Z";
+
+            ImGui.Text($"Position: {_camera.Position.X:F1}, {_camera.Position.Y:F1}, {_camera.Position.Z:F1} m");
+            ImGui.Text($"Forward: {forward.X:F2}, {forward.Y:F2}, {forward.Z:F2}");
+            ImGui.Text($"Facing: {facing}");
+            ImGui.Text($"Yaw: {_camera.Yaw * 180.0f / MathF.PI:F0} deg, Pitch: {_camera.Pitch * 180.0f / MathF.PI:F0} deg");
+
             var arenaStats = _arena!.GetStats();
 
             ImGui.Separator();
@@ -506,18 +511,32 @@ internal sealed unsafe class WorldLayer : IDisposable
             _iceThickness = MathF.Max(_iceThickness, 0.0f);
 
             ImGui.Separator();
+            ImGui.Text("Fairing:");
+            if (ImGui.SliderInt("Iterations", ref _fairingIterations, 0, MaxRelaxIterations))
+            {
+                _rebuildRequested = true;
+            }
+
+            if (ImGui.SliderFloat("Step", ref _fairingStep, 0.0f, 1.0f))
+            {
+                _rebuildRequested = true;
+            }
+
+            if (ImGui.SliderFloat("Range (voxels)", ref _fairingRange, 0.0f, 1.5f))
+            {
+                _rebuildRequested = true;
+            }
+
+            _fairingIterations = Math.Clamp(_fairingIterations, 0, MaxRelaxIterations);
+            _fairingStep = Math.Clamp(_fairingStep, 0.0f, 1.0f);
+            _fairingRange = Math.Max(_fairingRange, 0.0f);
+
+            ImGui.Separator();
             ImGui.Text("Prototype cut:");
             ImGui.Checkbox("Cut enabled", ref _cutEnabled);
             ImGui.InputFloat("Cut width (m)", ref _cutWidth, 1.0f);
             ImGui.InputFloat("Cut depth (m)", ref _cutDepth, 1.0f);
             ImGui.InputFloat("Cut floor (m)", ref _cutFloorY, 1.0f);
-
-            if (_volumes != null)
-            {
-                var volumeStats = _volumes.GetStats();
-
-                ImGui.Text($"Volumes: {volumeStats.UsedSlots} used, {volumeStats.Created} created of {volumeStats.SlotCount} slot(s), {volumeStats.Bytes / 1024} KiB");
-            }
 
             var gpuOnly = _app.Factory.GetAllocatorStats(AllocatorFamily.GpuOnly);
             var cpuToGpu = _app.Factory.GetAllocatorStats(AllocatorFamily.CpuToGpu);
@@ -542,7 +561,6 @@ internal sealed unsafe class WorldLayer : IDisposable
         foreach (var chunk in _chunks)
         {
             arena.MarkFree(frame, chunk.Allocation);
-            _volumes?.MarkFree(frame, chunk.Volume);
         }
 
         _chunks.Clear();
@@ -552,9 +570,9 @@ internal sealed unsafe class WorldLayer : IDisposable
 
         var cellCount = new Vector3i(_chunkCells, _chunkCells, _chunkCells);
 
-        // Every section reads the same window shape, so the volume extent comes from the same box the content is built from:
-        var window = SurfaceNetsMesher.GetSampleRange(Vector3i.Zero, cellCount);
-        var volumes = EnsureVolumeArena(frame, window.Max.X - window.Min.X + 1, window.Max.Y - window.Min.Y + 1, window.Max.Z - window.Min.Z + 1);
+        // Each relaxation pass reaches one cell further, so the chunk is read with that many cells of margin:
+        var relaxHalo = Math.Clamp(_fairingIterations, 0, MaxRelaxIterations);
+        var halo = new Vector3i(relaxHalo);
 
         var config = new TerrainConfig
         {
@@ -604,7 +622,8 @@ internal sealed unsafe class WorldLayer : IDisposable
                 for (var sectionX = 0; sectionX < _sectionsX; sectionX++)
                 {
                     var cellMin = new Vector3i(sectionX * _chunkCells, originY + sectionY * _chunkCells, sectionZ * _chunkCells);
-                    var box = SurfaceNetsMesher.GetSampleRange(cellMin, cellCount);
+                    var box = SurfaceNetsMesher.GetSampleRange(cellMin - halo, cellCount + halo + halo);
+                    var localCellMin = cellMin - box.Min;
 
                     var content = Memory3D<byte>.Allocate(
                         box.Max.X - box.Min.X + 1,
@@ -621,23 +640,33 @@ internal sealed unsafe class WorldLayer : IDisposable
                         ClearCut(content.Span, material.Span, box.Min, cutMaxX, cutMaxZ, cutMinY);
                     }
 
-                    _solidVoxels += CountSolid(content.Span);
-                    CountMaterials(content.Span, material.Span, materialCounts, solidCounts, ref interiorCount);
+                    var sampleCount = cellCount + new Vector3i(1);
+                    _solidVoxels += CountSolid(content.Span, localCellMin, sampleCount);
+                    CountMaterials(content.Span, material.Span, localCellMin, sampleCount, materialCounts, solidCounts, ref interiorCount);
 
-                    var vertices = new List<SurfaceNetsVertex>();
+                    var vertices = new List<VoxelVertex>();
                     var indices = new List<int>();
 
-                    SurfaceNetsMesher.Mesh(new SurfaceNetsMeshingDescription
+                    MultiLabelSurfaceNets.Mesh(new MultiLabelSurfaceNetsDescription
                     {
                         Content = content,
+                        Material = material,
                         IsoLevel = WorldConstants.ContentIsoLevel,
+                        CellMin = localCellMin,
+                        CellCount = cellCount,
                         Vertices = vertices,
-                        Indices = indices
+                        Indices = indices,
+                        Fairing = new SurfaceFairingSettings
+                        {
+                            AllowedRange = _fairingRange,
+                            StepSize = _fairingStep,
+                            Iterations = relaxHalo
+                        }
                     });
 
                     if (indices.Count == 0)
                     {
-                        // A fully solid or fully air section emits no geometry, so it costs neither an arena slot nor a material volume:
+                        // A fully solid or fully air section emits no geometry, so it costs no arena slot:
                         continue;
                     }
 
@@ -657,14 +686,10 @@ internal sealed unsafe class WorldLayer : IDisposable
                         MemoryMarshal.AsBytes(indexScratch.AsSpan())
                     );
 
-                    // The material window is exactly the box the mesher read, so a volume texel is a sample and the shader indexes it with the mesh's own coordinates:
-                    var volume = volumes.Upload(frame, material.Span.Data);
-
                     _chunks.Add(new Chunk
                     {
                         Origin = box.Min,
                         Allocation = allocation,
-                        Volume = volume,
                         VertexCount = vertices.Count,
                         IndexCount = indexScratch.Length
                     });
@@ -771,33 +796,6 @@ internal sealed unsafe class WorldLayer : IDisposable
     }
 
     /// <summary>
-    ///     The arena the material volumes live in. Its extent has to equal the mesh window, so a change of the chunk size replaces it, because an image cannot be resized.
-    /// </summary>
-    private VolumeArena EnsureVolumeArena(Frame frame, int sizeX, int sizeY, int sizeZ)
-    {
-        if (_volumes != null && _volumes.SizeX == sizeX && _volumes.SizeY == sizeY && _volumes.SizeZ == sizeZ)
-        {
-            return _volumes;
-        }
-
-        if (_volumes != null)
-        {
-            // The frames in flight may still read the images of the old extent, so it is retired through the frame rather than destroyed here:
-            frame.DisposeLater(_volumes);
-        }
-
-        _volumes = new VolumeArena(_app.Factory, new VolumeArenaDescription
-        {
-            SlotCount = VolumeSlots,
-            SizeX = sizeX,
-            SizeY = sizeY,
-            SizeZ = sizeZ
-        });
-
-        return _volumes;
-    }
-
-    /// <summary>
     ///     Orders the chunks so that every run of chunks sharing a pair of buffers is contiguous.
     /// </summary>
     private static int CompareChunksByBuffer(Chunk left, Chunk right)
@@ -866,16 +864,21 @@ internal sealed unsafe class WorldLayer : IDisposable
         return pairs.Count;
     }
 
-    private static int CountSolid(Span3D<byte> content)
+    private static int CountSolid(Span3D<byte> content, Vector3i min, Vector3i count)
     {
         var solid = 0;
-        var data = content.Data;
 
-        for (var index = 0; index < data.Length; index++)
+        for (var z = 0; z < count.Z; z++)
         {
-            if (data[index] > 127)
+            for (var y = 0; y < count.Y; y++)
             {
-                solid++;
+                for (var x = 0; x < count.X; x++)
+                {
+                    if (content[min.X + x, min.Y + y, min.Z + z] > 127)
+                    {
+                        solid++;
+                    }
+                }
             }
         }
 
@@ -886,34 +889,38 @@ internal sealed unsafe class WorldLayer : IDisposable
     ///     Counts the ids of the samples the reconstruction can read, which are the solid ones within a voxel of the surface, and fills <paramref name="solidCounts" /> with every solid sample.
     ///     Anything deeper has a saturated field and no gradient, and the volume's interior is never sampled, so the near-surface counts are the ones the shader can show.
     /// </summary>
-    private static void CountMaterials(Span3D<byte> content, Span3D<byte> material, Span<long> surfaceCounts, Span<long> solidCounts, ref long interiorCount)
+    private static void CountMaterials(Span3D<byte> content, Span3D<byte> material, Vector3i min, Vector3i count, Span<long> surfaceCounts, Span<long> solidCounts, ref long interiorCount)
     {
-        var contentData = content.Data;
-        var materialData = material.Data;
-
-        for (var index = 0; index < materialData.Length; index++)
+        for (var z = 0; z < count.Z; z++)
         {
-            var id = materialData[index];
-
-            if (id == SurfaceMaterial.Null)
+            for (var y = 0; y < count.Y; y++)
             {
-                continue;
-            }
+                for (var x = 0; x < count.X; x++)
+                {
+                    var contentValue = content[min.X + x, min.Y + y, min.Z + z];
+                    var id = material[min.X + x, min.Y + y, min.Z + z];
 
-            if (id < solidCounts.Length)
-            {
-                solidCounts[id]++;
-            }
+                    if (id == SurfaceMaterial.Null)
+                    {
+                        continue;
+                    }
 
-            if (contentData[index] == 255)
-            {
-                interiorCount++;
-                continue;
-            }
+                    if (id < solidCounts.Length)
+                    {
+                        solidCounts[id]++;
+                    }
 
-            if (id < surfaceCounts.Length)
-            {
-                surfaceCounts[id]++;
+                    if (contentValue == 255)
+                    {
+                        interiorCount++;
+                        continue;
+                    }
+
+                    if (id < surfaceCounts.Length)
+                    {
+                        surfaceCounts[id]++;
+                    }
+                }
             }
         }
     }
@@ -961,6 +968,5 @@ internal sealed unsafe class WorldLayer : IDisposable
         _lineRenderer3D.Dispose();
         _pipeline.Dispose();
         _arena?.Dispose();
-        _volumes?.Dispose();
     }
 }

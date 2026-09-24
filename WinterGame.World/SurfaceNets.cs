@@ -45,6 +45,11 @@ public sealed class SurfaceNetsMeshingDescription
     public required byte IsoLevel { get; init; }
     
     /// <summary>
+    ///     Records the cells each vertex came from.
+    /// </summary>
+    public List<Vector3i>? VertexCells { get; init; }
+    
+    /// <summary>
     ///     The vertices generated. One per crossing cell.
     /// </summary>
     public required List<SurfaceNetsVertex> Vertices { get; init; }
@@ -211,6 +216,7 @@ public class SurfaceNetsMesher
 
         var content = description.Content.Span;
         var iso = description.IsoLevel;
+        var vertexCells = description.VertexCells;
         var vertices = description.Vertices;
         var indices = description.Indices;
 
@@ -303,7 +309,9 @@ public class SurfaceNetsMesher
                     // Average of the crossing points, kept as an offset inside the cell:
                     var local = new Vector3(sumX / crossings, sumY / crossings, sumZ / crossings);
                     var vertexIndex = vertices.Count;
-
+                    
+                    vertexCells?.Add(new Vector3i(sx, sy, sz));
+                    
                     vertices.Add(new SurfaceNetsVertex
                     {
                         Position = new Vector3(sx + local.X, sy + local.Y, sz + local.Z),

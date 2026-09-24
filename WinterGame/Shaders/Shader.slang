@@ -1,29 +1,11 @@
 struct DrawRecord {
     float3 origin;
     float voxelSize;
-    uint materialVolume;
-    uint materialSizeX;
-    uint materialSizeY;
-    uint materialSizeZ;
 };
 
 [[vk::binding(0, 0)]] StructuredBuffer<DrawRecord> draws;
 
-// One texel per voxel sample of the chunk that owns it, so a pixel reads it with the mesh's own local coordinates and needs no material attribute in the vertex:
-[[vk::binding(0, 1)]] Texture3D<uint> materialVolumes[1024];
-
-static const uint MaterialRock = 0;
-static const uint MaterialIce = 1;
-static const uint MaterialSnow = 2;
-static const uint MaterialSandstone = 3;
-static const uint MaterialShale = 4;
-static const uint MaterialLimestone = 5;
-static const uint MaterialBasalt = 6;
-static const uint MaterialGneiss = 7;
 static const uint MaterialCount = 8;
-
-// Air carries no material, and a cell's reconstruction skips those corners:
-static const uint MaterialNull = 255;
 
 // Linear albedo, because the swapchain is an sRGB format and the write converts it:
 static const float3 MaterialAlbedo[MaterialCount] = {
@@ -40,17 +22,16 @@ static const float3 MaterialAlbedo[MaterialCount] = {
 struct VertexInput {
     float3 position;
     float3 normal;
+
+    // The id of the vertex's own cell, one per cell, so a triangle reads it through its provoking vertex:
+    uint material;
 };
 
 struct VertexOutput {
     float4 position : SV_Position;
     float3 normal : NORMAL;
 
-    // Chunk-local voxel units, which is exactly the material volume's texel space:
-    float3 voxelPosition : TEXCOORD0;
-
-    nointerpolation uint materialVolume : TEXCOORD1;
-    nointerpolation uint3 materialSize : TEXCOORD2;
+    nointerpolation uint material : MATERIAL;
 };
 
 struct PushConstants {
@@ -71,75 +52,17 @@ VertexOutput vsMain(VertexInput input, uint recordIndex : SV_StartInstanceLocati
 
     output.position = mul(float4(worldPosition, 1.0), pc.viewProj);
     output.normal = input.normal.xyz;
-    output.voxelPosition = input.position.xyz;
-    output.materialVolume = draw.materialVolume;
-    output.materialSize = uint3(draw.materialSizeX, draw.materialSizeY, draw.materialSizeZ);
+    output.material = input.material;
     return output;
-}
-
-// Trilinear weight of one cell corner, whose index packs x in bit 0, y in bit 1 and z in bit 2:
-float CornerWeight(uint corner, float3 fraction) {
-    float x = ((corner & 1) != 0) ? fraction.x : 1.0 - fraction.x;
-    float y = ((corner & 2) != 0) ? fraction.y : 1.0 - fraction.y;
-    float z = ((corner & 4) != 0) ? fraction.z : 1.0 - fraction.z;
-    return x * y * z;
-}
-
-uint LoadCorner(uint volume, int3 cell, uint corner) {
-    int3 offset = int3(corner & 1, (corner >> 1) & 1, (corner >> 2) & 1);
-    return materialVolumes[volume].Load(int4(cell + offset, 0));
-}
-
-// Reconstructs which material the surface belongs to at this pixel.
-// Each material's weight is the trilinear interpolation of its own indicator over the cell's eight corner ids, so the boundary between two materials lands where their weights cross rather than on a triangle edge, and the weights are normalized over the solid corners because air carries no material.
-float3 ReconstructAlbedo(uint volume, int3 size, float3 voxelPosition) {
-    int3 maxCell = int3(size) - 1;
-    int3 cell = clamp(int3(floor(voxelPosition)), int3(0, 0, 0), maxCell - 1);
-    float3 fraction = voxelPosition - float3(cell);
-
-    float weights[MaterialCount];
-    float solidWeight = 0.0;
-
-    for (uint material = 0; material < MaterialCount; material++) {
-        weights[material] = 0.0;
-    }
-
-    for (uint corner = 0; corner < 8; corner++) {
-        uint id = LoadCorner(volume, cell, corner);
-
-        if (id == MaterialNull) {
-            continue;
-        }
-
-        float weight = CornerWeight(corner, fraction);
-        solidWeight += weight;
-
-        if (id < MaterialCount) {
-            weights[id] += weight;
-        }
-    }
-
-    float3 albedo = MaterialAlbedo[MaterialRock];
-    float best = -1.0;
-
-    if (solidWeight > 0.0) {
-        for (uint material = 0; material < MaterialCount; material++) {
-            float normalised = weights[material] / solidWeight;
-
-            if (normalised > best) {
-                best = normalised;
-                albedo = MaterialAlbedo[material];
-            }
-        }
-    }
-
-    return albedo;
 }
 
 [shader("fragment")]
 float4 fsMain(VertexOutput input) : SV_TARGET {
     float3 normal = normalize(input.normal);
-    float3 albedo = ReconstructAlbedo(input.materialVolume, input.materialSize, input.voxelPosition);
+
+    // The air id is out of the palette, and a cell with no solid corner falls back to rock:
+    uint material = input.material < MaterialCount ? input.material : 0;
+    float3 albedo = MaterialAlbedo[material];
 
     static const float3 sunDirection = normalize(float3(0.35, 0.9, -0.35));
     static const float3 sunColor = float3(1.0, 0.96, 0.90);
