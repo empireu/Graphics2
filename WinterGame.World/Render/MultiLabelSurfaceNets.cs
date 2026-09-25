@@ -1,5 +1,7 @@
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 using Graphics2.Data;
 using Graphics2.Mathematics;
 
@@ -197,6 +199,7 @@ public static class MultiLabelSurfaceNets
 
     internal const int FaceCount = 6;
     internal const int BaseEdgeCount = 3;
+    private const int SimdWidth = 32;
 
     public enum FaceCrossingType : byte
     {
@@ -349,15 +352,42 @@ public static class MultiLabelSurfaceNets
             cornerOffsets[corner] = (corner & 1) + ((corner >> 1) & 1) * sampleStrideX + ((corner >> 2) & 1) * sampleStrideXy;
         }
 
+        ref var contentRef = ref MemoryMarshal.GetReference(content.Data);
+
         for (var lz = vertexMin.Z; lz < vertexMax.Z; lz++)
         {
             for (var ly = vertexMin.Y; ly < vertexMax.Y; ly++)
             {
                 var rowOffset = ly * sampleStrideX + lz * sampleStrideXy;
+                var uniformBlockStart = vertexMin.X - SimdWidth;
+                var uniformBits = 0u;
 
                 for (var lx = vertexMin.X; lx < vertexMax.X; lx++)
                 {
                     var cellOffset = lx + rowOffset;
+
+                    // One vector test rejects a run of cells that cannot hold a surface, before any per-cell work:
+                    if (Vector256.IsHardwareAccelerated && lx + SimdWidth <= vertexMax.X)
+                    {
+                        if (lx - uniformBlockStart >= SimdWidth)
+                        {
+                            uniformBlockStart = lx;
+                            uniformBits = UniformCellBits(ref Unsafe.Add(ref contentRef, cellOffset), sampleStrideX, sampleStrideXy, iso);
+
+                            // A block with no crossing cell skips its whole run; the loop's own increment makes up the rest:
+                            if (uniformBits == uint.MaxValue)
+                            {
+                                lx += SimdWidth - 1;
+                                continue;
+                            }
+                        }
+
+                        if (((uniformBits >> (lx - uniformBlockStart)) & 1u) != 0)
+                        {
+                            continue;
+                        }
+                    }
+
                     var mask = 0;
 
                     for (var corner = 0; corner < 8; corner++)
@@ -704,6 +734,37 @@ public static class MultiLabelSurfaceNets
     private static int CellVertexIndex(ref MultiLabelSurfaceNetsStateStorage.State state, Vector3i range, Vector3i vertexMin, int lx, int ly, int lz)
     {
         return state.CellIndex(CellOffset(range, vertexMin, lx, ly, lz));
+    }
+
+    /// <summary>
+    ///     Returns one bit per lane, set where a cell of <see cref="SimdWidth"/> consecutive x positions has all eight of its samples on the same side of the iso level.
+    ///     The four sample planes the corners come from are the row itself, the y+1 row, the z+1 row and the y+1,z+1 row.
+    ///     The comparison is unsigned, which is the byte case <see cref="Vector256.GreaterThan{T}"/> handles correctly.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private static uint UniformCellBits(ref byte plane00, int strideX, int strideXy, byte iso)
+    {
+        var isoVector = Vector256.Create(iso);
+
+        var s0 = Vector256.GreaterThan(Unsafe.ReadUnaligned<Vector256<byte>>(ref plane00), isoVector);
+        var s1 = Vector256.GreaterThan(Unsafe.ReadUnaligned<Vector256<byte>>(ref Unsafe.Add(ref plane00, 1)), isoVector);
+
+        ref var plane10 = ref Unsafe.Add(ref plane00, strideX);
+        var s2 = Vector256.GreaterThan(Unsafe.ReadUnaligned<Vector256<byte>>(ref plane10), isoVector);
+        var s3 = Vector256.GreaterThan(Unsafe.ReadUnaligned<Vector256<byte>>(ref Unsafe.Add(ref plane10, 1)), isoVector);
+
+        ref var plane01 = ref Unsafe.Add(ref plane00, strideXy);
+        var s4 = Vector256.GreaterThan(Unsafe.ReadUnaligned<Vector256<byte>>(ref plane01), isoVector);
+        var s5 = Vector256.GreaterThan(Unsafe.ReadUnaligned<Vector256<byte>>(ref Unsafe.Add(ref plane01, 1)), isoVector);
+
+        ref var plane11 = ref Unsafe.Add(ref plane01, strideX);
+        var s6 = Vector256.GreaterThan(Unsafe.ReadUnaligned<Vector256<byte>>(ref plane11), isoVector);
+        var s7 = Vector256.GreaterThan(Unsafe.ReadUnaligned<Vector256<byte>>(ref Unsafe.Add(ref plane11, 1)), isoVector);
+
+        var allSolid = s0 & s1 & s2 & s3 & s4 & s5 & s6 & s7;
+        var anySolid = s0 | s1 | s2 | s3 | s4 | s5 | s6 | s7;
+
+        return (allSolid | ~anySolid).ExtractMostSignificantBits();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
