@@ -745,6 +745,53 @@ public static class MultiLabelSurfaceNets
     }
 
     /// <summary>
+    ///     Resolves the vertex across each face once per vertex, so a Jacobi sweep only has to gather positions.
+    ///     A face records -1 when the vertex does not pull on it, when the neighbor is outside the vertex range, or when that cell holds no vertex.
+    ///     A surface vertex pulls on every face the surface crosses; an edge or corner vertex pulls only on its junction faces, so it slides along the material boundary instead of being drawn across it.
+    /// </summary>
+    private static void BuildRelaxNeighbors(ref MultiLabelSurfaceNetsStateStorage.State state, int baseVertexCount, Vector3i range, Vector3i vertexMin)
+    {
+        var maxX = vertexMin.X + range.X;
+        var maxY = vertexMin.Y + range.Y;
+        var maxZ = vertexMin.Z + range.Z;
+
+        for (var index = 0; index < baseVertexCount; index++)
+        {
+            var cell = state.LocalCells(index);
+            var vertexType = state.VertexType(index);
+
+            for (var face = 0; face < FaceCount; face++)
+            {
+                var crossingType = state.FaceType(index * FaceCount + face);
+                var useFace = vertexType == VertexType.Surface
+                    ? crossingType != FaceCrossingType.None
+                    : crossingType == FaceCrossingType.Junction;
+
+                var neighbor = -1;
+
+                if (useFace)
+                {
+                    var nx = cell.X + FaceOffsetX[face];
+                    var ny = cell.Y + FaceOffsetY[face];
+                    var nz = cell.Z + FaceOffsetZ[face];
+
+                    if (nx >= vertexMin.X && ny >= vertexMin.Y && nz >= vertexMin.Z && nx < maxX && ny < maxY && nz < maxZ)
+                    {
+                        var neighborIndex = CellVertexIndex(ref state, range, vertexMin, nx, ny, nz);
+
+                        if (neighborIndex >= 0)
+                        {
+                            neighbor = neighborIndex;
+                        }
+                    }
+                }
+
+                state.NeighborIndex(index * FaceCount + face) = neighbor;
+            }
+        }
+    }
+
+    /// <summary>
     ///     Returns one bit per lane, set where a cell of <see cref="SimdWidth"/> consecutive x positions has all eight of its samples on the same side of the iso level.
     ///     The four sample planes the corners come from are the row itself, the y+1 row, the z+1 row and the y+1,z+1 row.
     ///     The comparison is unsigned, which is the byte case <see cref="Vector256.GreaterThan{T}"/> handles correctly.
@@ -902,6 +949,9 @@ public static class MultiLabelSurfaceNets
 
         var allowedRange = settings.AllowedRange;
 
+        // Resolve each vertex's face neighbors once, so the sweeps below do not repeat the bounds test and the cell map lookup.
+        BuildRelaxNeighbors(ref state, vertices.Count, range, vertexMin);
+
         // Jacobi needs the previous iteration to stay intact while the next one is written, hence two buffers and a swap rather than an in-place sweep.
         // This is the property that makes two units agree on their shared cells.
         for (var index = 0; index < vertices.Count; index++)
@@ -913,43 +963,19 @@ public static class MultiLabelSurfaceNets
         {
             for (var index = 0; index < vertices.Count; index++)
             {
-                var cell = state.LocalCells(index);
-                var vertexType = state.VertexType(index);
                 var sum = Vector3.Zero;
                 var count = 0;
 
                 for (var face = 0; face < FaceCount; face++)
                 {
-                    var crossingType = state.FaceType(index * FaceCount + face);
+                    var neighborIndex = state.NeighborIndex(index * FaceCount + face);
 
-                    // A surface vertex is pulled by every face the surface crosses, so it smooths freely.
-                    // An edge or corner vertex is pulled only along its junction faces, so it slides along the material boundary instead of being drawn across it, which is what keeps the boundary sharp.
-                    var useFace = vertexType == VertexType.Surface
-                        ? crossingType != FaceCrossingType.None
-                        : crossingType == FaceCrossingType.Junction;
-
-                    if (!useFace)
+                    if (neighborIndex < 0)
                     {
                         continue;
                     }
 
-                    var nx = cell.X + FaceOffsetX[face];
-                    var ny = cell.Y + FaceOffsetY[face];
-                    var nz = cell.Z + FaceOffsetZ[face];
-
-                    if (nx < vertexMin.X || ny < vertexMin.Y || nz < vertexMin.Z || nx >= vertexMin.X + range.X || ny >= vertexMin.Y + range.Y || nz >= vertexMin.Z + range.Z)
-                    {
-                        continue;
-                    }
-
-                    var neighbourIndex = CellVertexIndex(ref state, range, vertexMin, nx, ny, nz);
-
-                    if (neighbourIndex < 0)
-                    {
-                        continue;
-                    }
-
-                    sum += state.Current(neighbourIndex);
+                    sum += state.Current(neighborIndex);
                     count++;
                 }
 

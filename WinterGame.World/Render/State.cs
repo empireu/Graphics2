@@ -23,6 +23,7 @@ public sealed class MultiLabelSurfaceNetsStateStorage
     private readonly Vector3[] _next;
     private readonly int[] _remap;
     private readonly int[] _touchedCells;
+    private readonly int[] _neighborIndices;
     
     public MultiLabelSurfaceNetsStateStorage(Vector3i cellCount, int relaxHalo)
     {
@@ -53,6 +54,7 @@ public sealed class MultiLabelSurfaceNetsStateStorage
         _next = new Vector3[maxBaseVertices];
         _remap = new int[maxVertices];
         _touchedCells = new int[maxBaseVertices];
+        _neighborIndices = new int[maxBaseVertices * MultiLabelSurfaceNets.FaceCount];
 
         // The cell map stays -1 between calls because every write records its flat index and Dispose clears it again.
         Array.Fill(_cellIndices, -1);
@@ -73,7 +75,8 @@ public sealed class MultiLabelSurfaceNetsStateStorage
             CurrentStore = _current,
             NextStore = _next,
             RemapStore = _remap,
-            TouchedCells = _touchedCells
+            TouchedCells = _touchedCells,
+            NeighborIndicesStore = _neighborIndices
         };
     }
     
@@ -91,6 +94,7 @@ public sealed class MultiLabelSurfaceNetsStateStorage
         internal Vector3[] NextStore;
         internal int[] RemapStore;
         internal int[] TouchedCells;
+        internal int[] NeighborIndicesStore;
         internal int TouchedCount;
 
         public int LocalCellsCount;
@@ -188,6 +192,13 @@ public sealed class MultiLabelSurfaceNetsStateStorage
         {
             Debug.Assert((uint)index < (uint)RemapStore.Length, "Tried to read a compact remap out-of-range");
             return ref RemapStore[index];
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ref int NeighborIndex(int index)
+        {
+            Debug.Assert((uint)index < (uint)NeighborIndicesStore.Length, "Tried to read a relax neighbor out-of-range");
+            return ref NeighborIndicesStore[index];
         }
 
         #endregion

@@ -130,7 +130,7 @@ public struct SectionPos : IEquatable<SectionPos>
 
     /// <summary>
     ///     The packed key of this section, which is its identity: what to compare, what to key a dictionary on, and what to unpack back into a position.
-    ///     Packed coordinates are not contiguous, so a neighbour step has to go through <see cref="SectionPos(int, int, int)" /> rather than through arithmetic on the key.
+    ///     Packed coordinates are not contiguous, so a neighbor step has to go through <see cref="SectionPos(int, int, int)" /> rather than through arithmetic on the key.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ulong GetKey() => Pack(X, Y, Z);
