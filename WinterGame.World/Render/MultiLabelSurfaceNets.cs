@@ -347,6 +347,9 @@ public static class MultiLabelSurfaceNets
         var sampleStrideX = content.SizeX;
         var sampleStrideXy = sampleStrideX * content.SizeY;
 
+        // A partial trailing block still loads a whole vector past its last cell, so the read has to stay inside the span:
+        var simdMaxCellOffset = content.Length - sampleStrideX - sampleStrideXy - SimdWidth - 1;
+
         for (var corner = 0; corner < 8; corner++)
         {
             cornerOffsets[corner] = (corner & 1) + ((corner >> 1) & 1) * sampleStrideX + ((corner >> 2) & 1) * sampleStrideXy;
@@ -359,7 +362,8 @@ public static class MultiLabelSurfaceNets
             for (var ly = vertexMin.Y; ly < vertexMax.Y; ly++)
             {
                 var rowOffset = ly * sampleStrideX + lz * sampleStrideXy;
-                var uniformBlockStart = vertexMin.X - SimdWidth;
+                var uniformBlockStart = vertexMin.X;
+                var uniformBlockEnd = vertexMin.X;
                 var uniformBits = 0u;
 
                 for (var lx = vertexMin.X; lx < vertexMax.X; lx++)
@@ -367,17 +371,21 @@ public static class MultiLabelSurfaceNets
                     var cellOffset = lx + rowOffset;
 
                     // One vector test rejects a run of cells that cannot hold a surface, before any per-cell work:
-                    if (Vector256.IsHardwareAccelerated && lx + SimdWidth <= vertexMax.X)
+                    if (Vector256.IsHardwareAccelerated && cellOffset <= simdMaxCellOffset)
                     {
-                        if (lx - uniformBlockStart >= SimdWidth)
+                        if (lx >= uniformBlockEnd)
                         {
                             uniformBlockStart = lx;
-                            uniformBits = UniformCellBits(ref Unsafe.Add(ref contentRef, cellOffset), sampleStrideX, sampleStrideXy, iso);
+
+                            var laneCount = Math.Min(SimdWidth, vertexMax.X - lx);
+                            uniformBlockEnd = lx + laneCount;
+                            var uniformValidBits = laneCount == SimdWidth ? uint.MaxValue : (1u << laneCount) - 1;
+                            uniformBits = UniformCellBits(ref Unsafe.Add(ref contentRef, cellOffset), sampleStrideX, sampleStrideXy, iso) & uniformValidBits;
 
                             // A block with no crossing cell skips its whole run; the loop's own increment makes up the rest:
-                            if (uniformBits == uint.MaxValue)
+                            if (uniformBits == uniformValidBits)
                             {
-                                lx += SimdWidth - 1;
+                                lx = uniformBlockEnd - 1;
                                 continue;
                             }
                         }
@@ -740,6 +748,7 @@ public static class MultiLabelSurfaceNets
     ///     Returns one bit per lane, set where a cell of <see cref="SimdWidth"/> consecutive x positions has all eight of its samples on the same side of the iso level.
     ///     The four sample planes the corners come from are the row itself, the y+1 row, the z+1 row and the y+1,z+1 row.
     ///     The comparison is unsigned, which is the byte case <see cref="Vector256.GreaterThan{T}"/> handles correctly.
+    ///     It reads a full vector regardless of how many lanes the caller uses, so the caller must prove the read stays inside the span.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private static uint UniformCellBits(ref byte plane00, int strideX, int strideXy, byte iso)
