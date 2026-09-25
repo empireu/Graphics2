@@ -341,32 +341,34 @@ public static class MultiLabelSurfaceNets
                 {
                     var cellOffset = lx + rowOffset;
                     var mask = 0;
-                    materialCounts.Clear();
 
                     for (var corner = 0; corner < 8; corner++)
                     {
-                        var offset = cellOffset + cornerOffsets[corner];
-
-                        var value = content.GetUnsafeFlat(offset);
+                        var value = content.GetUnsafeFlat(cellOffset + cornerOffsets[corner]);
                         cornerValues[corner] = value;
 
                         if (value > iso)
                         {
                             mask |= 1 << corner;
                         }
+                    }
 
-                        var id = material.GetUnsafeFlat(offset);
+                    // A cell entirely on one side of the iso level holds no surface, so its labels are never read:
+                    if (mask is 0 or 255)
+                    {
+                        continue;
+                    }
+
+                    materialCounts.Clear();
+
+                    for (var corner = 0; corner < 8; corner++)
+                    {
+                        var id = material.GetUnsafeFlat(cellOffset + cornerOffsets[corner]);
 
                         if (id != SurfaceMaterial.Null && id < SurfaceMaterial.Count)
                         {
                             materialCounts[id]++;
                         }
-                    }
-
-                    // A cell entirely on one side of the iso level holds no surface:
-                    if (mask is 0 or 255)
-                    {
-                        continue;
                     }
 
                     // The face and vertex types come from the labels, so a material junction is seen even where the content is uniform:
