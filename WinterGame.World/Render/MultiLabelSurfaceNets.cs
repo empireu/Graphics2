@@ -335,7 +335,7 @@ public static class MultiLabelSurfaceNets
         var indices = description.Indices;
         var vertexCells = description.VertexCells;
 
-        Span<float> cornerValues = stackalloc float[8];
+        Span<byte> cornerValues = stackalloc byte[8];
         Span<int> materialCounts = stackalloc int[SurfaceMaterial.Count];
         Span<FaceCrossingType> cellFaces = stackalloc FaceCrossingType[FaceCount];
         Span<uint> baseMaterials = stackalloc uint[BaseEdgeCount];
@@ -460,7 +460,8 @@ public static class MultiLabelSurfaceNets
 
                         // The two corners differ in exactly one axis, found from the XOR.
                         // t is the fraction along that axis, and the other two coordinates are simply the corner's own bits, so the crossing point is assembled per axis rather than with a full corner subtraction.
-                        var t = (iso - valueA) / (valueB - valueA);
+                        // The values are bytes, so the denominator is widened to float here to keep the division in floating point:
+                        var t = (iso - valueA) / (float)(valueB - valueA);
                         var axis = BitOperations.TrailingZeroCount(cornerA ^ cornerB);
 
                         var bitX = (cornerA & 1) != 0;
