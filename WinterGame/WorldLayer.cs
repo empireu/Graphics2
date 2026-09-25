@@ -87,6 +87,7 @@ internal sealed unsafe class WorldLayer : IDisposable
     private const int MaxRelaxIterations = 8;
 
     private MeshArena? _arena;
+    private MultiLabelSurfaceNetsStateStorage? _mesherState;
     private readonly List<Chunk> _chunks = [];   
     private bool _rebuildRequested = true;
     private long _solidVoxels;
@@ -575,6 +576,12 @@ internal sealed unsafe class WorldLayer : IDisposable
         var relaxHalo = Math.Clamp(_fairingIterations, 0, MaxRelaxIterations);
         var halo = new Vector3i(relaxHalo);
 
+        // One state serves every section in the build, and it is rebuilt only when the section shape changes:
+        if (_mesherState == null || _mesherState.CellCount != cellCount || _mesherState.RelaxHalo != relaxHalo)
+        {
+            _mesherState = new MultiLabelSurfaceNetsStateStorage(cellCount, relaxHalo);
+        }
+
         var config = new TerrainConfig
         {
             BaseHeight = _baseHeight,
@@ -648,7 +655,7 @@ internal sealed unsafe class WorldLayer : IDisposable
                     var vertices = new List<VoxelVertex>();
                     var indices = new List<int>();
 
-                    MultiLabelSurfaceNets.Mesh(new MultiLabelSurfaceNetsDescription
+                    MultiLabelSurfaceNets.Mesh(_mesherState, new MultiLabelSurfaceNetsDescription
                     {
                         Content = content,
                         Material = material,

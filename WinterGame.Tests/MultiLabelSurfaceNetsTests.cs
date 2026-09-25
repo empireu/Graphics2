@@ -87,7 +87,9 @@ public class MultiLabelSurfaceNetsTests
         List<Vector3i>? cells = null
     )
     {
-        MultiLabelSurfaceNets.Mesh(new MultiLabelSurfaceNetsDescription
+        var storage = new MultiLabelSurfaceNetsStateStorage(cellCount, Math.Max(0, fairing.Iterations));
+
+        MultiLabelSurfaceNets.Mesh(storage, new MultiLabelSurfaceNetsDescription
         {
             Content = content,
             Material = material,

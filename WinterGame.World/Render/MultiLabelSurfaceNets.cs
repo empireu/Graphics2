@@ -195,17 +195,17 @@ public static class MultiLabelSurfaceNets
     private static readonly int[] FaceOffsetY = [0, 0, 0, 0, -1, 1];
     private static readonly int[] FaceOffsetZ = [0, 0, -1, 1, 0, 0];
 
-    private const int FaceCount = 6;
-    private const int BaseEdgeCount = 3;
+    internal const int FaceCount = 6;
+    internal const int BaseEdgeCount = 3;
 
-    private enum FaceCrossingType
+    public enum FaceCrossingType : byte
     {
         None = 0,
         Surface = 1,
         Junction = 2
     }
 
-    private enum VertexType
+    public enum VertexType : byte
     {
         None = 0,
         Surface = 1,
@@ -252,11 +252,24 @@ public static class MultiLabelSurfaceNets
     }
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    public static void Mesh(MultiLabelSurfaceNetsDescription description)
+    public static void Mesh(MultiLabelSurfaceNetsStateStorage storage, MultiLabelSurfaceNetsDescription description)
     {
+        ArgumentNullException.ThrowIfNull(storage);
         ArgumentNullException.ThrowIfNull(description);
         ArgumentNullException.ThrowIfNull(description.Vertices);
         ArgumentNullException.ThrowIfNull(description.Indices);
+
+        if (storage.CellCount != description.CellCount)
+        {
+            throw new ArgumentException("The state was created for a different cell count than the description", nameof(storage));
+        }
+
+        var relaxHalo = Math.Max(0, description.Fairing.Iterations);
+
+        if (storage.RelaxHalo != relaxHalo)
+        {
+            throw new ArgumentException("The state was created for a different relaxation iteration count than the description", nameof(storage));
+        }
 
         if (description.Content.IsEmpty)
         {
@@ -284,7 +297,6 @@ public static class MultiLabelSurfaceNets
         // A relaxation pass reaches one cell further, and a quad reaches one cell below the emit range, so the vertex range is that much wider.
         // Two units then compute the same value for the cells they share.
         // The extra cells are traversal and relaxation work only. Compact drops them before the caller sees them.
-        var relaxHalo = Math.Max(0, description.Fairing.Iterations);
         var vertexMin = description.CellMin - new Vector3i(1 + relaxHalo);
         var vertexMax = description.CellMin + description.CellCount + new Vector3i(relaxHalo);
 
@@ -303,16 +315,7 @@ public static class MultiLabelSurfaceNets
         var vertexCells = description.VertexCells;
 
         var range = vertexMax - vertexMin;
-        var cellIndices = new int[range.X * range.Y * range.Z];
-        Array.Fill(cellIndices, -1);
-
-        var localCells = new List<Vector3i>();
-        var cellCenters = new List<Vector3>();
-        var vertexTypes = new List<VertexType>();
-        var faceTypes = new List<FaceCrossingType>();
-        var edgeMasks = new List<int>();
-        var solidBases = new List<bool>();
-        var edgeMaterials = new List<uint>();
+        var state = storage.Begin();
 
         Span<float> cornerValues = stackalloc float[8];
         Span<int> materialCounts = stackalloc int[SurfaceMaterial.Count];
@@ -447,21 +450,21 @@ public static class MultiLabelSurfaceNets
                     var vertexIndex = vertices.Count;
 
                     // The neighbor map is indexed by a local cell, row-major over the vertex range, so a lookup is a plain offset and the arrays never grow with the world coordinate:
-                    cellIndices[(lz - vertexMin.Z) * range.X * range.Y + (ly - vertexMin.Y) * range.X + (lx - vertexMin.X)] = vertexIndex;
-                    localCells.Add(new Vector3i(lx, ly, lz));
-                    cellCenters.Add(new Vector3(lx + 0.5f, ly + 0.5f, lz + 0.5f));
-                    vertexTypes.Add(ClassifyVertex(cellFaces));
-                    edgeMasks.Add(edgeMask);
-                    solidBases.Add(cornerValues[0] > iso);
+                    state.CellIndex(CellOffset(range, vertexMin, lx, ly, lz)) = vertexIndex;
+                    state.AddLocalCell(new Vector3i(lx, ly, lz));
+                    state.AddCellCenter(new Vector3(lx + 0.5f, ly + 0.5f, lz + 0.5f));
+                    state.AddVertexType(ClassifyVertex(cellFaces));
+                    state.AddEdgeMask(edgeMask);
+                    state.AddSolidBase(cornerValues[0] > iso);
 
                     for (var edge = 0; edge < BaseEdgeCount; edge++)
                     {
-                        edgeMaterials.Add(baseMaterials[edge]);
+                        state.AddEdgeMaterial(baseMaterials[edge]);
                     }
 
                     for (var face = 0; face < FaceCount; face++)
                     {
-                        faceTypes.Add(cellFaces[face]);
+                        state.AddFaceType(cellFaces[face]);
                     }
 
                     vertexCells?.Add(new Vector3i(lx, ly, lz));
@@ -477,7 +480,7 @@ public static class MultiLabelSurfaceNets
         }
 
         // The base vertices are relaxed before the per-material duplicates are made, so a duplicate copies a relaxed position rather than being relaxed twice:
-        Relax(vertices, cellIndices, range, vertexMin, localCells, cellCenters, vertexTypes, faceTypes, description.Fairing);
+        Relax(ref state, vertices, range, vertexMin, description.Fairing);
 
         var baseVertexCount = vertices.Count;
         Span<uint> materials = stackalloc uint[BaseEdgeCount];
@@ -488,7 +491,7 @@ public static class MultiLabelSurfaceNets
         // The quad's other three corners are the neighboring cells' first vertices: every one of those cells contains both samples of the crossing edge and so has a vertex of its own, which is why the lookup cannot come back -1 here.
         for (var cellOrder = 0; cellOrder < baseVertexCount; cellOrder++)
         {
-            var cell = localCells[cellOrder];
+            var cell = state.LocalCells(cellOrder);
 
             if (cell.X < description.CellMin.X || cell.Y < description.CellMin.Y || cell.Z < description.CellMin.Z ||
                 cell.X >= description.CellMin.X + description.CellCount.X ||
@@ -502,12 +505,12 @@ public static class MultiLabelSurfaceNets
 
             for (var edge = 0; edge < BaseEdgeCount; edge++)
             {
-                if ((edgeMasks[cellOrder] & (1 << edge)) == 0)
+                if ((state.EdgeMask(cellOrder) & (1 << edge)) == 0)
                 {
                     continue;
                 }
 
-                var edgeMaterial = edgeMaterials[cellOrder * BaseEdgeCount + edge];
+                var edgeMaterial = state.EdgeMaterial(cellOrder * BaseEdgeCount + edge);
 
                 // A crossing edge whose solid sample carried no material cannot happen for well-formed data, so this only guards a bad label box and keeps the quad on the cell's own material.
                 if (edgeMaterial == SurfaceMaterial.Null)
@@ -543,20 +546,20 @@ public static class MultiLabelSurfaceNets
                     else
                     {
                         materials[slot] = edgeMaterial;
-                        edgeVertices[slot] = AddDuplicate(vertices, localCells, vertexCells, cellOrder, edgeMaterial);
+                        edgeVertices[slot] = AddDuplicate(ref state, vertices, vertexCells, cellOrder, edgeMaterial);
                     }
                 }
 
                 var i0 = edgeVertices[slot];
-                var solidBase = solidBases[cellOrder];
+                var solidBase = state.SolidBase(cellOrder);
 
                 if (edge == 0)
                 {
                     EmitQuad(
                         i0,
-                        CellIndex(cellIndices, range, vertexMin, cell.X, cell.Y - 1, cell.Z),
-                        CellIndex(cellIndices, range, vertexMin, cell.X, cell.Y - 1, cell.Z - 1),
-                        CellIndex(cellIndices, range, vertexMin, cell.X, cell.Y, cell.Z - 1),
+                        CellVertexIndex(ref state, range, vertexMin, cell.X, cell.Y - 1, cell.Z),
+                        CellVertexIndex(ref state, range, vertexMin, cell.X, cell.Y - 1, cell.Z - 1),
+                        CellVertexIndex(ref state, range, vertexMin, cell.X, cell.Y, cell.Z - 1),
                         solidBase,
                         indices
                     );
@@ -565,9 +568,9 @@ public static class MultiLabelSurfaceNets
                 {
                     EmitQuad(
                         i0,
-                        CellIndex(cellIndices, range, vertexMin, cell.X, cell.Y, cell.Z - 1),
-                        CellIndex(cellIndices, range, vertexMin, cell.X - 1, cell.Y, cell.Z - 1),
-                        CellIndex(cellIndices, range, vertexMin, cell.X - 1, cell.Y, cell.Z),
+                        CellVertexIndex(ref state, range, vertexMin, cell.X, cell.Y, cell.Z - 1),
+                        CellVertexIndex(ref state, range, vertexMin, cell.X - 1, cell.Y, cell.Z - 1),
+                        CellVertexIndex(ref state, range, vertexMin, cell.X - 1, cell.Y, cell.Z),
                         solidBase,
                         indices
                     );
@@ -576,9 +579,9 @@ public static class MultiLabelSurfaceNets
                 {
                     EmitQuad(
                         i0,
-                        CellIndex(cellIndices, range, vertexMin, cell.X - 1, cell.Y, cell.Z),
-                        CellIndex(cellIndices, range, vertexMin, cell.X - 1, cell.Y - 1, cell.Z),
-                        CellIndex(cellIndices, range, vertexMin, cell.X, cell.Y - 1, cell.Z),
+                        CellVertexIndex(ref state, range, vertexMin, cell.X - 1, cell.Y, cell.Z),
+                        CellVertexIndex(ref state, range, vertexMin, cell.X - 1, cell.Y - 1, cell.Z),
+                        CellVertexIndex(ref state, range, vertexMin, cell.X, cell.Y - 1, cell.Z),
                         solidBase,
                         indices
                     );
@@ -588,21 +591,21 @@ public static class MultiLabelSurfaceNets
 
         // The outer relax halo exists only to give the shared vertices their full neighborhood, so it is dropped from what the caller uploads.
         // Quads never reach past one cell below the emit range, so nothing references it.
-        Compact(vertices, indices, localCells, vertexCells, description.CellMin - new Vector3i(1), description.CellMin + description.CellCount);
+        Compact(ref state, vertices, indices, vertexCells, description.CellMin - new Vector3i(1), description.CellMin + description.CellCount);
     }
 
     /// <summary>
     ///     Appends a copy of a cell's vertex carrying a different material. The position and normal are copied, so the
     ///     duplicates of a cell are coincident and only the provoking material differs.
     /// </summary>
-    private static int AddDuplicate(List<VoxelVertex> vertices, List<Vector3i> localCells, List<Vector3i>? vertexCells, int cellOrder, uint material)
+    private static int AddDuplicate(ref MultiLabelSurfaceNetsStateStorage.State state, List<VoxelVertex> vertices, List<Vector3i>? vertexCells, int cellOrder, uint material)
     {
         var index = vertices.Count;
         var vertex = vertices[cellOrder];
         vertex.Material = material;
 
         vertices.Add(vertex);
-        localCells.Add(localCells[cellOrder]);
+        state.AddLocalCell(state.LocalCells(cellOrder));
         vertexCells?.Add(vertexCells[cellOrder]);
 
         return index;
@@ -614,29 +617,28 @@ public static class MultiLabelSurfaceNets
     ///     A referenced vertex outside the range would remap to -1, which as a ushort is 65535, so the range is a correctness boundary and not a heuristic.
     /// </summary>
     private static void Compact(
+        ref MultiLabelSurfaceNetsStateStorage.State state,
         List<VoxelVertex> vertices,
         List<int> indices,
-        List<Vector3i> localCells,
         List<Vector3i>? vertexCells,
         Vector3i keepMin,
         Vector3i keepMax
     )
     {
-        var remap = new int[vertices.Count];
         var write = 0;
 
         for (var index = 0; index < vertices.Count; index++)
         {
-            var cell = localCells[index];
+            var cell = state.LocalCells(index);
 
             if (cell.X < keepMin.X || cell.Y < keepMin.Y || cell.Z < keepMin.Z ||
                 cell.X >= keepMax.X || cell.Y >= keepMax.Y || cell.Z >= keepMax.Z)
             {
-                remap[index] = -1;
+                state.Remap(index) = -1;
                 continue;
             }
 
-            remap[index] = write;
+            state.Remap(index) = write;
             vertices[write] = vertices[index];
 
             if (vertexCells != null)
@@ -654,7 +656,7 @@ public static class MultiLabelSurfaceNets
 
         for (var index = 0; index < indices.Count; index++)
         {
-            indices[index] = remap[indices[index]];
+            indices[index] = state.Remap(indices[index]);
         }
 
         vertices.RemoveRange(write, vertices.Count - write);
@@ -662,9 +664,15 @@ public static class MultiLabelSurfaceNets
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int CellIndex(int[] cellIndices, Vector3i range, Vector3i vertexMin, int lx, int ly, int lz)
+    private static int CellOffset(Vector3i range, Vector3i vertexMin, int lx, int ly, int lz)
     {
-        return cellIndices[(lz - vertexMin.Z) * range.X * range.Y + (ly - vertexMin.Y) * range.X + (lx - vertexMin.X)];
+        return (lz - vertexMin.Z) * range.X * range.Y + (ly - vertexMin.Y) * range.X + (lx - vertexMin.X);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int CellVertexIndex(ref MultiLabelSurfaceNetsStateStorage.State state, Vector3i range, Vector3i vertexMin, int lx, int ly, int lz)
+    {
+        return state.CellIndex(CellOffset(range, vertexMin, lx, ly, lz));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -779,14 +787,10 @@ public static class MultiLabelSurfaceNets
     ///     A surface vertex uses every intersecting face; an edge or corner vertex uses only junction faces, so a material edge or corner slides along itself and stays sharp.
     /// </summary>
     private static void Relax(
+        ref MultiLabelSurfaceNetsStateStorage.State state,
         List<VoxelVertex> vertices,
-        int[] cellIndices,
         Vector3i range,
         Vector3i vertexMin,
-        List<Vector3i> localCells,
-        List<Vector3> cellCenters,
-        List<VertexType> vertexTypes,
-        List<FaceCrossingType> faceTypes,
         SurfaceFairingSettings settings
     )
     {
@@ -799,26 +803,23 @@ public static class MultiLabelSurfaceNets
 
         // Jacobi needs the previous iteration to stay intact while the next one is written, hence two buffers and a swap rather than an in-place sweep.
         // This is the property that makes two units agree on their shared cells.
-        var current = new Vector3[vertices.Count];
-        var next = new Vector3[vertices.Count];
-
         for (var index = 0; index < vertices.Count; index++)
         {
-            current[index] = vertices[index].Position;
+            state.Current(index) = vertices[index].Position;
         }
 
         for (var iteration = 0; iteration < settings.Iterations; iteration++)
         {
             for (var index = 0; index < vertices.Count; index++)
             {
-                var cell = localCells[index];
-                var vertexType = vertexTypes[index];
+                var cell = state.LocalCells(index);
+                var vertexType = state.VertexType(index);
                 var sum = Vector3.Zero;
                 var count = 0;
 
                 for (var face = 0; face < FaceCount; face++)
                 {
-                    var crossingType = faceTypes[index * FaceCount + face];
+                    var crossingType = state.FaceType(index * FaceCount + face);
 
                     // A surface vertex is pulled by every face the surface crosses, so it smooths freely.
                     // An edge or corner vertex is pulled only along its junction faces, so it slides along the material boundary instead of being drawn across it, which is what keeps the boundary sharp.
@@ -840,38 +841,38 @@ public static class MultiLabelSurfaceNets
                         continue;
                     }
 
-                    var neighbourIndex = CellIndex(cellIndices, range, vertexMin, nx, ny, nz);
+                    var neighbourIndex = CellVertexIndex(ref state, range, vertexMin, nx, ny, nz);
 
                     if (neighbourIndex < 0)
                     {
                         continue;
                     }
 
-                    sum += current[neighbourIndex];
+                    sum += state.Current(neighbourIndex);
                     count++;
                 }
 
                 var position = count == 0
-                    ? current[index]
-                    : current[index] + settings.StepSize * (sum / count - current[index]);
+                    ? state.Current(index)
+                    : state.Current(index) + settings.StepSize * (sum / count - state.Current(index));
 
                 // The clamp applies to every vertex, so a vertex with no in-range neighbor still respects the bound:
-                var center = cellCenters[index];
+                var center = state.CellCenter(index);
 
                 position.X = Math.Clamp(position.X, center.X - allowedRange, center.X + allowedRange);
                 position.Y = Math.Clamp(position.Y, center.Y - allowedRange, center.Y + allowedRange);
                 position.Z = Math.Clamp(position.Z, center.Z - allowedRange, center.Z + allowedRange);
 
-                next[index] = position;
+                state.Next(index) = position;
             }
 
-            (current, next) = (next, current);
+            state.FlipRelaxation();
         }
 
         for (var index = 0; index < vertices.Count; index++)
         {
             var vertex = vertices[index];
-            vertex.Position = current[index];
+            vertex.Position = state.Current(index);
             vertices[index] = vertex;
         }
     }

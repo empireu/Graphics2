@@ -41,6 +41,7 @@ internal static class Benchmark
         var cellCount = new Vector3i(options.ChunkCells, options.ChunkCells, options.ChunkCells);
         var relaxHalo = Math.Clamp(options.FairingIterations, 0, 8);
         var halo = new Vector3i(relaxHalo);
+        var mesherState = new MultiLabelSurfaceNetsStateStorage(cellCount, relaxHalo);
 
         var config = new TerrainConfig
         {
@@ -122,12 +123,12 @@ internal static class Benchmark
 
         for (var warmup = 0; warmup < options.Warmup; warmup++)
         {
-            MeshAll(fixtures, options, cellCount, relaxHalo, out _, out _, out _, out _, out _);
+            MeshAll(fixtures, options, mesherState, cellCount, relaxHalo, out _, out _, out _, out _, out _);
         }
 
         if (reference != null)
         {
-            if (!Verify(fixtures, reference, options, cellCount, relaxHalo))
+            if (!Verify(fixtures, reference, options, mesherState, cellCount, relaxHalo))
             {
                 Environment.ExitCode = 1;
             }
@@ -172,7 +173,7 @@ internal static class Benchmark
             var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
             var watch = Stopwatch.StartNew();
 
-            MeshAll(fixtures, options, cellCount, relaxHalo, out var vertexTotal, out var indexTotal, out var vertexChecksum, out var indexChecksum, out var drawn);
+            MeshAll(fixtures, options, mesherState, cellCount, relaxHalo, out var vertexTotal, out var indexTotal, out var vertexChecksum, out var indexChecksum, out var drawn);
 
             watch.Stop();
 
@@ -259,6 +260,7 @@ internal static class Benchmark
     private static void MeshAll(
         SectionFixture[] fixtures,
         BenchmarkOptions options,
+        MultiLabelSurfaceNetsStateStorage mesherState,
         Vector3i cellCount,
         int relaxHalo,
         out long vertexTotal,
@@ -280,7 +282,7 @@ internal static class Benchmark
             var vertices = new List<VoxelVertex>();
             var indices = new List<int>();
 
-            MeshCurrent(fixture, options, cellCount, relaxHalo, vertices, indices);
+            MeshCurrent(mesherState, fixture, options, cellCount, relaxHalo, vertices, indices);
 
             if (indices.Count == 0)
             {
@@ -311,6 +313,7 @@ internal static class Benchmark
     }
 
     private static void MeshCurrent(
+        MultiLabelSurfaceNetsStateStorage storage,
         SectionFixture fixture,
         BenchmarkOptions options,
         Vector3i cellCount,
@@ -319,7 +322,7 @@ internal static class Benchmark
         List<int> indices
     )
     {
-        MultiLabelSurfaceNets.Mesh(new MultiLabelSurfaceNetsDescription
+        MultiLabelSurfaceNets.Mesh(storage, new MultiLabelSurfaceNetsDescription
         {
             Content = fixture.Content,
             Material = fixture.Material,
@@ -393,6 +396,7 @@ internal static class Benchmark
         SectionFixture[] fixtures,
         ReferenceSection[] reference,
         BenchmarkOptions options,
+        MultiLabelSurfaceNetsStateStorage mesherState,
         Vector3i cellCount,
         int relaxHalo
     )
@@ -405,7 +409,7 @@ internal static class Benchmark
             var vertices = new List<VoxelVertex>();
             var indices = new List<int>();
 
-            MeshCurrent(fixtures[section], options, cellCount, relaxHalo, vertices, indices);
+            MeshCurrent(mesherState, fixtures[section], options, cellCount, relaxHalo, vertices, indices);
 
             var vertexBytes = MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(vertices));
             var indexBytes = MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(indices));
