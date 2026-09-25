@@ -339,6 +339,7 @@ public static class MultiLabelSurfaceNets
         var vertexCells = description.VertexCells;
 
         Span<byte> cornerValues = stackalloc byte[8];
+        Span<byte> cornerMaterials = stackalloc byte[8];
         Span<int> materialCounts = stackalloc int[SurfaceMaterial.Count];
         Span<FaceCrossingType> cellFaces = stackalloc FaceCrossingType[FaceCount];
         Span<uint> baseMaterials = stackalloc uint[BaseEdgeCount];
@@ -420,6 +421,7 @@ public static class MultiLabelSurfaceNets
                     for (var corner = 0; corner < 8; corner++)
                     {
                         var id = material.GetUnsafeFlat(cellOffset + cornerOffsets[corner]);
+                        cornerMaterials[corner] = id;
 
                         if (id != SurfaceMaterial.Null && id < SurfaceMaterial.Count)
                         {
@@ -431,10 +433,10 @@ public static class MultiLabelSurfaceNets
                     for (var face = 0; face < FaceCount; face++)
                     {
                         cellFaces[face] = ClassifyFace(
-                            LabelAt(material, lx, ly, lz, FaceCorners[face * 4]),
-                            LabelAt(material, lx, ly, lz, FaceCorners[face * 4 + 1]),
-                            LabelAt(material, lx, ly, lz, FaceCorners[face * 4 + 2]),
-                            LabelAt(material, lx, ly, lz, FaceCorners[face * 4 + 3])
+                            cornerMaterials[FaceCorners[face * 4]],
+                            cornerMaterials[FaceCorners[face * 4 + 1]],
+                            cornerMaterials[FaceCorners[face * 4 + 2]],
+                            cornerMaterials[FaceCorners[face * 4 + 3]]
                         );
                     }
 
@@ -455,11 +457,7 @@ public static class MultiLabelSurfaceNets
                         }
 
                         var solidCorner = solidA ? 0 : otherCorner;
-                        baseMaterials[edge] = material.GetUnsafe(
-                            lx + (solidCorner & 1),
-                            ly + ((solidCorner >> 1) & 1),
-                            lz + ((solidCorner >> 2) & 1)
-                        );
+                        baseMaterials[edge] = cornerMaterials[solidCorner];
                     }
 
                     // The first crossing base edge seeds the cell's single base vertex, so that edge's quad can use the base directly and only a later edge with a different material needs a duplicate.
@@ -823,30 +821,30 @@ public static class MultiLabelSurfaceNets
         return (allSolid | ~anySolid).ExtractMostSignificantBits();
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static byte LabelAt(Span3D<byte> material, int lx, int ly, int lz, int corner)
-    {
-        return material.GetUnsafe(
-            lx + (corner & 1),
-            ly + ((corner >> 1) & 1),
-            lz + ((corner >> 2) & 1)
-        );
-    }
-
     /// <summary>
     ///     Classifies one face from its four corner labels.
     ///     Three or more labels is a junction.
     ///     Two labels count as a junction when they sit on opposite corners, because the boundary then crosses the face diagonally and a plain count would mistake it for a clean surface crossing.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static FaceCrossingType ClassifyFace(byte c0, byte c1, byte c2, byte c3)
     {
-        Span<byte> types = stackalloc byte[4];
-        var unique = 0;
+        var unique = 1;
 
-        AddUnique(types, ref unique, c0);
-        AddUnique(types, ref unique, c1);
-        AddUnique(types, ref unique, c2);
-        AddUnique(types, ref unique, c3);
+        if (c1 != c0)
+        {
+            unique++;
+        }
+
+        if (c2 != c0 && c2 != c1)
+        {
+            unique++;
+        }
+
+        if (c3 != c0 && c3 != c1 && c3 != c2)
+        {
+            unique++;
+        }
 
         if (unique <= 1)
         {
@@ -861,20 +859,6 @@ public static class MultiLabelSurfaceNets
         }
 
         return FaceCrossingType.Junction;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void AddUnique(Span<byte> types, ref int unique, byte value)
-    {
-        for (var index = 0; index < unique; index++)
-        {
-            if (types[index] == value)
-            {
-                return;
-            }
-        }
-
-        types[unique++] = value;
     }
 
     private static VertexType ClassifyVertex(ReadOnlySpan<FaceCrossingType> faces)
