@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace Graphics2.Data;
 
@@ -64,5 +66,21 @@ public readonly ref struct Span3D<T> where T : struct
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(z, SizeZ);
 
         return ref this[x, y, z];
+    }
+    
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ref T GetUnsafe(int x, int y, int z)
+    {
+        Debug.Assert((uint)x < (uint)SizeX && (uint)y < (uint)SizeY && (uint)z < (uint)SizeZ, "Tried to access a cell outside the box");
+
+        return ref GetUnsafeFlat(x + y * SizeX + z * SizeX * SizeY);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ref T GetUnsafeFlat(int index)
+    {
+        Debug.Assert((uint)index < (uint)_data.Length, "Tried to access a cell outside the span");
+
+        return ref Unsafe.Add(ref MemoryMarshal.GetReference(_data), index);
     }
 }

@@ -321,23 +321,33 @@ public static class MultiLabelSurfaceNets
         Span<int> materialCounts = stackalloc int[SurfaceMaterial.Count];
         Span<FaceCrossingType> cellFaces = stackalloc FaceCrossingType[FaceCount];
         Span<uint> baseMaterials = stackalloc uint[BaseEdgeCount];
+        Span<int> cornerOffsets = stackalloc int[8];
+
+        var sampleStrideX = content.SizeX;
+        var sampleStrideXy = sampleStrideX * content.SizeY;
+
+        for (var corner = 0; corner < 8; corner++)
+        {
+            cornerOffsets[corner] = (corner & 1) + ((corner >> 1) & 1) * sampleStrideX + ((corner >> 2) & 1) * sampleStrideXy;
+        }
 
         for (var lz = vertexMin.Z; lz < vertexMax.Z; lz++)
         {
             for (var ly = vertexMin.Y; ly < vertexMax.Y; ly++)
             {
+                var rowOffset = ly * sampleStrideX + lz * sampleStrideXy;
+
                 for (var lx = vertexMin.X; lx < vertexMax.X; lx++)
                 {
+                    var cellOffset = lx + rowOffset;
                     var mask = 0;
                     materialCounts.Clear();
 
                     for (var corner = 0; corner < 8; corner++)
                     {
-                        var cx = lx + (corner & 1);
-                        var cy = ly + ((corner >> 1) & 1);
-                        var cz = lz + ((corner >> 2) & 1);
+                        var offset = cellOffset + cornerOffsets[corner];
 
-                        var value = content[cx, cy, cz];
+                        var value = content.GetUnsafeFlat(offset);
                         cornerValues[corner] = value;
 
                         if (value > iso)
@@ -345,7 +355,7 @@ public static class MultiLabelSurfaceNets
                             mask |= 1 << corner;
                         }
 
-                        var id = material[cx, cy, cz];
+                        var id = material.GetUnsafeFlat(offset);
 
                         if (id != SurfaceMaterial.Null && id < SurfaceMaterial.Count)
                         {
@@ -387,11 +397,11 @@ public static class MultiLabelSurfaceNets
                         }
 
                         var solidCorner = solidA ? 0 : otherCorner;
-                        baseMaterials[edge] = material[
+                        baseMaterials[edge] = material.GetUnsafe(
                             lx + (solidCorner & 1),
                             ly + ((solidCorner >> 1) & 1),
                             lz + ((solidCorner >> 2) & 1)
-                        ];
+                        );
                     }
 
                     // The first crossing base edge seeds the cell's single base vertex, so that edge's quad can use the base directly and only a later edge with a different material needs a duplicate.
@@ -678,11 +688,11 @@ public static class MultiLabelSurfaceNets
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static byte LabelAt(Span3D<byte> material, int lx, int ly, int lz, int corner)
     {
-        return material[
+        return material.GetUnsafe(
             lx + (corner & 1),
             ly + ((corner >> 1) & 1),
             lz + ((corner >> 2) & 1)
-        ];
+        );
     }
 
     /// <summary>
@@ -884,9 +894,9 @@ public static class MultiLabelSurfaceNets
     private static Vector3 CornerGradient(int sx, int sy, int sz, Span3D<byte> content)
     {
         return new Vector3(
-            content[sx + 1, sy, sz] - content[sx - 1, sy, sz],
-            content[sx, sy + 1, sz] - content[sx, sy - 1, sz],
-            content[sx, sy, sz + 1] - content[sx, sy, sz - 1]
+            content.GetUnsafe(sx + 1, sy, sz) - content.GetUnsafe(sx - 1, sy, sz),
+            content.GetUnsafe(sx, sy + 1, sz) - content.GetUnsafe(sx, sy - 1, sz),
+            content.GetUnsafe(sx, sy, sz + 1) - content.GetUnsafe(sx, sy, sz - 1)
         );
     }
 
