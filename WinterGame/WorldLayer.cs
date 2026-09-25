@@ -16,6 +16,7 @@ using Silk.NET.Maths;
 using WinterGame.Core;
 using WinterGame.World;
 using WinterGame.World.Generation;
+using WinterGame.World.Render;
 
 // ReSharper disable ForCanBeConvertedToForeach
 

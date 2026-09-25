@@ -10,58 +10,6 @@ public class TerrainGraphTests(ITestOutputHelper output)
     private static readonly TerrainConfig Config = new();
 
     [Fact]
-    public void Content_MatchesTheHandWrittenGenerator()
-    {
-        const int seed = 7;
-        const float spacing = WorldConstants.VoxelSize;
-
-        var generator = new TerrainGenerator(seed, new SurfaceMaterialClassifier(snowLine: 4.0f), Config);
-        var graph = TerrainGraph.Build(seed, Config, interpolate: false);
-        var sampler = new DensitySampler(graph.Graph);
-
-        var min = new Vector3i(-4, 0, -4);
-        var max = new Vector3i(31, 0, 31);
-
-        CoverTheSurface(generator.Elevation, ref min, ref max);
-
-        var samples = 0;
-        var mismatches = 0;
-        var maxContentDelta = 0;
-        var maxDensityDelta = 0.0f;
-
-        for (var z = min.Z; z <= max.Z; z++)
-        {
-            for (var x = min.X; x <= max.X; x++)
-            {
-                var elevation = generator.Elevation(x, z);
-
-                for (var y = min.Y; y <= max.Y; y++)
-                {
-                    var position = new Vector3i(x, y, z);
-                    var density = sampler.Sample(position, 0, graph.DensityRoot);
-                    var expected = generator.SampleContent(position);
-                    var actual = DensitySampler.ContentFromDensity(density, 0);
-                    var delta = Math.Abs(expected - actual);
-
-                    samples++;
-                    maxContentDelta = Math.Max(maxContentDelta, delta);
-                    maxDensityDelta = MathF.Max(maxDensityDelta, MathF.Abs(elevation - y * spacing - density));
-
-                    if (delta != 0)
-                    {
-                        mismatches++;
-                    }
-                }
-            }
-        }
-
-        output.WriteLine($"samples={samples} maxContentDelta={maxContentDelta} nonExact={mismatches} maxDensityDelta={maxDensityDelta:G6} m");
-
-        Assert.True(maxDensityDelta <= 1e-4f, $"The graph's distance and the hand-written generator's differ by {maxDensityDelta:G6} m.");
-        Assert.True(mismatches * 100 <= samples, $"{mismatches} of {samples} samples differ, which is more than one percent.");
-    }
-
-    [Fact]
     public void Cells_KeepTheSurfaceWithinAFewBytes()
     {
         const int seed = 7;

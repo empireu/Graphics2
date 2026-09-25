@@ -7,6 +7,7 @@ using Graphics2.Mathematics;
 using WinterGame.MeshingBenchmark.Reference;
 using WinterGame.World;
 using WinterGame.World.Generation;
+using WinterGame.World.Render;
 
 // ReSharper disable FieldCanBeMadeReadOnly.Global
 

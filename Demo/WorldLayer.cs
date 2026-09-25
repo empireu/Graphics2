@@ -12,7 +12,7 @@ using Graphics2.Renderer.Text;
 using Graphics2.Windowing.Input;
 using ImGuiNET;
 using Silk.NET.Maths;
-using WinterGame.World;
+using WinterGame.World.Render;
 
 // ReSharper disable ForCanBeConvertedToForeach
 

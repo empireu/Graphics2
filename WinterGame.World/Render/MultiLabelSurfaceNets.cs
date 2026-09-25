@@ -1,4 +1,3 @@
-
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using Graphics2.Data;
@@ -89,7 +88,7 @@ The geometry is exactly SurfaceNetsMesher. The material half and the relaxation 
     At 32 cells per unit and 4 iterations that is a 36 to 44 sample box per axis, about 1.8x the samples, and that margin is the cost of the fairing.
 */
 
-namespace WinterGame.World;
+namespace WinterGame.World.Render;
 
 /// <summary>
 ///     One surface vertex.

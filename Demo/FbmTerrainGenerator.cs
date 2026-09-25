@@ -1,8 +1,9 @@
 using Graphics2.Data;
 using Graphics2.Mathematics;
 using Graphics2.Mathematics.Noise;
+using WinterGame.World;
 
-namespace WinterGame.World;
+namespace Demo;
 
 public sealed class FbmTerrainGenerator : IVoxelSource
 {
