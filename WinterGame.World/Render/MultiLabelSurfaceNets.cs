@@ -307,15 +307,33 @@ public static class MultiLabelSurfaceNets
         ArgumentOutOfRangeException.ThrowIfGreaterThan(vertexMax.Y + 1, cells.Y, nameof(description.CellCount));
         ArgumentOutOfRangeException.ThrowIfGreaterThan(vertexMax.Z + 1, cells.Z, nameof(description.CellCount));
 
+        var range = vertexMax - vertexMin;
+        var state = storage.Begin();
+
+        try
+        {
+            MeshCore(ref state, description, vertexMin, vertexMax, range);
+        }
+        finally
+        {
+            state.Dispose();
+        }
+    }
+
+    private static void MeshCore(
+        ref MultiLabelSurfaceNetsStateStorage.State state,
+        MultiLabelSurfaceNetsDescription description,
+        Vector3i vertexMin,
+        Vector3i vertexMax,
+        Vector3i range
+    )
+    {
         var content = description.Content.Span;
         var material = description.Material.Span;
         var iso = description.IsoLevel;
         var vertices = description.Vertices;
         var indices = description.Indices;
         var vertexCells = description.VertexCells;
-
-        var range = vertexMax - vertexMin;
-        var state = storage.Begin();
 
         Span<float> cornerValues = stackalloc float[8];
         Span<int> materialCounts = stackalloc int[SurfaceMaterial.Count];
@@ -462,7 +480,7 @@ public static class MultiLabelSurfaceNets
                     var vertexIndex = vertices.Count;
 
                     // The neighbor map is indexed by a local cell, row-major over the vertex range, so a lookup is a plain offset and the arrays never grow with the world coordinate:
-                    state.CellIndex(CellOffset(range, vertexMin, lx, ly, lz)) = vertexIndex;
+                    state.SetCellIndex(CellOffset(range, vertexMin, lx, ly, lz), vertexIndex);
                     state.AddLocalCell(new Vector3i(lx, ly, lz));
                     state.AddCellCenter(new Vector3(lx + 0.5f, ly + 0.5f, lz + 0.5f));
                     state.AddVertexType(ClassifyVertex(cellFaces));

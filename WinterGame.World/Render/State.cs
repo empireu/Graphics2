@@ -22,6 +22,7 @@ public sealed class MultiLabelSurfaceNetsStateStorage
     private readonly Vector3[] _current;
     private readonly Vector3[] _next;
     private readonly int[] _remap;
+    private readonly int[] _touchedCells;
     
     public MultiLabelSurfaceNetsStateStorage(Vector3i cellCount, int relaxHalo)
     {
@@ -51,12 +52,14 @@ public sealed class MultiLabelSurfaceNetsStateStorage
         _current = new Vector3[maxBaseVertices];
         _next = new Vector3[maxBaseVertices];
         _remap = new int[maxVertices];
+        _touchedCells = new int[maxBaseVertices];
+
+        // The cell map stays -1 between calls because every write records its flat index and Dispose clears it again.
+        Array.Fill(_cellIndices, -1);
     }
 
     public State Begin()
     {
-        Array.Fill(_cellIndices, -1);
-
         return new State
         {
             CellIndicesStore = _cellIndices,
@@ -69,7 +72,8 @@ public sealed class MultiLabelSurfaceNetsStateStorage
             EdgeMaterialsListStore = _edgeMaterialsList,
             CurrentStore = _current,
             NextStore = _next,
-            RemapStore = _remap
+            RemapStore = _remap,
+            TouchedCells = _touchedCells
         };
     }
     
@@ -86,6 +90,8 @@ public sealed class MultiLabelSurfaceNetsStateStorage
         internal Vector3[] CurrentStore;
         internal Vector3[] NextStore;
         internal int[] RemapStore;
+        internal int[] TouchedCells;
+        internal int TouchedCount;
 
         public int LocalCellsCount;
         public int CellCentersCount;
@@ -102,6 +108,16 @@ public sealed class MultiLabelSurfaceNetsStateStorage
         {
             Debug.Assert((uint)index < (uint)CellIndicesStore.Length, "Tried to access a cell index out of range");
             return ref CellIndicesStore[index];
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void SetCellIndex(int index, int value)
+        {
+            Debug.Assert((uint)index < (uint)CellIndicesStore.Length, "Tried to write a cell index out of range");
+            Debug.Assert((uint)TouchedCount < (uint)TouchedCells.Length, "Touched cell list overflow");
+
+            CellIndicesStore[index] = value;
+            TouchedCells[TouchedCount++] = index;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -172,6 +188,20 @@ public sealed class MultiLabelSurfaceNetsStateStorage
         {
             Debug.Assert((uint)index < (uint)RemapStore.Length, "Tried to read a compact remap out-of-range");
             return ref RemapStore[index];
+        }
+
+        #endregion
+
+        #region Lifetime
+        
+        public void Dispose()
+        {
+            for (var index = 0; index < TouchedCount; index++)
+            {
+                CellIndicesStore[TouchedCells[index]] = -1;
+            }
+
+            TouchedCount = 0;
         }
 
         #endregion
