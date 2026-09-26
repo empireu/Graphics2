@@ -838,6 +838,11 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         PipelineLayout pipelineLayout,
         ShaderReflection reflection)
     {
+        if (description.Wireframe && !_device.Info.FillModeNonSolidEnabled)
+        {
+            throw new VkException($"Cannot use wireframe pipeline without {nameof(VkDeviceDescription.FillModeNonSolid)}");
+        }
+        
         var vk = _device.Instance.Vk;
 
         var stageCount = fragmentShader != null ? 2u : 1u;
@@ -978,6 +983,10 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
                 ScissorCount = 1
             };
 
+            var lineWidth = _device.Info.WideLinesEnabled
+                ? Math.Clamp(description.LineWidth, _device.Info.LineWidthRange[0], _device.Info.LineWidthRange[1])
+                : 1.0f;
+
             var rasterizer = new PipelineRasterizationStateCreateInfo
             {
                 SType = StructureType.PipelineRasterizationStateCreateInfo,
@@ -987,7 +996,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
                 CullMode = CullModeToVk(description.CullMode),
                 FrontFace = FrontFaceToVk(description.FrontFace),
                 DepthBiasEnable = false,
-                LineWidth = 1.0f
+                LineWidth = lineWidth
             };
 
             var multisampling = new PipelineMultisampleStateCreateInfo

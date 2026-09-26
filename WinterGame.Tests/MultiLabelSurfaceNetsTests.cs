@@ -317,4 +317,138 @@ public class MultiLabelSurfaceNetsTests
 
         Assert.True(shared > 0, "The two chunks share no vertex, so the test proves nothing.");
     }
+
+    /// <summary>
+    ///     The quad emitter is exercised directly because it is the one place a concave quad is detected and re-triangulated, and reaching it through
+    ///     the mesher needs the fairing pushed hard enough that the test would depend on a scene. The four corners are one cell of the emitter's
+    ///     edge-0 block each, which is the geometry the mesher always produces while a vertex stays inside its own cell.
+    /// </summary>
+    [Fact]
+    public void ConcaveQuadFansAroundAnInteriorApex()
+    {
+        // The dart from the seam post-mortem: the p0-p2 diagonal lies outside it, which is what folded the old two-triangle split.
+        var corners = new[]
+        {
+            new Vector3(1.5f, 1.76f, 1.24f),
+            new Vector3(1.5f, 0.63f, 1.37f),
+            new Vector3(1.5f, 0.90f, 0.10f),
+            new Vector3(1.5f, 1.29f, 0.71f)
+        };
+
+        EmitQuadDirect(corners, 255, 0, true, out var vertices, out var indices);
+
+        // The fan appends one apex and every triangle provokes it, so one material per vertex still stands in for one material per quad:
+        Assert.Equal(5, vertices.Count);
+        Assert.Equal(12, indices.Count);
+        Assert.Equal(vertices[0].Material, vertices[4].Material);
+
+        for (var triangle = 0; triangle < 4; triangle++)
+        {
+            Assert.Equal(4, indices[triangle * 3]);
+        }
+
+        Assert.True(PointInQuad(corners, vertices[4].Position), "The fan apex is not strictly inside the quad, so its triangles spill outside it.");
+    }
+
+    [Fact]
+    public void ConvexQuadKeepsTheDiagonalSplit()
+    {
+        var corners = new[]
+        {
+            new Vector3(1.5f, 1.25f, 1.25f),
+            new Vector3(1.5f, 0.75f, 1.25f),
+            new Vector3(1.5f, 0.75f, 0.75f),
+            new Vector3(1.5f, 1.25f, 0.75f)
+        };
+
+        EmitQuadDirect(corners, 255, 0, true, out var vertices, out var indices);
+
+        Assert.Equal(4, vertices.Count);
+        Assert.Equal(new[] { 0, 1, 2, 0, 2, 3 }, indices);
+    }
+
+    /// <summary>
+    ///     Calls the emitter for one cell's edge-0 quad. The content bytes fix the crossing point on that edge, and the four cells are seeded so
+    ///     the fan can register its apex against the emitting cell the way the pass does.
+    /// </summary>
+    private static void EmitQuadDirect(
+        Vector3[] corners,
+        byte sample0,
+        byte sample1,
+        bool solidBase,
+        out List<VoxelVertex> vertices,
+        out List<int> indices
+    )
+    {
+        var cell = new Vector3i(1, 1, 1);
+        var content = Memory3D<byte>.Allocate(4, 4, 4);
+        var span = content.Span;
+
+        // Edge 0 leaves corner 0 along +x, so these two samples place the quad's crossing apex:
+        span[cell.X, cell.Y, cell.Z] = sample0;
+        span[cell.X + 1, cell.Y, cell.Z] = sample1;
+
+        Span<int> cornerOffsets = stackalloc int[8];
+
+        for (var corner = 0; corner < 8; corner++)
+        {
+            cornerOffsets[corner] = (corner & 1) + ((corner >> 1) & 1) * span.SizeX + ((corner >> 2) & 1) * span.SizeX * span.SizeY;
+        }
+
+        vertices = new List<VoxelVertex>();
+
+        for (var index = 0; index < corners.Length; index++)
+        {
+            vertices.Add(new VoxelVertex
+            {
+                Position = corners[index],
+                Normal = Vector3.UnitY,
+                Material = (uint)(SurfaceMaterial.Rock + index)
+            });
+        }
+
+        indices = new List<int>();
+
+        var vertexCells = new List<Vector3i>();
+        var storage = new MultiLabelSurfaceNetsStateStorage(new Vector3i(4), 0);
+        var state = storage.Begin();
+
+        for (var index = 0; index < corners.Length; index++)
+        {
+            vertexCells.Add(cell);
+            state.AddLocalCell(cell);
+        }
+
+        MultiLabelSurfaceNets.EmitQuad(vertices, span, cornerOffsets, cell, 0, IsoLevel, 0, 1, 2, 3, solidBase, indices, vertexCells, ref state);
+    }
+
+    /// <summary>
+    ///     An independent point-in-polygon test, so the assertion does not lean on the mesher's own apex predicate. Edge 0 runs along x, so a fan
+    ///     tiles in the (y, z) plane, and the crossing-number test is valid for the concave quad this exists to check.
+    /// </summary>
+    private static bool PointInQuad(Vector3[] corners, Vector3 point)
+    {
+        Span<Vector2> projected = stackalloc Vector2[4];
+
+        for (var index = 0; index < 4; index++)
+        {
+            projected[index] = new Vector2(corners[index].Y, corners[index].Z);
+        }
+
+        var target = new Vector2(point.Y, point.Z);
+        var inside = false;
+
+        for (int current = 0, previous = 3; current < 4; previous = current++)
+        {
+            var a = projected[current];
+            var b = projected[previous];
+
+            if (a.Y > target.Y != b.Y > target.Y && target.X < (b.X - a.X) * (target.Y - a.Y) / (b.Y - a.Y) + a.X)
+            {
+                inside = !inside;
+            }
+        }
+
+        return inside;
+    }
 }

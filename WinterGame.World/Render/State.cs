@@ -40,10 +40,12 @@ public sealed class MultiLabelSurfaceNetsStateStorage
 
         var maxBaseVertices = vertexRangeX * vertexRangeY * vertexRangeZ;
         var emitCells = cellCount.X * cellCount.Y * cellCount.Z;
-        var maxVertices = maxBaseVertices + 2 * emitCells;
+       
+        // Two duplicate vertices per emitted cell are the material junction copies, and three more are the concave quad fan apexes:
+        var maxVertices = maxBaseVertices + 5 * emitCells;
 
         _cellIndices = new int[maxBaseVertices];
-        _localCellsList = new Vector3i[maxBaseVertices];
+        _localCellsList = new Vector3i[maxVertices];
         _cellCentersList = new Vector3[maxBaseVertices];
         _vertexTypesList = new MultiLabelSurfaceNets.VertexType[maxBaseVertices];
         _faceTypesList = new MultiLabelSurfaceNets.FaceCrossingType[maxBaseVertices * MultiLabelSurfaceNets.FaceCount];

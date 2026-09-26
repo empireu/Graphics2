@@ -1,15 +1,20 @@
 using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.KHR;
+
 // ReSharper disable UnusedAutoPropertyAccessor.Local
+// ReSharper disable UnusedAutoPropertyAccessor.Global
 
 namespace Graphics2.Core.Bootstrap;
 
 public sealed class VkDeviceDescription
 {
     // ReSharper disable once CollectionNeverUpdated.Global
-    // ReSharper disable once FieldCanBeMadeReadOnly.Global
-    public List<string> AdditionalExtensions = [];
+    public List<string> AdditionalExtensions { get; init; } = [];
+
+    public bool FillModeNonSolid { get; init; }
+    
+    public bool WideLines { get; init; }
 }
 
 public sealed unsafe class VkDevice : IDisposable
@@ -105,14 +110,15 @@ public sealed unsafe class VkDevice : IDisposable
             {
                 SamplerAnisotropy = true,
                 MultiDrawIndirect = true,
-                DrawIndirectFirstInstance = true
+                DrawIndirectFirstInstance = true,
+                FillModeNonSolid = description.FillModeNonSolid,
+                WideLines = description.WideLines
             }
         };
         
         vk11Features.PNext = &vk12Features;
         vk12Features.PNext = &vk13Features;
-
-
+        
         Device logicalDevice;
         
         var ppEnabledExtensions = (byte**)SilkMarshal.StringArrayToPtr(extensions);
@@ -170,7 +176,7 @@ public sealed unsafe class VkDevice : IDisposable
             return properties.DeviceType == PhysicalDeviceType.DiscreteGpu;
         });
 
-        if (TryFindDevice(instance, surfaceTarget, extensions, discreteDevices, out var discreteDevice))
+        if (TryFindDevice(instance, surfaceTarget, extensions, discreteDevices, description, out var discreteDevice))
         {
             return discreteDevice;
         }
@@ -182,7 +188,7 @@ public sealed unsafe class VkDevice : IDisposable
             return properties.DeviceType == PhysicalDeviceType.IntegratedGpu;
         });
         
-        if (TryFindDevice(instance, surfaceTarget, extensions, integratedDevices, out var integratedGpu))
+        if (TryFindDevice(instance, surfaceTarget, extensions, integratedDevices, description, out var integratedGpu))
         {
             return integratedGpu;
         }
@@ -206,12 +212,18 @@ public sealed unsafe class VkDevice : IDisposable
         public PhysicalDeviceVulkan13Features FeaturesVk13 { get; init; }
         
         public PhysicalDeviceFeatures2 Features2 { get; init; }
+
+        public bool FillModeNonSolidEnabled { get; init; }
+
+        public bool WideLinesEnabled { get; init; }
         
         public ulong DeviceLocalMemory { get; init; }
 
         public ulong MinUniformBufferOffsetAlignment { get; init; }
 
         public ulong MinStorageBufferOffsetAlignment { get; init; }
+        
+        public float[] LineWidthRange { get; init; }
     }    
     // ReSharper restore UnusedAutoPropertyAccessor.Global
 
@@ -220,6 +232,7 @@ public sealed unsafe class VkDevice : IDisposable
         SurfaceTarget surfaceTarget,
         List<string> extensions,
         IEnumerable<PhysicalDevice> devices,
+        VkDeviceDescription description,
         out DeviceInfo result)
     {
         var candidates = devices.Select<PhysicalDevice, DeviceInfo?>(device =>
@@ -300,6 +313,16 @@ public sealed unsafe class VkDevice : IDisposable
             {
                 return null;
             }
+            
+            if (description.FillModeNonSolid && !features2.Features.FillModeNonSolid)
+            {
+                return null;
+            }
+            
+            if (description.WideLines && !features2.Features.WideLines)
+            {
+                return null;
+            }
 
             return new DeviceInfo
             {
@@ -310,9 +333,12 @@ public sealed unsafe class VkDevice : IDisposable
                 FeaturesVk12 = vk12Features,
                 FeaturesVk13 = vk13Features,
                 Features2 = features2,
+                FillModeNonSolidEnabled = description.FillModeNonSolid,
+                WideLinesEnabled = description.WideLines,
                 DeviceLocalMemory = DeviceLocalMemoryBytes(instance.Vk, device),
                 MinUniformBufferOffsetAlignment = properties.Limits.MinUniformBufferOffsetAlignment,
-                MinStorageBufferOffsetAlignment = properties.Limits.MinStorageBufferOffsetAlignment
+                MinStorageBufferOffsetAlignment = properties.Limits.MinStorageBufferOffsetAlignment,
+                LineWidthRange = [properties.Limits.LineWidthRange[0], properties.Limits.LineWidthRange[1]]
             };
         }).Where(x => x.HasValue).Select(x => x!.Value).ToList();
 

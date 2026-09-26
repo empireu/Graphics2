@@ -555,34 +555,55 @@ public static class ReferenceMultiLabelSurfaceNets
                 if (edge == 0)
                 {
                     EmitQuad(
+                        vertices,
+                        content,
+                        cell,
+                        edge,
+                        iso,
                         i0,
                         CellIndex(cellIndices, range, vertexMin, cell.X, cell.Y - 1, cell.Z),
                         CellIndex(cellIndices, range, vertexMin, cell.X, cell.Y - 1, cell.Z - 1),
                         CellIndex(cellIndices, range, vertexMin, cell.X, cell.Y, cell.Z - 1),
                         solidBase,
-                        indices
+                        indices,
+                        localCells,
+                        vertexCells
                     );
                 }
                 else if (edge == 1)
                 {
                     EmitQuad(
+                        vertices,
+                        content,
+                        cell,
+                        edge,
+                        iso,
                         i0,
                         CellIndex(cellIndices, range, vertexMin, cell.X, cell.Y, cell.Z - 1),
                         CellIndex(cellIndices, range, vertexMin, cell.X - 1, cell.Y, cell.Z - 1),
                         CellIndex(cellIndices, range, vertexMin, cell.X - 1, cell.Y, cell.Z),
                         solidBase,
-                        indices
+                        indices,
+                        localCells,
+                        vertexCells
                     );
                 }
                 else
                 {
                     EmitQuad(
+                        vertices,
+                        content,
+                        cell,
+                        edge,
+                        iso,
                         i0,
                         CellIndex(cellIndices, range, vertexMin, cell.X - 1, cell.Y, cell.Z),
                         CellIndex(cellIndices, range, vertexMin, cell.X - 1, cell.Y - 1, cell.Z),
                         CellIndex(cellIndices, range, vertexMin, cell.X, cell.Y - 1, cell.Z),
                         solidBase,
-                        indices
+                        indices,
+                        localCells,
+                        vertexCells
                     );
                 }
             }
@@ -924,13 +945,80 @@ public static class ReferenceMultiLabelSurfaceNets
             : Vector3.UnitY;
     }
 
-    /// <summary>
-    ///     Records a quad as two triangles.
-    ///     The order flips with the base corner sign so the normals face outward.
-    ///     Both triangles start at i0, which is what makes i0 the provoking vertex for both of them and therefore what lets one material per vertex stand in for one material per quad.
-    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void EmitQuad(int i0, int i1, int i2, int i3, bool solidBase, List<int> indices)
+    private static void EmitQuad(
+        List<ReferenceVoxelVertex> vertices,
+        in Span3D<byte> content,
+        in Vector3i cell,
+        int edge,
+        byte iso,
+        int i0,
+        int i1,
+        int i2,
+        int i3,
+        bool solidBase,
+        List<int> indices,
+        List<Vector3i> localCells,
+        List<Vector3i>? vertexCells
+    )
+    {
+        var p0 = vertices[i0].Position;
+        var p1 = vertices[i1].Position;
+        var p2 = vertices[i2].Position;
+        var p3 = vertices[i3].Position;
+        var convex = Vector3.Dot(Vector3.Cross(p1 - p0, p2 - p0), Vector3.Cross(p2 - p0, p3 - p0)) >= 0.0f;
+
+        if (convex)
+        {
+            EmitDiagonalQuad(indices, solidBase, i0, i1, i2, i3);
+            return;
+        }
+
+        var other = BaseEdgeCorner[edge];
+        var value0 = content[cell.X, cell.Y, cell.Z];
+        var value1 = content[cell.X + (other & 1), cell.Y + ((other >> 1) & 1), cell.Z + ((other >> 2) & 1)];
+        var t = (iso - value0) / (float)(value1 - value0);
+        var crossing = new Vector3(cell.X, cell.Y, cell.Z) + edge switch
+        {
+            0 => new Vector3(t, 0.0f, 0.0f),
+            1 => new Vector3(0.0f, t, 0.0f),
+            _ => new Vector3(0.0f, 0.0f, t)
+        };
+
+        var apexPosition = ApexIsInside(crossing, p0, p1, p2, p3, edge) ? crossing : InteriorApex(p0, p1, p2, p3, edge);
+
+        if (!ApexIsInside(apexPosition, p0, p1, p2, p3, edge))
+        {
+            EmitDiagonalQuad(indices, solidBase, i0, i1, i2, i3);
+            return;
+        }
+
+        var apex = vertices.Count;
+        var vertex = vertices[i0];
+        vertex.Position = apexPosition;
+        vertices.Add(vertex);
+
+        // The apex belongs to no cell of its own, so it takes the emitting cell's place in the cell-keyed lists the caller and Compact read:
+        localCells.Add(localCells[i0]);
+        vertexCells?.Add(vertexCells[i0]);
+
+        if (solidBase)
+        {
+            AddFanTriangle(indices, apex, i0, i1);
+            AddFanTriangle(indices, apex, i1, i2);
+            AddFanTriangle(indices, apex, i2, i3);
+            AddFanTriangle(indices, apex, i3, i0);
+        }
+        else
+        {
+            AddFanTriangle(indices, apex, i1, i0);
+            AddFanTriangle(indices, apex, i2, i1);
+            AddFanTriangle(indices, apex, i3, i2);
+            AddFanTriangle(indices, apex, i0, i3);
+        }
+    }
+
+    private static void EmitDiagonalQuad(List<int> indices, bool solidBase, int i0, int i1, int i2, int i3)
     {
         indices.Add(i0);
 
@@ -950,5 +1038,64 @@ public static class ReferenceMultiLabelSurfaceNets
             indices.Add(i3);
             indices.Add(i2);
         }
+    }
+
+    private static bool ApexIsInside(Vector3 apex, Vector3 p0, Vector3 p1, Vector3 p2, Vector3 p3, int edge)
+    {
+        var cross0 = Cross(Perpendicular(p0 - apex, edge), Perpendicular(p1 - apex, edge));
+        var cross1 = Cross(Perpendicular(p1 - apex, edge), Perpendicular(p2 - apex, edge));
+        var cross2 = Cross(Perpendicular(p2 - apex, edge), Perpendicular(p3 - apex, edge));
+        var cross3 = Cross(Perpendicular(p3 - apex, edge), Perpendicular(p0 - apex, edge));
+
+        return cross0 > 0.0f && cross1 > 0.0f && cross2 > 0.0f && cross3 > 0.0f || cross0 < 0.0f && cross1 < 0.0f && cross2 < 0.0f && cross3 < 0.0f;
+    }
+
+    private static Vector3 InteriorApex(Vector3 p0, Vector3 p1, Vector3 p2, Vector3 p3, int edge)
+    {
+        Span<Vector3> corners = [p0, p1, p2, p3];
+        Span<float> turns = stackalloc float[4];
+        var orientation = 0.0f;
+
+        for (var corner = 0; corner < 4; corner++)
+        {
+            turns[corner] = Cross(
+                Perpendicular(corners[(corner + 3) % 4] - corners[corner], edge),
+                Perpendicular(corners[(corner + 1) % 4] - corners[corner], edge)
+            );
+
+            orientation += turns[corner];
+        }
+
+        for (var corner = 0; corner < 4; corner++)
+        {
+            if (turns[corner] * orientation < 0.0f)
+            {
+                return (corners[corner] + corners[(corner + 2) % 4]) * 0.5f;
+            }
+        }
+
+        return (corners[0] + corners[2]) * 0.5f;
+    }
+
+    private static void AddFanTriangle(List<int> indices, int apex, int a, int b)
+    {
+        indices.Add(apex);
+        indices.Add(a);
+        indices.Add(b);
+    }
+
+    private static Vector2 Perpendicular(Vector3 value, int edge)
+    {
+        return edge switch
+        {
+            0 => new Vector2(value.Y, value.Z),
+            1 => new Vector2(value.Z, value.X),
+            _ => new Vector2(value.X, value.Y)
+        };
+    }
+
+    private static float Cross(Vector2 a, Vector2 b)
+    {
+        return a.X * b.Y - a.Y * b.X;
     }
 }
