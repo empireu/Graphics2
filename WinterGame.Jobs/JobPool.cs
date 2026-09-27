@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 
 namespace WinterGame.Jobs;
 
@@ -51,41 +52,50 @@ public sealed class JobPoolDescription
     public required int ThreadCount { get; init; } = 4;
 }
 
-public sealed class JobPool(JobPoolDescription description)
+public sealed class JobPool
 {
     /// <summary>
     ///     The slot half of a handle is 16 bits, which fixes the slab size.
     /// </summary>
     public const int MaxCounters = 1 << 16;
 
-   private struct CounterEntry
-   {
-       public uint Generation;
-       public int Remaining;
-   }
+    private struct CounterEntry
+    {
+        public uint Generation;
+        public int Remaining;
+
+        /// <summary>
+        ///     Signaled by the last unit, so <see cref="Complete"/> can block without polling.
+        /// </summary>
+        public ManualResetEventSlim Fence;
+
+        /// <summary>
+        ///     Set to 1 by the last unit, after <see cref="Fence"/> has been signaled.
+        ///     It proves the final writer is done touching the slot, which <see cref="Remaining"/> alone does not.
+        /// </summary>
+        public int Retired;
+    }
 
     private readonly CounterEntry[] _entries = new CounterEntry[MaxCounters];
-    
-    /// <summary>
-    ///     Slots that have been released and are ready to hand out again.
-    ///     Slots below <see cref="_nextSlot"/> that are not here have never been used.
-    /// </summary>
-    private readonly Stack<int> _releasedSlots = new();
+    private readonly Stack<int> _freeSlots = new(MaxCounters);
     private readonly Lock _counterLock = new();
-    private int _nextSlot;
+    
+    public JobPool(JobPoolDescription description)
+    {
+        for (var i = MaxCounters - 1; i >= 0; i--)
+        {
+            _entries[i].Fence = new ManualResetEventSlim();
+            _freeSlots.Push(i);
+        }
+    }
 
-    public int ThreadCount { get; } = description.ThreadCount;
-
-    /// <summary>
-    ///     Number of slots that <see cref="CreateJob"/> can still hand out.
-    /// </summary>
     public int AvailableCounters
     {
         get
         {
             lock (_counterLock)
             {
-                return MaxCounters - _nextSlot + _releasedSlots.Count;
+                return _freeSlots.Count;
             }
         }
     }
@@ -101,22 +111,19 @@ public sealed class JobPool(JobPoolDescription description)
         int slot;
         lock (_counterLock)
         {
-            if (_releasedSlots.Count > 0)
+            if (_freeSlots.Count > 0)
             {
-                slot = _releasedSlots.Pop();
-            }
-            else if (_nextSlot < MaxCounters)
-            {
-                slot = _nextSlot++;
+                slot = _freeSlots.Pop();
             }
             else
             {
                 throw new InvalidOperationException($"The pool has no free job slots left (max {MaxCounters})");
             }
         }
-
-        // The slot is ours alone until release, so its generation is stable here.
+        
         ref var entry = ref _entries[slot];
+        entry.Fence.Reset();
+        entry.Retired = 0;
         entry.Remaining = count;
 
         return new Job(this, Job.Pack(slot, entry.Generation));
@@ -140,32 +147,48 @@ public sealed class JobPool(JobPoolDescription description)
     }
 
     /// <summary>
-    ///     True once every counted unit of work has finished.
-    ///     The call is non-blocking; it only reads the counter.
+    ///     True once every counted unit of work has finished and the last unit has finished <see cref="Decrement"/>, so the results are safe to read and the slot safe to recycle.
+    ///     The call is non-blocking.
     /// </summary>
     public bool TryComplete(Job job)
     {
         ref var entry = ref GetEntry(job);
-        return Volatile.Read(ref entry.Remaining) == 0;
+        return Volatile.Read(ref entry.Retired) == 1;
     }
 
     /// <summary>
-    ///     Returns the counter to the slab and invalidates the handle.
-    ///     Only legal once the job is complete, and only from the thread that created it.
+    ///     Blocks until <see cref="TryComplete"/> would be true.
+    ///     Only the thread that created the job may wait on it, and never a pool worker, which would deadlock once every worker is waiting for work only it could run.
+    ///     Only one thread may wait, because <see cref="Release"/> clears the fence for the next occupant.
+    /// </summary>
+    public void Complete(Job job)
+    {
+        ref var entry = ref GetEntry(job);
+        var fence = entry.Fence;
+        
+        while (Volatile.Read(ref entry.Retired) == 0)
+        {
+            fence.Wait();
+        }
+    }
+
+    /// <summary>
+    ///     Returns the counter to the pool and invalidates the handle.
+    ///     Only legal once the last unit has retired, and only from the thread that created the job.
     /// </summary>
     public void Release(Job job)
     {
         ref var entry = ref GetEntry(job);
 
-        if (Volatile.Read(ref entry.Remaining) != 0)
+        if (Volatile.Read(ref entry.Retired) == 0)
         {
-            throw new InvalidOperationException("The job was released before it completed.");
+            throw new InvalidOperationException("The job was released before its last unit retired");
         }
 
         lock (_counterLock)
         {
             entry.Generation++;
-            _releasedSlots.Push(job.Slot);
+            _freeSlots.Push(job.Slot);
         }
     }
 
@@ -178,7 +201,17 @@ public sealed class JobPool(JobPoolDescription description)
     {
         Debug.Assert((uint)slot < MaxCounters, $"{nameof(Decrement)} was given the out-of-range slot {slot}");
 
-        return Interlocked.Decrement(ref _entries[slot].Remaining) == 0;
+        ref var entry = ref _entries[slot];
+
+        if (Interlocked.Decrement(ref entry.Remaining) != 0)
+        {
+            return false;
+        }
+
+        entry.Fence.Set();
+
+        Volatile.Write(ref entry.Retired, 1);
+        return true;
     }
 
     private ref CounterEntry GetEntry(Job job)

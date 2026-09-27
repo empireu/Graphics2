@@ -85,6 +85,7 @@ public class JobPoolTests
         Assert.Equal(slot, reused.Slot);
         Assert.Equal(job.Generation + 1, reused.Generation);
         Assert.NotEqual(job, reused);
+        Assert.False(pool.TryComplete(reused));
     }
 
     [Fact]
@@ -135,5 +136,61 @@ public class JobPoolTests
 
         Assert.Equal(0, pool.AvailableCounters);
         Assert.Throws<InvalidOperationException>(() => pool.CreateJob(1));
+    }
+
+    [Fact]
+    public void Complete_BlocksUntilTheLastUnitFinishes()
+    {
+        var pool = CreatePool();
+        var job = pool.CreateJob(1);
+        var returned = new ManualResetEventSlim(false);
+
+        var waiter = new Thread(() =>
+        {
+            pool.Complete(job);
+            returned.Set();
+        })
+        {
+            IsBackground = true,
+            Name = "JobPoolWaiter",
+        };
+
+        waiter.Start();
+
+        // The counter still holds a unit, so the waiter cannot come back yet.
+        Assert.False(returned.Wait(TimeSpan.FromMilliseconds(250)));
+
+        Assert.True(pool.Decrement(job.Slot));
+
+        Assert.True(returned.Wait(TimeSpan.FromSeconds(10)), "Complete did not return after the last unit finished.");
+        Assert.True(waiter.Join(TimeSpan.FromSeconds(10)));
+    }
+
+    [Fact]
+    public void Complete_ReturnsImmediatelyWhenTheJobIsAlreadyDone()
+    {
+        var pool = CreatePool();
+        var job = pool.CreateJob(1);
+        Assert.True(pool.Decrement(job.Slot));
+
+        RunWithTimeout(() => pool.Complete(job), "Complete blocked on a finished job.");
+    }
+
+    private static void RunWithTimeout(Action action, string message)
+    {
+        var done = new ManualResetEventSlim(false);
+
+        var thread = new Thread(() =>
+        {
+            action();
+            done.Set();
+        })
+        {
+            IsBackground = true,
+        };
+
+        thread.Start();
+
+        Assert.True(done.Wait(TimeSpan.FromSeconds(10)), message);
     }
 }
