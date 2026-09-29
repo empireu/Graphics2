@@ -8,7 +8,7 @@ public class JobPoolTests
 {
     private static JobPool CreatePool()
     {
-        return new JobPool(new JobPoolDescription { ThreadCount = 1 });
+        return new JobPool();
     }
 
     [Fact]
@@ -142,11 +142,15 @@ public class JobPoolTests
     public void Complete_BlocksUntilTheLastUnitFinishes()
     {
         var pool = CreatePool();
-        var job = pool.CreateJob(1);
+        var job = default(Job);
+        var created = new ManualResetEventSlim(false);
         var returned = new ManualResetEventSlim(false);
 
+        // Created on the waiter, because only the creating thread may wait on a job.
         var waiter = new Thread(() =>
         {
+            job = pool.CreateJob(1);
+            created.Set();
             pool.Complete(job);
             returned.Set();
         })
@@ -156,6 +160,7 @@ public class JobPoolTests
         };
 
         waiter.Start();
+        Assert.True(created.Wait(TimeSpan.FromSeconds(10)), "The waiter never created its job.");
 
         // The counter still holds a unit, so the waiter cannot come back yet.
         Assert.False(returned.Wait(TimeSpan.FromMilliseconds(250)));
@@ -170,10 +175,13 @@ public class JobPoolTests
     public void Complete_ReturnsImmediatelyWhenTheJobIsAlreadyDone()
     {
         var pool = CreatePool();
-        var job = pool.CreateJob(1);
-        Assert.True(pool.Decrement(job.Slot));
 
-        RunWithTimeout(() => pool.Complete(job), "Complete blocked on a finished job.");
+        RunWithTimeout(() =>
+        {
+            var job = pool.CreateJob(1);
+            pool.Decrement(job.Slot);
+            pool.Complete(job);
+        }, "Complete blocked on a finished job");
     }
 
     private static void RunWithTimeout(Action action, string message)

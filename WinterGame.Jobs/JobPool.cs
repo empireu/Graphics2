@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 
 namespace WinterGame.Jobs;
 
@@ -46,11 +47,6 @@ public readonly struct Job(JobPool pool, ulong data) : IEquatable<Job>
     }
 }
 
-public sealed class JobPoolDescription
-{
-    public required int ThreadCount { get; init; } = 4;
-}
-
 public sealed class JobPool
 {
     /// <summary>
@@ -73,13 +69,22 @@ public sealed class JobPool
         ///     It proves the final writer is done touching the slot, which <see cref="Remaining"/> alone does not.
         /// </summary>
         public int Retired;
+
+#if DEBUG
+        /// <summary>
+        ///     The managed thread that created the job, the only one allowed to wait on it or release it.
+        /// </summary>
+        public int CreatorThreadId;
+#endif
     }
 
     private readonly CounterEntry[] _entries = new CounterEntry[MaxCounters];
     private readonly Stack<int> _freeSlots = new(MaxCounters);
     private readonly Lock _counterLock = new();
+    private volatile bool _abandoned;
+    private ExceptionDispatchInfo? _fault;
     
-    public JobPool(JobPoolDescription description)
+    public JobPool()
     {
         for (var i = MaxCounters - 1; i >= 0; i--)
         {
@@ -125,6 +130,10 @@ public sealed class JobPool
         entry.Retired = 0;
         entry.Remaining = count;
 
+#if DEBUG
+        entry.CreatorThreadId = Environment.CurrentManagedThreadId;
+#endif
+
         return new Job(this, Job.Pack(slot, entry.Generation));
     }
 
@@ -148,9 +157,12 @@ public sealed class JobPool
     /// <summary>
     ///     True once every counted unit of work has finished and the last unit has finished <see cref="Decrement"/>, so the results are safe to read and the slot safe to recycle.
     ///     The call is non-blocking.
+    ///     Rethrows the pool's fault, so a result from a faulted pool is never read as if it were valid.
     /// </summary>
     public bool TryComplete(Job job)
     {
+        ThrowIfFaulted();
+
         ref var entry = ref GetEntry(job);
         return Volatile.Read(ref entry.Retired) == 1;
     }
@@ -159,15 +171,62 @@ public sealed class JobPool
     ///     Blocks until <see cref="TryComplete"/> would be true.
     ///     Only the thread that created the job may wait on it, and never a pool worker, which would deadlock once every worker is waiting for work only it could run.
     ///     Only one thread may wait, because <see cref="Release"/> clears the fence for the next occupant.
+    ///     Throws <see cref="ObjectDisposedException"/> if the scheduler was disposed first, because the work it abandoned will never retire the job, and rethrows the pool's fault like <see cref="TryComplete"/>.
     /// </summary>
     public void Complete(Job job)
     {
+        Debug.Assert(!JobScheduler.IsWorkerThread, $"{nameof(Complete)} was called from a pool worker, which deadlocks once every worker waits");
+
+        ThrowIfFaulted();
+
         ref var entry = ref GetEntry(job);
         var fence = entry.Fence;
-        
+
+#if DEBUG
+        Debug.Assert(entry.CreatorThreadId == Environment.CurrentManagedThreadId, $"{nameof(Complete)} was called from a thread that did not create the job");
+#endif
+
         while (Volatile.Read(ref entry.Retired) == 0)
         {
+            if (_abandoned)
+            {
+                throw new ObjectDisposedException(nameof(JobScheduler), "The scheduler was disposed before the job completed");
+            }
+
             fence.Wait();
+        }
+
+        ThrowIfFaulted();
+    }
+
+    /// <summary>
+    ///     Rethrows the first exception a task threw, with its original stack trace.
+    ///     A task that throws is considered a bug, and errors a task expects are its own code's to handle, so a fault is fatal.
+    /// </summary>
+    public void ThrowIfFaulted()
+    {
+        Volatile.Read(ref _fault)?.Throw();
+    }
+
+    /// <summary>
+    ///     Records a task's exception. Only the first is kept.
+    /// </summary>
+    internal void Fault(Exception exception)
+    {
+        Interlocked.CompareExchange(ref _fault, ExceptionDispatchInfo.Capture(exception), null);
+    }
+
+    /// <summary>
+    ///     Releases every thread blocked in <see cref="Complete"/> once the scheduler has stopped for good.
+    ///     Called after the workers have joined, so nothing should decrement concurrently.
+    /// </summary>
+    internal void Abandon()
+    {
+        _abandoned = true;
+
+        for (var slot = 0; slot < MaxCounters; slot++)
+        {
+            _entries[slot].Fence.Set();
         }
     }
 
@@ -178,6 +237,10 @@ public sealed class JobPool
     public void Release(Job job)
     {
         ref var entry = ref GetEntry(job);
+
+#if DEBUG
+        Debug.Assert(entry.CreatorThreadId == Environment.CurrentManagedThreadId, $"{nameof(Release)} was called from a thread that did not create the job");
+#endif
 
         if (Volatile.Read(ref entry.Retired) == 0)
         {
@@ -202,7 +265,11 @@ public sealed class JobPool
 
         ref var entry = ref _entries[slot];
 
-        if (Interlocked.Decrement(ref entry.Remaining) != 0)
+        var remaining = Interlocked.Decrement(ref entry.Remaining);
+
+        Debug.Assert(remaining >= 0, "A job retired more units than it counted, so its slot may already belong to the next job");
+
+        if (remaining != 0)
         {
             return false;
         }
@@ -211,6 +278,31 @@ public sealed class JobPool
 
         Volatile.Write(ref entry.Retired, 1);
         return true;
+    }
+
+    /// <summary>
+    ///     Rebuilds a handle for a slot a work item named.
+    ///     The counter pins the slot until its last unit retires, so the generation is still the one the handle carried and no generation has to travel in the work item itself.
+    /// </summary>
+    internal Job Pack(int slot)
+    {
+        Debug.Assert((uint)slot < MaxCounters, $"{nameof(Pack)} was given the out-of-range slot {slot}");
+
+        return new Job(this, Job.Pack(slot, _entries[slot].Generation));
+    }
+
+    /// <summary>
+    ///     Throws unless the handle names a live counter of this pool that still has an outstanding unit.
+    ///     A published item retires one unit, so an item published against a job with none would decrement past zero and, once the slot is recycled, into the next job's counter.
+    /// </summary>
+    internal void Validate(Job job)
+    {
+        ref var entry = ref GetEntry(job);
+
+        if (Volatile.Read(ref entry.Remaining) < 1)
+        {
+            throw new InvalidOperationException("Work was published to a job with no outstanding units");
+        }
     }
 
     private ref CounterEntry GetEntry(Job job)
