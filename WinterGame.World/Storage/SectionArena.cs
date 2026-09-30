@@ -19,8 +19,9 @@ public sealed class SectionArena
 
     /// <summary>
     ///     Bytes of voxel data per page in the default arena, from which the array count is derived.
+    ///     The arena addresses 32 pages, so this also sets its capacity, 256 MiB of dense bricks at 8 MiB.
     /// </summary>
-    private const int DefaultVoxelPageBytes = 4 * 1024 * 1024;
+    private const int DefaultVoxelPageBytes = 8 * 1024 * 1024;
 
     /// <summary>
     ///     Number of one-brick voxel arrays one page holds in the default arena.
