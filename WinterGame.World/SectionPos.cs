@@ -134,30 +134,30 @@ public struct SectionPos : IEquatable<SectionPos>
     ///     Packed coordinates are not contiguous, so a neighbor step has to go through <see cref="SectionPos(int, int, int)" /> rather than through arithmetic on the key.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public ulong GetKey() => Pack(X, Y, Z);
+    public readonly ulong GetKey() => Pack(X, Y, Z);
 
     /// <summary>
     ///     The world voxel coordinate of the section's first corner, which is the origin its local coordinates are measured from.
     /// </summary>
     [Pure]
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public Vector3i GetOrigin() => new(
+    public readonly Vector3i GetOrigin() => new(
         SectionToVoxelCoord(X),
         SectionToVoxelCoord(Y),
         SectionToVoxelCoord(Z)
     );
     
-    public bool Equals(SectionPos other)
+    public readonly bool Equals(SectionPos other)
     {
         return X == other.X && Y == other.Y && Z == other.Z;
     }
 
-    public override bool Equals(object? obj)
+    public readonly override bool Equals(object? obj)
     {
         return obj is SectionPos other && Equals(other);
     }
 
-    public override int GetHashCode()
+    public readonly override int GetHashCode()
     {
         return HashCode.Combine(X, Y, Z);
     }

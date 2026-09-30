@@ -8,8 +8,8 @@ namespace WinterGame.World;
 /// <summary>
 ///     Generates one section per work item into bricks.
 ///     Every slot owns a <see cref="SectionArena"/> sized to one section, and the worker running a slot writes its arena without locks and the main thread reads it once the job has completed.
-///     The generation buffers are per worker and indexed by <see cref="WorkExecutionContext.ThreadId"/>.
-///     <see cref="Allocate"/>, <see cref="GetResult"/> and <see cref="Free"/> are main thread only.
+///     The generation buffers are per worker and indexed by <see cref="WorkExecutionContext.ThreadId"/>, plus one set reserved for <see cref="GenerateNow"/> on the game thread.
+///     <see cref="Allocate"/>, <see cref="GetResult"/>, <see cref="Free"/> and <see cref="GenerateNow"/> are main thread only.
 /// </summary>
 public sealed class SectionGenerationExecutor : IWorkExecutor
 {
@@ -20,6 +20,11 @@ public sealed class SectionGenerationExecutor : IWorkExecutor
     private readonly TerrainGraphSource[] _sources;
     private readonly Memory3D<byte>[] _content;
     private readonly Memory3D<byte>[] _material;
+
+    /// <summary>
+    ///     Index of the generation buffers <see cref="GenerateNow"/> uses, which is past every worker's.
+    /// </summary>
+    private readonly int _gameThreadScratch;
 
     public SectionGenerationExecutor(TerrainGraph graph, int workerCount, int slotCount = DefaultSlotCount)
     {
@@ -35,11 +40,13 @@ public sealed class SectionGenerationExecutor : IWorkExecutor
             _slotArenas[slot] = new SectionArena(descriptorArraysPerPage: 1, voxelArraysPerPage: Section.DescriptorsPerSection);
         }
 
-        _sources = new TerrainGraphSource[workerCount];
-        _content = new Memory3D<byte>[workerCount];
-        _material = new Memory3D<byte>[workerCount];
+        _gameThreadScratch = workerCount;
 
-        for (var worker = 0; worker < workerCount; worker++)
+        _sources = new TerrainGraphSource[workerCount + 1];
+        _content = new Memory3D<byte>[workerCount + 1];
+        _material = new Memory3D<byte>[workerCount + 1];
+
+        for (var worker = 0; worker < _sources.Length; worker++)
         {
             _sources[worker] = new TerrainGraphSource(graph);
             _content[worker] = Memory3D<byte>.Allocate(SectionPos.SectionSize, SectionPos.SectionSize, SectionPos.SectionSize);
@@ -48,8 +55,6 @@ public sealed class SectionGenerationExecutor : IWorkExecutor
 
         FreeSlotCount = slotCount;
     }
-
-    public int SlotCount => _slotArenas.Length;
 
     /// <summary>
     ///     Slots that <see cref="Allocate"/> can still hand out.
@@ -102,23 +107,39 @@ public sealed class SectionGenerationExecutor : IWorkExecutor
 
     public void Execute(in WorkExecutionContext context, int item)
     {
-        var position = _slots.GetInputSlot(item);
-        var worker = context.ThreadId;
+        var section = Generate(context.ThreadId, _slots.GetInputSlot(item), _slotArenas[item]);
 
+        _slots.WriteOutput(item, section);
+    }
+
+    /// <summary>
+    ///     Generates a section on the calling thread straight into <see cref="target"/>, with no slot and no copy.
+    ///     The target must not already hold a section at <see cref="position"/>.
+    /// </summary>
+    public Section GenerateNow(SectionPos position, SectionArena target)
+    {
+        WgAssert.DebugIsOnGameThread();
+        ArgumentNullException.ThrowIfNull(target);
+
+        return Generate(_gameThreadScratch, position, target);
+    }
+
+    private Section Generate(int scratch, SectionPos position, SectionArena target)
+    {
         var min = position.GetOrigin();
         var maxInclusive = min + SectionPos.SectionMask;
 
-        var content = _content[worker].Span;
-        var material = _material[worker].Span;
+        var content = _content[scratch].Span;
+        var material = _material[scratch].Span;
 
-        _sources[worker].Generate(min, maxInclusive, content, material);
+        _sources[scratch].Generate(min, maxInclusive, content, material);
 
-        var section = _slotArenas[item].Create(position);
+        var section = target.Create(position);
 
         WriteBricks(section, VoxelChannel.Content, content);
         WriteBricks(section, VoxelChannel.Material, material);
 
-        _slots.WriteOutput(item, section);
+        return section;
     }
 
     /// <summary>
