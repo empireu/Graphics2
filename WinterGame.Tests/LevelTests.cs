@@ -214,6 +214,50 @@ public class LevelTests
     }
 
     [Fact]
+    public void MoveTicket_FarAway_ReleasesTheOldShapeAndClaimsTheNewOne()
+    {
+        using var harness = new Harness();
+        var center = SurfaceSection(0, 0);
+
+        var ticket = harness.Level.AddTicket(center, horizontalRadius: 1, verticalRadius: 0);
+        harness.TickUntilSettled();
+
+        // The box around both shapes holds about 3 * 10^10 sections here:
+        harness.Level.MoveTicket(ticket, new SectionPos(center.X + 100_000, center.Y, center.Z + 100_000));
+
+        foreach (var position in Box(center, 2, 1))
+        {
+            Assert.Equal(SectionStatus.None, harness.Level.GetStatus(position));
+        }
+
+        // The keep shape is radius 2 and 3 sections tall, and nothing in it is loaded yet:
+        Assert.Equal(13 * 3, harness.Level.PendingCount);
+    }
+
+    [Fact]
+    public void MoveTicket_DiagonalJumpThatStillOverlaps_KeepsTheOverlapLoaded()
+    {
+        using var harness = new Harness();
+        var center = SurfaceSection(0, 0);
+        var overlap = new SectionPos(center.X + 1, center.Y, center.Z + 1);
+
+        var ticket = harness.Level.AddTicket(center, horizontalRadius: 2, verticalRadius: 0);
+        harness.TickUntilSettled();
+
+        Assert.True(harness.Level.TryGetSection(overlap, out var before));
+
+        // Three sections along both horizontal axes is past the point where the shapes are walked one at a time:
+        harness.Level.MoveTicket(ticket, new SectionPos(center.X + 3, center.Y, center.Z + 3));
+
+        Assert.True(harness.Level.TryGetSection(overlap, out var after));
+        Assert.Equal(before.DescriptorArray, after.DescriptorArray);
+        Assert.Equal(SectionStatus.None, harness.Level.GetStatus(center));
+
+        // The keep disc of radius 3 holds 29 columns in 3 layers, and the overlap is the only loaded section in it:
+        Assert.Equal(29 * 3 - 1, harness.Level.PendingCount);
+    }
+
+    [Fact]
     public void MoveTicket_ToTheSameSection_ChangesNothing()
     {
         using var harness = new Harness();

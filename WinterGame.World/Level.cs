@@ -168,6 +168,23 @@ public sealed class Level : IDisposable
         var keepHorizontal = ticket.HorizontalRadius + KeepMargin;
         var keepVertical = ticket.VerticalRadius + KeepMargin;
 
+        var shapeWidth = 2.0 * keepHorizontal + 1.0;
+        var shapeHeight = 2.0 * keepVertical + 1.0;
+        var boxVolume = (Math.Abs((double)center.X - previous.X) + shapeWidth) *
+                        (Math.Abs((double)center.Y - previous.Y) + shapeHeight) *
+                        (Math.Abs((double)center.Z - previous.Z) + shapeWidth);
+
+        // A long move makes the box around both shapes far larger than the shapes, so each shape is walked on its own instead.
+        // The new shape is claimed first, which keeps any overlap from reaching zero and unloading:
+        if (boxVolume > 2.0 * shapeWidth * shapeWidth * shapeHeight)
+        {
+            AdjustKeepShape(ticket, center, 1);
+            AdjustKeepShape(ticket, previous, -1);
+            _loadQueueDirty = true;
+
+            return;
+        }
+
         var minX = Math.Min(previous.X, center.X) - keepHorizontal;
         var maxX = Math.Max(previous.X, center.X) + keepHorizontal;
         var minY = Math.Min(previous.Y, center.Y) - keepVertical;
