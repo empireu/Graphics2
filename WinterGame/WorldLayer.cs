@@ -1,16 +1,15 @@
-﻿using System.Numerics;
+﻿using System.Diagnostics;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Graphics2.Core;
 using Graphics2.Core.Render;
 using Graphics2.Core.Resources;
 using Graphics2.Data;
-using Graphics2.ImGui;
 using Graphics2.Mathematics;
 using Graphics2.Renderer.Lines;
 using Graphics2.Renderer.Quads;
 using Graphics2.Renderer.Text;
-using Graphics2.Windowing.Input;
 using ImGuiNET;
 using Silk.NET.Maths;
 using WinterGame.Core;
@@ -25,8 +24,7 @@ namespace WinterGame;
 internal sealed unsafe class WorldLayer : IDisposable
 {
     private readonly App _app;
-    
-    private readonly ImGuiRenderer _imGui;
+
     private readonly VkSampler _textSampler;
     private readonly GlyphAtlas _glyphAtlas;
     private readonly TextRenderer _textRenderer;
@@ -39,7 +37,7 @@ internal sealed unsafe class WorldLayer : IDisposable
     private readonly QuadRenderer3D _overlayQuadRenderer3D;
     private readonly LineRenderer3D _lineRenderer3D;
     
-    private readonly Camera3D _camera = new();
+    private readonly Camera3D _camera;
 
     private readonly Pipeline _pipeline;
 
@@ -88,13 +86,14 @@ internal sealed unsafe class WorldLayer : IDisposable
 
     private MeshArena? _arena;
     private MultiLabelSurfaceNetsStateStorage? _mesherState;
-    private readonly List<Chunk> _chunks = [];   
+    private readonly List<Chunk> _chunks = [];
     private bool _rebuildRequested = true;
+    private Build? _build;
     private long _solidVoxels;
     private long _vertexCount;
     private long _indexCount;
 
-   
+
     private sealed class Chunk
     {
         public Vector3i Origin;
@@ -102,21 +101,49 @@ internal sealed unsafe class WorldLayer : IDisposable
         public int VertexCount;
         public int IndexCount;
     }
-    
-    public WorldLayer(App app)
+
+    /// <summary>
+    ///     A build in progress, which advances a few sections per frame.
+    ///     It keeps the settings it started with, so a panel edit made during the build applies to the next one.
+    /// </summary>
+    private sealed class Build
+    {
+        public required TerrainGraphSource Generator;
+        public required int ChunkCells;
+        public required int RelaxHalo;
+        public required int SectionsX;
+        public required int SectionsY;
+        public required int SectionsZ;
+        public required int OriginY;
+        public required bool CutEnabled;
+        public required int CutMaxX;
+        public required int CutMaxZ;
+        public required int CutMinY;
+        public required float FairingRange;
+        public required float FairingStep;
+
+        /// <summary>
+        ///     Time spent building, which excludes the frames the build is spread over.
+        /// </summary>
+        public required Stopwatch Watch;
+
+        public readonly long[] MaterialCounts = new long[SurfaceMaterial.Count];
+        public readonly long[] SolidCounts = new long[SurfaceMaterial.Count];
+        public long InteriorCount;
+        public int NextSection;
+        public int Frames;
+
+        public int SectionCount => SectionsX * SectionsY * SectionsZ;
+    }
+
+    public WorldLayer(App app, Camera3D camera)
     {
         _app = app;
-        
-        #region Assets and ImGui
+        _camera = camera;
+
+        #region Assets
 
         var factory = app.Factory;
-
-        _imGui = new ImGuiRenderer(factory);
-        _imGui.Initialize(
-            app.G2Wnd.Window.FramebufferSize,
-            () => app.G2Wnd.ClipboardText,
-            text => app.G2Wnd.ClipboardText = text
-        );
 
         var font = Font.CreateDefault(48.0f, RasterizationMode.Sdf);
        
@@ -281,50 +308,54 @@ internal sealed unsafe class WorldLayer : IDisposable
         frame.CopyBuffer(staging.Buffer, staging.Offset, destination, (ulong)destinationOffset, (ulong)data.Length);
     }
 
-    private readonly FrameTimeTracker _tracker = new(4000 * 5);
-    
-    private void ImGuiPass(Frame frame)
-    {
-        using var imGuiPass = frame.BeginRenderPass(new RenderPassDescription
-        {
-            ColorAttachments =
-            [
-                new ColorAttachment
-                {
-                    Target = frame.SwapchainColorTarget,
-                    LoadOp = LoadOp.Load,
-                    StoreOp = StoreOp.Store,
-                    FinalLayout = TextureLayout.Present
-                }
-            ]
-        });
+    /// <summary>
+    ///     Whether a build is requested or under way, which means the world is incomplete.
+    /// </summary>
+    public bool IsBuilding => _rebuildRequested || _build != null;
 
-        _imGui.Submit(frame, imGuiPass);
+    /// <summary>
+    ///     The fraction of the current build's sections that are done, or 1 when nothing is building.
+    /// </summary>
+    public float BuildProgress
+    {
+        get
+        {
+            if (_build != null)
+            {
+                return (float)_build.NextSection / _build.SectionCount;
+            }
+
+            return _rebuildRequested ? 0.0f : 1.0f;
+        }
     }
-    
-    public void OnFrame(double deltaTime, Frame frame, InputSnapshot input)
+
+    /// <summary>
+    ///     Starts a requested build and advances the current one by at least one section, stopping once <paramref name="buildBudgetMilliseconds"/> has been spent.
+    ///     The uploads are recorded into the frame.
+    /// </summary>
+    public void Update(Frame frame, double buildBudgetMilliseconds)
     {
         if (_rebuildRequested)
         {
             _app.Device.WaitIdle();
-            BuildWorld(frame);
+            BeginBuild(frame);
             _rebuildRequested = false;
         }
 
-        if (input.WasKeyPressed(G2Key.Escape))
+        if (_build != null)
         {
-            _camera.ToggleFpsMode(_app.G2Wnd);
+            StepBuild(frame, _build, buildBudgetMilliseconds);
         }
-
-        _camera.Update((float)deltaTime, input, _app.G2Wnd.Window.FramebufferSize);
-        _imGui.Update((float)deltaTime, input, _app.G2Wnd.Window.FramebufferSize);
 
         if (!_textInitialized)
         {
             _glyphAtlas.PrepopulateCommons(frame);
             _textInitialized = true;
         }
-        
+    }
+
+    public void Render(Frame frame)
+    {
         _overlayQuadRenderer3D.SetCamera(_camera.ViewProj);
         _textRenderer.SetCamera(_camera.ViewProj);
         _lineRenderer3D.SetCamera(_camera.ViewProj, _camera.Position);
@@ -419,28 +450,10 @@ internal sealed unsafe class WorldLayer : IDisposable
                 DrawRun(worldPass, args, runFirstCommand, _chunks.Count - runFirstCommand);
             }
         }
+    }
 
-        ImGui.PushStyleColor(ImGuiCol.WindowBg, new Vector4(0, 0, 0, 0));
-        ImGui.DockSpaceOverViewport(0U, (ImGuiViewport*) null, ImGuiDockNodeFlags.PassthruCentralNode, (ImGuiWindowClass*) null);
-        ImGui.PopStyleColor();
-
-        _tracker.Update();
-
-        if (ImGui.Begin("Tracker"))
-        {
-            ImGui.Text($"Frames: {_tracker.TotalFrames}/{_tracker.WindowFrames}");
-            ImGui.Separator();
-            ImGui.Text("Time (window):");
-            ImGui.Text($"  Avg: {_tracker.AverageMilliseconds * 1000:F2}us");
-            ImGui.Text($"  Min: {_tracker.MinimumMilliseconds * 1000:F2}us");
-            ImGui.Text($"  Max: {_tracker.MaximumMilliseconds * 1000:F2}us");
-            ImGui.Text($"  P50: {_tracker.MedianMilliseconds * 1000:F2}us");
-            ImGui.Text($"  P95: {_tracker.P95Milliseconds * 1000:F2}us");
-            ImGui.Text($"  P99: {_tracker.P99Milliseconds * 1000:F2}us");
-        }
-        
-        ImGui.End();
-        
+    public void DrawPanel()
+    {
         if (ImGui.Begin("Generator"))
         {
             ImGui.InputInt("Chunk cells", ref _chunkCells, 8);
@@ -463,6 +476,12 @@ internal sealed unsafe class WorldLayer : IDisposable
             ImGui.Text("World state:");
             ImGui.Text($"Sections: {_sectionsX} x {_sectionsY} x {_sectionsZ} = {_sectionsX * _sectionsY * _sectionsZ} of {MaxSections}");
             ImGui.Text($"Drawn: {_chunks.Count}");
+
+            if (_build != null)
+            {
+                ImGui.Text($"Building: {_build.NextSection} of {_build.SectionCount}");
+            }
+
             ImGui.Text($"Voxel size: {WorldConstants.VoxelSize} m");
             ImGui.Text($"World: {_sectionsX * _chunkCells * WorldConstants.VoxelSize} x {_sectionsY * _chunkCells * WorldConstants.VoxelSize} x {_sectionsZ * _chunkCells * WorldConstants.VoxelSize} m");
             ImGui.Text($"Solid Voxels: {_solidVoxels}");
@@ -550,14 +569,15 @@ internal sealed unsafe class WorldLayer : IDisposable
         }
 
         ImGui.End();
-        
-        ImGuiPass(frame);
     }
 
-  
-    private void BuildWorld(Frame frame)
+
+    /// <summary>
+    ///     Frees the current world and captures the settings of a new build, which <see cref="StepBuild"/> then advances.
+    /// </summary>
+    private void BeginBuild(Frame frame)
     {
-        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var watch = Stopwatch.StartNew();
         var arena = _arena!;
 
         foreach (var chunk in _chunks)
@@ -574,7 +594,6 @@ internal sealed unsafe class WorldLayer : IDisposable
 
         // Each relaxation pass reaches one cell further, so the chunk is read with that many cells of margin:
         var relaxHalo = Math.Clamp(_fairingIterations, 0, MaxRelaxIterations);
-        var halo = new Vector3i(relaxHalo);
 
         // One state serves every section in the build, and it is rebuilt only when the section shape changes:
         if (_mesherState == null || _mesherState.CellCount != cellCount || _mesherState.RelaxHalo != relaxHalo)
@@ -619,106 +638,154 @@ internal sealed unsafe class WorldLayer : IDisposable
             _camera.Pitch = -0.2f;
         }
 
-        Span<long> materialCounts = stackalloc long[SurfaceMaterial.Count];
-        Span<long> solidCounts = stackalloc long[SurfaceMaterial.Count];
-        long interiorCount = 0;
+        watch.Stop();
 
-        for (var sectionY = 0; sectionY < _sectionsY; sectionY++)
+        _build = new Build
         {
-            for (var sectionZ = 0; sectionZ < _sectionsZ; sectionZ++)
-            {
-                for (var sectionX = 0; sectionX < _sectionsX; sectionX++)
-                {
-                    var cellMin = new Vector3i(sectionX * _chunkCells, originY + sectionY * _chunkCells, sectionZ * _chunkCells);
-                    var box = SurfaceNetsMesher.GetSampleRange(cellMin - halo, cellCount + halo + halo);
-                    var localCellMin = cellMin - box.Min;
+            Generator = generator,
+            ChunkCells = _chunkCells,
+            RelaxHalo = relaxHalo,
+            SectionsX = _sectionsX,
+            SectionsY = _sectionsY,
+            SectionsZ = _sectionsZ,
+            OriginY = originY,
+            CutEnabled = _cutEnabled,
+            CutMaxX = cutMaxX,
+            CutMaxZ = cutMaxZ,
+            CutMinY = cutMinY,
+            FairingRange = _fairingRange,
+            FairingStep = _fairingStep,
+            Watch = watch
+        };
+    }
 
-                    var content = Memory3D<byte>.Allocate(
-                        box.Max.X - box.Min.X + 1,
-                        box.Max.Y - box.Min.Y + 1,
-                        box.Max.Z - box.Min.Z + 1
-                    );
+    /// <summary>
+    ///     Builds sections until the budget is spent, and finishes the build after its last section.
+    /// </summary>
+    private void StepBuild(Frame frame, Build build, double budgetMilliseconds)
+    {
+        var start = Stopwatch.GetTimestamp();
 
-                    var material = Memory3D<byte>.Allocate(content.SizeX, content.SizeY, content.SizeZ);
+        build.Watch.Start();
+        build.Frames++;
 
-                    generator.Generate(box.Min, box.Max, content.Span, material.Span);
+        // At least one section per step, so a build finishes even when one section costs more than the budget:
+        do
+        {
+            BuildSection(frame, build, build.NextSection);
+            build.NextSection++;
+        }
+        while (build.NextSection < build.SectionCount && Stopwatch.GetElapsedTime(start).TotalMilliseconds < budgetMilliseconds);
 
-                    if (_cutEnabled)
-                    {
-                        ClearCut(content.Span, material.Span, box.Min, cutMaxX, cutMaxZ, cutMinY);
-                    }
+        build.Watch.Stop();
 
-                    var sampleCount = cellCount + new Vector3i(1);
-                    _solidVoxels += CountSolid(content.Span, localCellMin, sampleCount);
-                    CountMaterials(content.Span, material.Span, localCellMin, sampleCount, materialCounts, solidCounts, ref interiorCount);
-
-                    var vertices = new List<VoxelVertex>();
-                    var indices = new List<int>();
-
-                    MultiLabelSurfaceNets.Mesh(_mesherState, new MultiLabelSurfaceNetsDescription
-                    {
-                        Content = content,
-                        Material = material,
-                        IsoLevel = WorldConstants.ContentIsoLevel,
-                        CellMin = localCellMin,
-                        CellCount = cellCount,
-                        Vertices = vertices,
-                        Indices = indices,
-                        Fairing = new SurfaceFairingSettings
-                        {
-                            AllowedRange = _fairingRange,
-                            StepSize = _fairingStep,
-                            Iterations = relaxHalo
-                        }
-                    });
-
-                    if (indices.Count == 0)
-                    {
-                        // A fully solid or fully air section emits no geometry, so it costs no arena slot:
-                        continue;
-                    }
-
-                    // A chunk holds far fewer than 65536 vertices, so its indices stay 16 bits and slot-relative:
-                    var indexScratch = new ushort[indices.Count];
-                    for (var index = 0; index < indices.Count; index++)
-                    {
-                        indexScratch[index] = (ushort)indices[index];
-                    }
-
-                    var allocation = arena.Allocate(vertices.Count, indexScratch.Length);
-
-                    UploadMesh(
-                        frame,
-                        allocation,
-                        MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(vertices)),
-                        MemoryMarshal.AsBytes(indexScratch.AsSpan())
-                    );
-
-                    _chunks.Add(new Chunk
-                    {
-                        Origin = box.Min,
-                        Allocation = allocation,
-                        VertexCount = vertices.Count,
-                        IndexCount = indexScratch.Length
-                    });
-
-                    _vertexCount += vertices.Count;
-                    _indexCount += indexScratch.Length;
-                }
-            }
+        if (build.NextSection < build.SectionCount)
+        {
+            return;
         }
 
         // Slot order is not page order, and the submission loop needs the pages contiguous:
         // A run breaks when either buffer changes, so ordering groups the chunks that share a pair.
         _chunks.Sort(CompareChunksByBuffer);
+        _build = null;
 
-        watch.Stop();
+        var chunkCells = build.ChunkCells;
 
-        Console.WriteLine($"Build: {watch.Elapsed.TotalMilliseconds:F0} ms for {_sectionsX * _sectionsY * _sectionsZ} section(s)");
-        Console.WriteLine($"World: {_chunks.Count} section(s) drawn of {_sectionsX * _sectionsY * _sectionsZ}, {_sectionsX * _chunkCells * WorldConstants.VoxelSize} x {_sectionsY * _chunkCells * WorldConstants.VoxelSize} x {_sectionsZ * _chunkCells * WorldConstants.VoxelSize} m, {_vertexCount} verts, {_indexCount} indices, {_solidVoxels} solid voxels");
-        Console.WriteLine($"Materials: {FormatMaterialCounts(solidCounts)} over every solid sample");
-        Console.WriteLine($"Materials: {FormatMaterialCounts(materialCounts)} within a sample of the surface, {interiorCount} saturated interior sample(s)");
+        Console.WriteLine($"Build: {build.Watch.Elapsed.TotalMilliseconds:F0} ms for {build.SectionCount} section(s) over {build.Frames} frame(s)");
+        Console.WriteLine($"World: {_chunks.Count} section(s) drawn of {build.SectionCount}, {build.SectionsX * chunkCells * WorldConstants.VoxelSize} x {build.SectionsY * chunkCells * WorldConstants.VoxelSize} x {build.SectionsZ * chunkCells * WorldConstants.VoxelSize} m, {_vertexCount} verts, {_indexCount} indices, {_solidVoxels} solid voxels");
+        Console.WriteLine($"Materials: {FormatMaterialCounts(build.SolidCounts)} over every solid sample");
+        Console.WriteLine($"Materials: {FormatMaterialCounts(build.MaterialCounts)} within a sample of the surface, {build.InteriorCount} saturated interior sample(s)");
         Console.WriteLine($"Draws: {CountRuns()} run(s) over {CountBufferPairs()} buffer pair(s)");
+    }
+
+    /// <summary>
+    ///     Generates, meshes and uploads one section. Sections are numbered X fastest, then Z, then Y.
+    /// </summary>
+    private void BuildSection(Frame frame, Build build, int sectionIndex)
+    {
+        var sectionX = sectionIndex % build.SectionsX;
+        var sectionZ = sectionIndex / build.SectionsX % build.SectionsZ;
+        var sectionY = sectionIndex / (build.SectionsX * build.SectionsZ);
+
+        var chunkCells = build.ChunkCells;
+        var cellCount = new Vector3i(chunkCells, chunkCells, chunkCells);
+        var halo = new Vector3i(build.RelaxHalo);
+
+        var cellMin = new Vector3i(sectionX * chunkCells, build.OriginY + sectionY * chunkCells, sectionZ * chunkCells);
+        var box = SurfaceNetsMesher.GetSampleRange(cellMin - halo, cellCount + halo + halo);
+        var localCellMin = cellMin - box.Min;
+
+        var content = Memory3D<byte>.Allocate(
+            box.Max.X - box.Min.X + 1,
+            box.Max.Y - box.Min.Y + 1,
+            box.Max.Z - box.Min.Z + 1
+        );
+
+        var material = Memory3D<byte>.Allocate(content.SizeX, content.SizeY, content.SizeZ);
+
+        build.Generator.Generate(box.Min, box.Max, content.Span, material.Span);
+
+        if (build.CutEnabled)
+        {
+            ClearCut(content.Span, material.Span, box.Min, build.CutMaxX, build.CutMaxZ, build.CutMinY);
+        }
+
+        var sampleCount = cellCount + new Vector3i(1);
+        _solidVoxels += CountSolid(content.Span, localCellMin, sampleCount);
+        CountMaterials(content.Span, material.Span, localCellMin, sampleCount, build.MaterialCounts, build.SolidCounts, ref build.InteriorCount);
+
+        var vertices = new List<VoxelVertex>();
+        var indices = new List<int>();
+
+        MultiLabelSurfaceNets.Mesh(_mesherState!, new MultiLabelSurfaceNetsDescription
+        {
+            Content = content,
+            Material = material,
+            IsoLevel = WorldConstants.ContentIsoLevel,
+            CellMin = localCellMin,
+            CellCount = cellCount,
+            Vertices = vertices,
+            Indices = indices,
+            Fairing = new SurfaceFairingSettings
+            {
+                AllowedRange = build.FairingRange,
+                StepSize = build.FairingStep,
+                Iterations = build.RelaxHalo
+            }
+        });
+
+        if (indices.Count == 0)
+        {
+            // A fully solid or fully air section emits no geometry, so it costs no arena slot:
+            return;
+        }
+
+        // A chunk holds far fewer than 65536 vertices, so its indices stay 16 bits and slot-relative:
+        var indexScratch = new ushort[indices.Count];
+        for (var index = 0; index < indices.Count; index++)
+        {
+            indexScratch[index] = (ushort)indices[index];
+        }
+
+        var allocation = _arena!.Allocate(vertices.Count, indexScratch.Length);
+
+        UploadMesh(
+            frame,
+            allocation,
+            MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(vertices)),
+            MemoryMarshal.AsBytes(indexScratch.AsSpan())
+        );
+
+        _chunks.Add(new Chunk
+        {
+            Origin = box.Min,
+            Allocation = allocation,
+            VertexCount = vertices.Count,
+            IndexCount = indexScratch.Length
+        });
+
+        _vertexCount += vertices.Count;
+        _indexCount += indexScratch.Length;
     }
 
     private void ClampSectionCounts()
@@ -965,7 +1032,6 @@ internal sealed unsafe class WorldLayer : IDisposable
     
     public void Dispose()
     {
-        _imGui.Dispose();
         _textRenderer.Dispose();
         _glyphAtlas.Dispose();
         _textSampler.Dispose();
