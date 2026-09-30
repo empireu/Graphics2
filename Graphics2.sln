@@ -34,6 +34,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WinterGame.Jobs", "WinterGa
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WinterGame.Utilities", "WinterGame.Utilities\WinterGame.Utilities.csproj", "{D7427C70-5E4A-4790-8899-B0D66264F9F2}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WinterGame.GenerationBenchmark", "WinterGame.GenerationBenchmark\WinterGame.GenerationBenchmark.csproj", "{FB973A41-D283-40A2-9E1A-163097C04919}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -248,6 +250,18 @@ Global
 		{D7427C70-5E4A-4790-8899-B0D66264F9F2}.Release|x64.Build.0 = Release|Any CPU
 		{D7427C70-5E4A-4790-8899-B0D66264F9F2}.Release|x86.ActiveCfg = Release|Any CPU
 		{D7427C70-5E4A-4790-8899-B0D66264F9F2}.Release|x86.Build.0 = Release|Any CPU
+		{FB973A41-D283-40A2-9E1A-163097C04919}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FB973A41-D283-40A2-9E1A-163097C04919}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FB973A41-D283-40A2-9E1A-163097C04919}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{FB973A41-D283-40A2-9E1A-163097C04919}.Debug|x64.Build.0 = Debug|Any CPU
+		{FB973A41-D283-40A2-9E1A-163097C04919}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{FB973A41-D283-40A2-9E1A-163097C04919}.Debug|x86.Build.0 = Debug|Any CPU
+		{FB973A41-D283-40A2-9E1A-163097C04919}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FB973A41-D283-40A2-9E1A-163097C04919}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FB973A41-D283-40A2-9E1A-163097C04919}.Release|x64.ActiveCfg = Release|Any CPU
+		{FB973A41-D283-40A2-9E1A-163097C04919}.Release|x64.Build.0 = Release|Any CPU
+		{FB973A41-D283-40A2-9E1A-163097C04919}.Release|x86.ActiveCfg = Release|Any CPU
+		{FB973A41-D283-40A2-9E1A-163097C04919}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

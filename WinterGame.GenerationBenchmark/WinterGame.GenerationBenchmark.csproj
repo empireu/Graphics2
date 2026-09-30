@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net11.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <AssemblyName>WinterGame.GenerationBenchmark</AssemblyName>
+        <RootNamespace>WinterGame.GenerationBenchmark</RootNamespace>
+        <ServerGarbageCollection>false</ServerGarbageCollection>
+        <TieredPGO>true</TieredPGO>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\WinterGame.Jobs\WinterGame.Jobs.csproj" />
+        <ProjectReference Include="..\WinterGame.World\WinterGame.World.csproj" />
+    </ItemGroup>
+
+</Project>
