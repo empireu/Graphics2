@@ -173,6 +173,25 @@ public class SectionGenerationExecutorTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new SectionGenerationExecutor(Graph, workerCount, slotCount));
     }
 
+    [Fact]
+    public void GenerateNow_IntoAFullArena_ThrowsAndLeavesNoSectionBehind()
+    {
+        var executor = new SectionGenerationExecutor(Graph, workerCount: 1, slotCount: 1);
+        var position = SurfaceSection(0, 0);
+        var reference = executor.GenerateNow(position, new SectionArena());
+
+        var denseBricks = Enum.GetValues<VoxelChannel>().Sum(
+            channel => Enumerable.Range(0, Section.Bricks).Count(index => reference.GetBrickType(channel, index) == BrickType.Dense)
+        );
+
+        // The arena addresses 32 dense bricks, which the surface section needs more than:
+        var full = new SectionArena(descriptorArraysPerPage: 1, voxelArraysPerPage: 1);
+
+        Assert.True(denseBricks > full.MaxVoxelArrays);
+        Assert.Throws<InvalidOperationException>(() => executor.GenerateNow(position, full));
+        Assert.Throws<InvalidOperationException>(() => full.Destroy(position));
+    }
+
     /// <summary>
     ///     The section holding the surface at the column in the middle of the given section column.
     /// </summary>

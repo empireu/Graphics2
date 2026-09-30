@@ -136,8 +136,17 @@ public sealed class SectionGenerationExecutor : IWorkExecutor
 
         var section = target.Create(position);
 
-        WriteBricks(section, VoxelChannel.Content, content);
-        WriteBricks(section, VoxelChannel.Material, material);
+        try
+        {
+            WriteBricks(section, VoxelChannel.Content, content);
+            WriteBricks(section, VoxelChannel.Material, material);
+        }
+        catch
+        {
+            // A half written section still holds None bricks, so a failed write removes it:
+            target.Destroy(position);
+            throw;
+        }
 
         return section;
     }

@@ -289,6 +289,64 @@ public class SectionArenaTests
         Assert.Throws<InvalidOperationException>(() => destination.CreateCopy(source));
     }
 
+    [Fact]
+    public void CreateCopy_IntoAFullArena_ThrowsAndReturnsWhatItAllocated()
+    {
+        var source = CreateSectionSizedArena().Create(Origin);
+
+        FillDense(source);
+
+        // The destination holds 32 dense bricks and the source has 1024:
+        var destination = new SectionArena(descriptorArraysPerPage: 1, voxelArraysPerPage: 1);
+
+        Assert.Throws<InvalidOperationException>(() => destination.CreateCopy(source));
+        Assert.Throws<InvalidOperationException>(() => destination.Destroy(Origin));
+
+        // Every array the failed copy took is free again, so the whole capacity can be allocated:
+        for (var index = 0; index < destination.MaxVoxelArrays; index++)
+        {
+            destination.AllocateVoxelArray();
+        }
+    }
+
+    [Fact]
+    public void VoxelPages_UseEveryPackablePageNumberAndThenThrow()
+    {
+        var arena = new SectionArena(descriptorArraysPerPage: 1, voxelArraysPerPage: 1);
+        var arrays = new List<VoxelArray>();
+
+        Assert.Equal(SectionArena.MaxPageNumber + 1, arena.MaxVoxelArrays);
+
+        for (var index = 0; index < arena.MaxVoxelArrays; index++)
+        {
+            arrays.Add(arena.AllocateVoxelArray());
+        }
+
+        // The last page has the widest number a handle packs, and its handle still resolves to its own memory:
+        var last = arrays[^1];
+
+        Assert.Equal(SectionArena.MaxPageNumber, last.Handle.PageIndex);
+        Assert.Equal(last, arena.GetVoxelArray(VoxelArrayHandle.Unpack(last.Handle.Pack())));
+
+        Assert.Throws<InvalidOperationException>(() => arena.AllocateVoxelArray());
+        Assert.Equal(SectionArena.MaxPageNumber + 1, arena.VoxelPageCount);
+    }
+
+    [Fact]
+    public void DescriptorPages_GrowPastThePackedPageNumberWidth()
+    {
+        // A descriptor array is never packed into a handle, so its page number has no width limit:
+        var arena = new SectionArena(descriptorArraysPerPage: 1, voxelArraysPerPage: 1);
+        var pageCount = SectionArena.MaxPageNumber + 9;
+
+        for (var x = 0; x < pageCount; x++)
+        {
+            arena.Create(new SectionPos(x, 0, 0));
+        }
+
+        Assert.Equal(pageCount, arena.DescriptorPageCount);
+    }
+
     private static SectionArena CreateSectionSizedArena()
     {
         return new SectionArena(descriptorArraysPerPage: 1, voxelArraysPerPage: Section.DescriptorsPerSection);

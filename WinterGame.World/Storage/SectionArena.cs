@@ -79,10 +79,14 @@ public sealed class SectionArena
 
     internal int VoxelPageCount => _voxelPages.Count;
 
+    /// <summary>
+    ///     The most dense bricks the arena can hold, which is every page number a dense handle can address.
+    ///     Allocating past it throws.
+    /// </summary>
+    public long MaxVoxelArrays => (long)(MaxPageNumber + 1) * _voxelArraysPerPage;
+
     private void AllocateDescriptorPage()
     {
-        Debug.Assert(_descriptorPages.Count < MaxPageNumber, "Tried to allocate more descriptor pages than max page number");
-
         var capacity = Section.DescriptorsPerSection * _descriptorArraysPerPage;
         
         var page = new BrickDescriptor[capacity];
@@ -123,8 +127,14 @@ public sealed class SectionArena
 
     private void AllocateVoxelPage()
     {
-        Debug.Assert(_voxelPages.Count < MaxPageNumber, "Tried to allocate more voxel pages than max page number");
-        
+        // A page number past the packed width would alias another page's address bits, so the arena refuses to grow instead:
+        if (_voxelPages.Count > MaxPageNumber)
+        {
+            throw new InvalidOperationException(
+                $"The arena is full: {_voxelPages.Count} voxel pages of {_voxelArraysPerPage} arrays hold {MaxVoxelArrays} dense bricks, and a dense handle cannot address another page."
+            );
+        }
+
         var capacity = Section.VoxelsPerBrick * _voxelArraysPerPage;
         
         var page = new byte[capacity];
@@ -209,27 +219,34 @@ public sealed class SectionArena
         var sourceDescriptors = source.DescriptorArray.Span;
         var destinationDescriptors = destination.DescriptorArray.Span;
 
-        for (var index = 0; index < Section.DescriptorsPerSection; index++)
+        try
         {
-            var descriptor = sourceDescriptors[index];
-
-            switch (descriptor.Type)
+            for (var index = 0; index < Section.DescriptorsPerSection; index++)
             {
-                case BrickType.Uniform:
-                    destinationDescriptors[index] = descriptor;
-                    break;
-                case BrickType.Dense:
-                    var sourceArray = source.Arena.GetVoxelArray(VoxelArrayHandle.Unpack(descriptor.UserData));
-                    var destinationArray = AllocateVoxelArray();
+                var descriptor = sourceDescriptors[index];
 
-                    sourceArray.Span.CopyTo(destinationArray.Span);
-                    destinationDescriptors[index] = BrickDescriptor.Pack(BrickType.Dense, destinationArray.Handle.Pack());
-                    break;
-                default:
-                    Destroy(source.Position);
+                switch (descriptor.Type)
+                {
+                    case BrickType.Uniform:
+                        destinationDescriptors[index] = descriptor;
+                        break;
+                    case BrickType.Dense:
+                        var sourceArray = source.Arena.GetVoxelArray(VoxelArrayHandle.Unpack(descriptor.UserData));
+                        var destinationArray = AllocateVoxelArray();
 
-                    throw new InvalidOperationException($"Tried to copy section {source.Position}, whose descriptor {index} is {descriptor.Type}");
+                        sourceArray.Span.CopyTo(destinationArray.Span);
+                        destinationDescriptors[index] = BrickDescriptor.Pack(BrickType.Dense, destinationArray.Handle.Pack());
+                        break;
+                    default:
+                        throw new InvalidOperationException($"Tried to copy section {source.Position}, whose descriptor {index} is {descriptor.Type}");
+                }
             }
+        }
+        catch
+        {
+            // A failed copy leaves no partial section behind, and the bricks it did not reach are still None, which frees nothing:
+            Destroy(destination.Position);
+            throw;
         }
 
         return destination;
