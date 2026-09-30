@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using Graphics2.Data;
+using Graphics2.Mathematics;
 using WinterGame.Jobs;
 using WinterGame.Utilities;
 using WinterGame.World.Storage;
@@ -324,6 +326,80 @@ public sealed class Level : IDisposable
     }
 
     /// <summary>
+    ///     Reads both channels of the inclusive box out of the loaded sections, expanding uniform bricks and copying dense ones.
+    ///     A section that is not loaded reads as air, which is content 0 and the null material, and the result is false when the box touched one.
+    ///     Both destinations are sized <c>maxInclusive - min + 1</c> on every axis.
+    /// </summary>
+    public bool ReadRange(Vector3i min, Vector3i maxInclusive, Span3D<byte> content, Span3D<byte> material)
+    {
+        WgAssert.DebugIsOnGameThread();
+        ValidateRange(min, maxInclusive, content, material);
+
+        var complete = true;
+        var sectionMin = min >> SectionPos.Log;
+        var sectionMax = maxInclusive >> SectionPos.Log;
+
+        for (var sectionZ = sectionMin.Z; sectionZ <= sectionMax.Z; sectionZ++)
+        {
+            for (var sectionY = sectionMin.Y; sectionY <= sectionMax.Y; sectionY++)
+            {
+                for (var sectionX = sectionMin.X; sectionX <= sectionMax.X; sectionX++)
+                {
+                    var position = new SectionPos(sectionX, sectionY, sectionZ);
+                    var origin = position.GetOrigin();
+                    var clipMin = Vector3i.Max(min, origin);
+                    var clipMax = Vector3i.Min(maxInclusive, origin + SectionPos.SectionMask);
+
+                    if (TryGetSection(position, out var section))
+                    {
+                        ReadSection(section, clipMin - origin, clipMax - origin, origin - min, content, material);
+                        continue;
+                    }
+
+                    complete = false;
+                    FillBox(content, clipMin - min, clipMax - min, VoxelChannel.Content.GetClearValue());
+                    FillBox(material, clipMin - min, clipMax - min, VoxelChannel.Material.GetClearValue());
+                }
+            }
+        }
+
+        return complete;
+    }
+
+    /// <summary>
+    ///     Reads one voxel out of its loaded section. A section that is not loaded reads as air and the result is false.
+    /// </summary>
+    public bool ReadPoint(Vector3i position, out byte content, out byte material)
+    {
+        WgAssert.DebugIsOnGameThread();
+
+        var sectionPosition = new SectionPos(
+            SectionPos.VoxelToSectionCoord(position.X),
+            SectionPos.VoxelToSectionCoord(position.Y),
+            SectionPos.VoxelToSectionCoord(position.Z)
+        );
+
+        if (!TryGetSection(sectionPosition, out var section))
+        {
+            content = VoxelChannel.Content.GetClearValue();
+            material = VoxelChannel.Material.GetClearValue();
+
+            return false;
+        }
+
+        var local = position & SectionPos.SectionMask;
+        var brick = local >> Section.BrickLog;
+        var inBrick = local & (Section.BrickSize - 1);
+        var brickIndex = Section.GetBrickIndex(brick.X, brick.Y, brick.Z);
+        var voxelIndex = Section.GetBrickVoxelIndex(inBrick.X, inBrick.Y, inBrick.Z);
+
+        content = ReadVoxel(section, VoxelChannel.Content, brickIndex, voxelIndex);
+        material = ReadVoxel(section, VoxelChannel.Material, brickIndex, voxelIndex);
+
+        return true;
+    }
+
+    /// <summary>
     ///     Waits for every generation in flight and returns its slot and job.
     ///     The scheduler has to still be running, or drained when it was never started, since the waits would otherwise not return.
     /// </summary>
@@ -362,6 +438,134 @@ public sealed class Level : IDisposable
         {
             throw new ArgumentException("The ticket is not active in this level.", nameof(ticket));
         }
+    }
+
+    private static void ValidateRange(Vector3i min, Vector3i maxInclusive, Span3D<byte> content, Span3D<byte> material)
+    {
+        if (maxInclusive.X < min.X || maxInclusive.Y < min.Y || maxInclusive.Z < min.Z)
+        {
+            throw new ArgumentException(
+                $"The box max ({maxInclusive.X}, {maxInclusive.Y}, {maxInclusive.Z}) is below its min ({min.X}, {min.Y}, {min.Z}) on some axis.",
+                nameof(maxInclusive)
+            );
+        }
+
+        var size = maxInclusive - min + 1;
+
+        ValidateDestination(content, size, nameof(content));
+        ValidateDestination(material, size, nameof(material));
+    }
+
+    private static void ValidateDestination(Span3D<byte> destination, Vector3i size, string name)
+    {
+        if (destination.SizeX != size.X || destination.SizeY != size.Y || destination.SizeZ != size.Z)
+        {
+            throw new ArgumentException(
+                $"The destination is {destination.SizeX} x {destination.SizeY} x {destination.SizeZ}, but the box is {size.X} x {size.Y} x {size.Z}.",
+                name
+            );
+        }
+    }
+
+    /// <summary>
+    ///     Copies a box of one section, given in its local voxel coordinates, into destinations that hold the section's local origin at <paramref name="destinationOffset"/>.
+    /// </summary>
+    private static void ReadSection(Section section, Vector3i localMin, Vector3i localMax, Vector3i destinationOffset, Span3D<byte> content, Span3D<byte> material)
+    {
+        var brickMin = localMin >> Section.BrickLog;
+        var brickMax = localMax >> Section.BrickLog;
+
+        for (var brickZ = brickMin.Z; brickZ <= brickMax.Z; brickZ++)
+        {
+            for (var brickY = brickMin.Y; brickY <= brickMax.Y; brickY++)
+            {
+                for (var brickX = brickMin.X; brickX <= brickMax.X; brickX++)
+                {
+                    var brickOrigin = new Vector3i(brickX, brickY, brickZ) << Section.BrickLog;
+                    var clipMin = Vector3i.Max(localMin, brickOrigin);
+                    var clipMax = Vector3i.Min(localMax, brickOrigin + (Section.BrickSize - 1));
+                    var brickIndex = Section.GetBrickIndex(brickX, brickY, brickZ);
+
+                    ReadBrick(section, VoxelChannel.Content, brickIndex, brickOrigin, clipMin, clipMax, destinationOffset, content);
+                    ReadBrick(section, VoxelChannel.Material, brickIndex, brickOrigin, clipMin, clipMax, destinationOffset, material);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Copies the clipped part of one brick one row at a time.
+    ///     A uniform brick fills each row with its value and a dense one copies each row out of its array.
+    /// </summary>
+    private static void ReadBrick(
+        Section section,
+        VoxelChannel channel,
+        int brickIndex,
+        Vector3i brickOrigin,
+        Vector3i clipMin,
+        Vector3i clipMax,
+        Vector3i destinationOffset,
+        Span3D<byte> destination)
+    {
+        var rowLength = clipMax.X - clipMin.X + 1;
+        var data = destination.Data;
+
+        if (section.GetBrickType(channel, brickIndex) == BrickType.Uniform)
+        {
+            var value = section.GetUniformValue(channel, brickIndex);
+
+            for (var z = clipMin.Z; z <= clipMax.Z; z++)
+            {
+                for (var y = clipMin.Y; y <= clipMax.Y; y++)
+                {
+                    var row = FlatIndex(destination, clipMin.X + destinationOffset.X, y + destinationOffset.Y, z + destinationOffset.Z);
+
+                    data.Slice(row, rowLength).Fill(value);
+                }
+            }
+
+            return;
+        }
+
+        var voxels = section.GetDense(channel, brickIndex).Span;
+
+        for (var z = clipMin.Z; z <= clipMax.Z; z++)
+        {
+            for (var y = clipMin.Y; y <= clipMax.Y; y++)
+            {
+                var source = Section.GetBrickVoxelIndex(clipMin.X - brickOrigin.X, y - brickOrigin.Y, z - brickOrigin.Z);
+                var row = FlatIndex(destination, clipMin.X + destinationOffset.X, y + destinationOffset.Y, z + destinationOffset.Z);
+
+                voxels.Slice(source, rowLength).CopyTo(data.Slice(row, rowLength));
+            }
+        }
+    }
+
+    private static byte ReadVoxel(Section section, VoxelChannel channel, int brickIndex, int voxelIndex)
+    {
+        return section.GetBrickType(channel, brickIndex) == BrickType.Uniform
+            ? section.GetUniformValue(channel, brickIndex)
+            : section.GetDense(channel, brickIndex).Span[voxelIndex];
+    }
+
+    private static void FillBox(Span3D<byte> destination, Vector3i min, Vector3i maxInclusive, byte value)
+    {
+        var rowLength = maxInclusive.X - min.X + 1;
+        var data = destination.Data;
+
+        for (var z = min.Z; z <= maxInclusive.Z; z++)
+        {
+            for (var y = min.Y; y <= maxInclusive.Y; y++)
+            {
+                data.Slice(FlatIndex(destination, min.X, y, z), rowLength).Fill(value);
+            }
+        }
+    }
+
+    // TODO unify all these
+    private static int FlatIndex(Span3D<byte> span, int x, int y, int z)
+    {
+        return x + (y + z * span.SizeY) * span.SizeX;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

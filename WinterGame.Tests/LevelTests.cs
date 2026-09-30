@@ -1,3 +1,5 @@
+using Graphics2.Data;
+using Graphics2.Mathematics;
 using WinterGame.Jobs;
 using WinterGame.World;
 using WinterGame.World.Storage;
@@ -411,6 +413,118 @@ public class LevelTests
     }
 
     [Fact]
+    public void ReadRange_AcrossLoadedSections_MatchesTheGenerator()
+    {
+        using var harness = new Harness();
+        var center = SurfaceSection(0, 0);
+
+        harness.Level.AddTicket(center, horizontalRadius: 2, verticalRadius: 1);
+        harness.TickUntilSettled();
+
+        // The box runs from inside the lower neighbor on every axis to inside the upper one, and no face is on a brick boundary:
+        var min = center.GetOrigin() - new Vector3i(5, 3, 7);
+        var maxInclusive = center.GetOrigin() + new Vector3i(SectionPos.SectionSize + 6, SectionPos.SectionSize + 2, SectionPos.SectionSize + 9);
+        var size = maxInclusive - min + 1;
+
+        var content = Memory3D<byte>.Allocate(size.X, size.Y, size.Z);
+        var material = Memory3D<byte>.Allocate(size.X, size.Y, size.Z);
+        var expectedContent = Memory3D<byte>.Allocate(size.X, size.Y, size.Z);
+        var expectedMaterial = Memory3D<byte>.Allocate(size.X, size.Y, size.Z);
+
+        Assert.True(harness.Level.ReadRange(min, maxInclusive, content.Span, material.Span));
+
+        new TerrainGraphSource(Graph).Generate(min, maxInclusive, expectedContent.Span, expectedMaterial.Span);
+
+        AssertSameBox(expectedContent.Span, content.Span, min, "content");
+        AssertSameBox(expectedMaterial.Span, material.Span, min, "material");
+    }
+
+    [Fact]
+    public void ReadRange_OverAnUnloadedSection_ReadsAirThereAndReportsIt()
+    {
+        using var harness = new Harness();
+        var center = SurfaceSection(0, 0);
+
+        harness.Level.AddTicket(center, horizontalRadius: 0, verticalRadius: 0);
+        harness.TickUntilSettled();
+
+        // The box is the loaded section and the unloaded one after it along X:
+        var min = center.GetOrigin();
+        var maxInclusive = min + new Vector3i(2 * SectionPos.SectionSize - 1, SectionPos.SectionMask, SectionPos.SectionMask);
+        var size = maxInclusive - min + 1;
+
+        var content = Memory3D<byte>.Allocate(size.X, size.Y, size.Z);
+        var material = Memory3D<byte>.Allocate(size.X, size.Y, size.Z);
+        var loadedContent = Memory3D<byte>.Allocate(SectionPos.SectionSize, SectionPos.SectionSize, SectionPos.SectionSize);
+        var loadedMaterial = Memory3D<byte>.Allocate(SectionPos.SectionSize, SectionPos.SectionSize, SectionPos.SectionSize);
+
+        Assert.False(harness.Level.ReadRange(min, maxInclusive, content.Span, material.Span));
+
+        new TerrainGraphSource(Graph).Generate(min, min + SectionPos.SectionMask, loadedContent.Span, loadedMaterial.Span);
+
+        for (var z = 0; z < size.Z; z++)
+        {
+            for (var y = 0; y < size.Y; y++)
+            {
+                for (var x = 0; x < size.X; x++)
+                {
+                    var loaded = x < SectionPos.SectionSize;
+
+                    Assert.Equal(loaded ? loadedContent.Span[x, y, z] : (byte)0, content.Span[x, y, z]);
+                    Assert.Equal(loaded ? loadedMaterial.Span[x, y, z] : SurfaceMaterial.Null, material.Span[x, y, z]);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public void ReadPoint_AgreesWithReadRangeAtNegativeCoordinates()
+    {
+        using var harness = new Harness();
+        var center = SurfaceSection(-1, -2);
+
+        harness.Level.AddTicket(center, horizontalRadius: 0, verticalRadius: 0);
+        harness.TickUntilSettled();
+
+        var min = center.GetOrigin();
+        var content = Memory3D<byte>.Allocate(SectionPos.SectionSize, SectionPos.SectionSize, SectionPos.SectionSize);
+        var material = Memory3D<byte>.Allocate(SectionPos.SectionSize, SectionPos.SectionSize, SectionPos.SectionSize);
+
+        Assert.True(harness.Level.ReadRange(min, min + SectionPos.SectionMask, content.Span, material.Span));
+
+        for (var z = 0; z < SectionPos.SectionSize; z += 3)
+        {
+            for (var y = 0; y < SectionPos.SectionSize; y++)
+            {
+                for (var x = 0; x < SectionPos.SectionSize; x += 5)
+                {
+                    Assert.True(harness.Level.ReadPoint(min + new Vector3i(x, y, z), out var pointContent, out var pointMaterial));
+                    Assert.Equal(content.Span[x, y, z], pointContent);
+                    Assert.Equal(material.Span[x, y, z], pointMaterial);
+                }
+            }
+        }
+
+        Assert.False(harness.Level.ReadPoint(min - Vector3i.One, out var airContent, out var airMaterial));
+        Assert.Equal(0, airContent);
+        Assert.Equal(SurfaceMaterial.Null, airMaterial);
+    }
+
+    [Fact]
+    public void ReadRange_RejectsADestinationOfTheWrongSize()
+    {
+        using var harness = new Harness();
+
+        Assert.Throws<ArgumentException>(() =>
+        {
+            var content = Memory3D<byte>.Allocate(4, 4, 4);
+            var material = Memory3D<byte>.Allocate(4, 4, 5);
+
+            harness.Level.ReadRange(Vector3i.Zero, new Vector3i(3, 3, 3), content.Span, material.Span);
+        });
+    }
+
+    [Fact]
     public void RunningScheduler_LoadsTheShapeAndDisposeWaitsForWorkInFlight()
     {
         var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = 2 });
@@ -493,6 +607,23 @@ public class LevelTests
         return section.GetBrickType(channel, brick) == BrickType.Uniform
             ? $"Uniform {section.GetUniformValue(channel, brick)}"
             : $"Dense {Convert.ToHexString(section.GetDense(channel, brick).Span)}";
+    }
+
+    private static void AssertSameBox(Span3D<byte> expected, Span3D<byte> actual, Vector3i min, string channel)
+    {
+        for (var z = 0; z < expected.SizeZ; z++)
+        {
+            for (var y = 0; y < expected.SizeY; y++)
+            {
+                for (var x = 0; x < expected.SizeX; x++)
+                {
+                    if (expected[x, y, z] != actual[x, y, z])
+                    {
+                        Assert.Fail($"The {channel} at ({min.X + x}, {min.Y + y}, {min.Z + z}) is {actual[x, y, z]}, expected {expected[x, y, z]}.");
+                    }
+                }
+            }
+        }
     }
 
     private static void AssertUniformAir(Section section)
