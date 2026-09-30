@@ -218,6 +218,20 @@ public readonly struct Section
     }
 
     /// <summary>
+    ///     Flat index of a voxel inside a dense brick's <see cref="VoxelArray"/>, x fastest, then y, then z.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int GetBrickVoxelIndex(int x, int y, int z)
+    {
+        Debug.Assert(
+            x is >= 0 and < BrickSize && y is >= 0 and < BrickSize && z is >= 0 and < BrickSize,
+            $"Brick voxel coordinate ({x}, {y}, {z}) is out of bounds [0, {BrickSize})."
+        );
+
+        return x + y * BrickSize + z * BrickSize * BrickSize;
+    }
+
+    /// <summary>
     ///     Descriptor offset of a channel's first brick, relative to the section's first descriptor.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using System.Diagnostics.Contracts;
 using System.Runtime.CompilerServices;
 using Graphics2.Mathematics;
 
@@ -138,6 +139,7 @@ public struct SectionPos : IEquatable<SectionPos>
     /// <summary>
     ///     The world voxel coordinate of the section's first corner, which is the origin its local coordinates are measured from.
     /// </summary>
+    [Pure]
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public Vector3i GetOrigin() => new(
         SectionToVoxelCoord(X),

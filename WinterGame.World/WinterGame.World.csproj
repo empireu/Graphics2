@@ -12,6 +12,7 @@
       <ProjectReference Include="..\Graphics2.Data\Graphics2.Data.csproj" />
       <ProjectReference Include="..\Graphics2.Mathematics\Graphics2.Mathematics.csproj" />
       <ProjectReference Include="..\WinterGame.Jobs\WinterGame.Jobs.csproj" />
+      <ProjectReference Include="..\WinterGame.Utilities\WinterGame.Utilities.csproj" />
     </ItemGroup>
     
     <ItemGroup>

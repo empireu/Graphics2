@@ -15,9 +15,18 @@ public sealed class TerrainGraphSource : IVoxelSource
     private readonly DensitySampler _sampler;
     private readonly DensityScratch _scratch;
 
-    public TerrainGraphSource(int seed, TerrainConfig config)
+    public TerrainGraphSource(int seed, TerrainConfig config) : this(TerrainGraph.Build(seed, config))
     {
-        _graph = TerrainGraph.Build(seed, config);
+    }
+
+    /// <summary>
+    ///     Creates a source over an already compiled graph.
+    /// </summary>
+    public TerrainGraphSource(TerrainGraph graph)
+    {
+        ArgumentNullException.ThrowIfNull(graph);
+
+        _graph = graph;
         _scratch = new DensityScratch(_graph.Graph);
         _sampler = new DensitySampler(_graph.Graph, _scratch);
     }
