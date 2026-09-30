@@ -259,14 +259,15 @@ public sealed class SectionArena
             throw new InvalidOperationException($"Tried to destroy unknown section at {pos}");
         }
 
-        foreach (var channel in Enum.GetValues<VoxelChannel>())
+        // Only a dense brick holds storage, so one pass over both channels' descriptors finds every array to free:
+        foreach (var descriptor in value.DescriptorArray.Span)
         {
-            for (var i = 0; i < Section.DescriptorsPerChannel; i++)
+            if (descriptor.Type == BrickType.Dense)
             {
-                value.FreeStorage(channel, i);  
+                FreeVoxelArray(VoxelArrayHandle.Unpack(descriptor.UserData));
             }
         }
-        
+
         FreeDescriptorArray(value.DescriptorArray);
     }
 }
