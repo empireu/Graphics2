@@ -8,24 +8,24 @@ namespace WinterGame.World.Storage;
 public sealed class SectionArena
 {
     /// <summary>
-    ///     Bytes of descriptor storage per page, from which the array count is derived.
+    ///     Bytes of descriptor storage per page in the default arena, from which the array count is derived.
     /// </summary>
-    private const int DescriptorPageBytes = 4 * 1024 * 1024;
+    private const int DefaultDescriptorPageBytes = 4 * 1024 * 1024;
 
     /// <summary>
-    ///     Number of section descriptor arrays one page holds.
+    ///     Number of section descriptor arrays one page holds in the default arena.
     /// </summary>
-    private const int DescriptorArraysPerPage = DescriptorPageBytes / (Section.DescriptorsPerSection * sizeof(uint));
+    public const int DefaultDescriptorArraysPerPage = DefaultDescriptorPageBytes / (Section.DescriptorsPerSection * sizeof(uint));
 
     /// <summary>
-    ///     Bytes of voxel data per page, from which the array count is derived.
+    ///     Bytes of voxel data per page in the default arena, from which the array count is derived.
     /// </summary>
-    private const int VoxelPageBytes = 4 * 1024 * 1024;
+    private const int DefaultVoxelPageBytes = 4 * 1024 * 1024;
 
     /// <summary>
-    ///     Number of one-brick voxel arrays one page holds.
+    ///     Number of one-brick voxel arrays one page holds in the default arena.
     /// </summary>
-    private const int VoxelArraysPerPage = VoxelPageBytes / Section.VoxelsPerBrick;
+    public const int DefaultVoxelArraysPerPage = DefaultVoxelPageBytes / Section.VoxelsPerBrick;
 
     /// <summary>
     ///     The number of bits allocated to the page number.
@@ -39,6 +39,14 @@ public sealed class SectionArena
     public const int AddressNumberBits = BrickDescriptor.BrickUserDataBits - PageNumberBits;
     public const int MaxAddressNumber = (1 << AddressNumberBits) - 1;
 
+    /// <summary>
+    ///     The most voxel arrays one page can hold while the last array's byte address still fits in <see cref="AddressNumberBits"/>.
+    /// </summary>
+    public const int MaxVoxelArraysPerPage = MaxAddressNumber / Section.VoxelsPerBrick + 1;
+
+    private readonly int _descriptorArraysPerPage;
+    private readonly int _voxelArraysPerPage;
+
     private readonly List<BrickDescriptor[]> _descriptorPages = [];
     private readonly Stack<DescriptorArray> _freeDescriptorArrays = [];
     private readonly List<byte[]> _voxelPages = [];
@@ -50,19 +58,39 @@ public sealed class SectionArena
 #endif
 
     private readonly Dictionary<ulong, Section> _sections = [];
-    
+
+    /// <summary>
+    ///     Creates an arena whose pages hold the given number of arrays.
+    ///     An arena sized to one section, with one descriptor array and <see cref="Section.DescriptorsPerSection"/> voxel arrays per page, never grows past its first pages.
+    /// </summary>
+    public SectionArena(
+        int descriptorArraysPerPage = DefaultDescriptorArraysPerPage,
+        int voxelArraysPerPage = DefaultVoxelArraysPerPage)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(descriptorArraysPerPage, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(voxelArraysPerPage, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(voxelArraysPerPage, MaxVoxelArraysPerPage);
+
+        _descriptorArraysPerPage = descriptorArraysPerPage;
+        _voxelArraysPerPage = voxelArraysPerPage;
+    }
+
+    internal int DescriptorPageCount => _descriptorPages.Count;
+
+    internal int VoxelPageCount => _voxelPages.Count;
+
     private void AllocateDescriptorPage()
     {
         Debug.Assert(_descriptorPages.Count < MaxPageNumber, "Tried to allocate more descriptor pages than max page number");
-        
-        const int capacity = Section.DescriptorsPerSection * DescriptorArraysPerPage;
+
+        var capacity = Section.DescriptorsPerSection * _descriptorArraysPerPage;
         
         var page = new BrickDescriptor[capacity];
         var pageIndex = _descriptorPages.Count;
         
         _descriptorPages.Add(page);
 
-        for (var i = capacity - 1; i >= 0; i -= Section.DescriptorsPerSection)
+        for (var i = capacity - Section.DescriptorsPerSection; i >= 0; i -= Section.DescriptorsPerSection)
         {
            _freeDescriptorArrays.Push(new DescriptorArray(page, pageIndex, i));
         }
@@ -97,7 +125,7 @@ public sealed class SectionArena
     {
         Debug.Assert(_voxelPages.Count < MaxPageNumber, "Tried to allocate more voxel pages than max page number");
         
-        const int capacity = Section.VoxelsPerBrick * VoxelArraysPerPage;
+        var capacity = Section.VoxelsPerBrick * _voxelArraysPerPage;
         
         var page = new byte[capacity];
         var pageIndex = _voxelPages.Count;
@@ -168,7 +196,45 @@ public sealed class SectionArena
 
         return section;
     }
-    
+
+    /// <summary>
+    ///     Creates a section in this arena at the source's position, holding a copy of the source's bricks.
+    ///     Uniform descriptors are copied as they are, and every dense brick gets an array from this arena, since a dense handle is only meaningful in the arena that allocated it.
+    ///     Every brick of the source has to be written. The source is not modified.
+    /// </summary>
+    public Section CreateCopy(Section source)
+    {
+        var destination = Create(source.Position);
+
+        var sourceDescriptors = source.DescriptorArray.Span;
+        var destinationDescriptors = destination.DescriptorArray.Span;
+
+        for (var index = 0; index < Section.DescriptorsPerSection; index++)
+        {
+            var descriptor = sourceDescriptors[index];
+
+            switch (descriptor.Type)
+            {
+                case BrickType.Uniform:
+                    destinationDescriptors[index] = descriptor;
+                    break;
+                case BrickType.Dense:
+                    var sourceArray = source.Arena.GetVoxelArray(VoxelArrayHandle.Unpack(descriptor.UserData));
+                    var destinationArray = AllocateVoxelArray();
+
+                    sourceArray.Span.CopyTo(destinationArray.Span);
+                    destinationDescriptors[index] = BrickDescriptor.Pack(BrickType.Dense, destinationArray.Handle.Pack());
+                    break;
+                default:
+                    Destroy(source.Position);
+
+                    throw new InvalidOperationException($"Tried to copy section {source.Position}, whose descriptor {index} is {descriptor.Type}");
+            }
+        }
+
+        return destination;
+    }
+
     public void Destroy(SectionPos pos)
     {
         if (!_sections.Remove(pos.GetKey(), out var value))

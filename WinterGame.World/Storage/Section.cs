@@ -12,17 +12,10 @@ public enum BrickType : byte
     ///     Invalid descriptor.
     /// </summary>
     None = 0,
-
-    /// <summary>
-    ///     Nothing is stored; the data is provided by the world generator.
-    /// </summary>
-    Provider = 1,
-
     /// <summary>
     ///     One value across the whole brick.
     /// </summary>
     Uniform = 2,
-
     /// <summary>
     ///     A dense grid of samples.
     /// </summary>
@@ -147,7 +140,6 @@ public readonly struct Section
         switch (descriptor.Type)
         {
             case BrickType.None:
-            case BrickType.Provider:
             case BrickType.Uniform:
                 // Ignored
                 break;
@@ -157,16 +149,6 @@ public readonly struct Section
             default:
                 throw new ArgumentOutOfRangeException(nameof(brickIndex), $"The descriptor type is {descriptor.Type}");
         }
-    }
-    
-    /// <summary>
-    ///     Evicts the dense array (if applicable) and sets the brick to be provider.
-    /// </summary>
-    public void SetProvider(VoxelChannel channel, int brickIndex)
-    {
-        DebugValidateBrickIndex(channel, brickIndex);
-        FreeStorage(channel, brickIndex);
-        WriteDescriptor(channel, brickIndex, BrickDescriptor.Pack(BrickType.Provider, 0));
     }
 
     /// <summary>

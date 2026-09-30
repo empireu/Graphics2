@@ -52,7 +52,7 @@ public readonly struct BrickDescriptor : IEquatable<BrickDescriptor>
         DebugValidateType(type);
         DebugValidateUserData(userData);
         Debug.Assert(
-            type is not (BrickType.None or BrickType.Provider) || userData == 0,
+            type is not BrickType.None || userData == 0,
             $"A {type} brick carries no user data."
         );
 

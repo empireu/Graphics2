@@ -31,7 +31,7 @@ public class SectionTests
     }
 
     [Fact]
-    public void SetProvider_SetUniform_SetDense_AreIndependentPerBrick()
+    public void SetUniform_SetDense_AreIndependentPerBrick()
     {
         var section = CreateSection();
 
@@ -129,21 +129,6 @@ public class SectionTests
     }
 
     [Fact]
-    public void SetProvider_ReleasesTheDenseArray()
-    {
-        var arena = new SectionArena();
-        var section = arena.Create(Origin);
-
-        section.SetDense(VoxelChannel.Content, 5);
-        var dense = section.GetDense(VoxelChannel.Content, 5);
-
-        section.SetProvider(VoxelChannel.Content, 5);
-
-        Assert.Equal(BrickType.Provider, section.GetBrickType(VoxelChannel.Content, 5));
-        Assert.Equal(dense, arena.AllocateVoxelArray());
-    }
-
-    [Fact]
     public void SetUniform_ReleasesTheDenseArray()
     {
         var arena = new SectionArena();
@@ -199,29 +184,27 @@ public class SectionTests
         var section = CreateSection();
 
         Assert.True(section.AreAllBricksOfType(VoxelChannel.Content, BrickType.None));
-        Assert.False(section.AreAllBricksOfType(VoxelChannel.Content, BrickType.Provider));
+        Assert.False(section.AreAllBricksOfType(VoxelChannel.Content, BrickType.Uniform));
 
-        section.SetProvider(VoxelChannel.Content, 0);
+        section.SetUniform(VoxelChannel.Content, 0, 0);
 
         Assert.False(section.AreAllBricksOfType(VoxelChannel.Content, BrickType.None));
-        Assert.False(section.AreAllBricksOfType(VoxelChannel.Content, BrickType.Provider));
+        Assert.False(section.AreAllBricksOfType(VoxelChannel.Content, BrickType.Uniform));
 
         for (var index = 0; index < Section.Bricks; index++)
         {
-            section.SetProvider(VoxelChannel.Content, index);
+            section.SetUniform(VoxelChannel.Content, index, 0);
         }
 
-        Assert.True(section.AreAllBricksOfType(VoxelChannel.Content, BrickType.Provider));
+        Assert.True(section.AreAllBricksOfType(VoxelChannel.Content, BrickType.Uniform));
         Assert.False(section.AreAllBricksOfType(VoxelChannel.Content, BrickType.None));
     }
 
     [Theory]
     [InlineData(VoxelChannel.Content, BrickType.None)]
-    [InlineData(VoxelChannel.Content, BrickType.Provider)]
     [InlineData(VoxelChannel.Content, BrickType.Uniform)]
     [InlineData(VoxelChannel.Content, BrickType.Dense)]
     [InlineData(VoxelChannel.Material, BrickType.None)]
-    [InlineData(VoxelChannel.Material, BrickType.Provider)]
     [InlineData(VoxelChannel.Material, BrickType.Uniform)]
     [InlineData(VoxelChannel.Material, BrickType.Dense)]
     public void AreAllBricksOfType_IsTrueOnlyForTheTypeEveryBrickHas(VoxelChannel channel, BrickType type)
@@ -230,7 +213,7 @@ public class SectionTests
 
         FillChannel(section, channel, type);
 
-        foreach (var queried in new[] { BrickType.None, BrickType.Provider, BrickType.Uniform, BrickType.Dense })
+        foreach (var queried in new[] { BrickType.None, BrickType.Uniform, BrickType.Dense })
         {
             Assert.Equal(queried == type, section.AreAllBricksOfType(channel, queried));
         }
@@ -266,9 +249,6 @@ public class SectionTests
             switch (type)
             {
                 case BrickType.None:
-                    break;
-                case BrickType.Provider:
-                    section.SetProvider(channel, index);
                     break;
                 case BrickType.Uniform:
                     section.SetUniform(channel, index, 0);

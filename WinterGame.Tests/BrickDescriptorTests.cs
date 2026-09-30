@@ -14,7 +14,6 @@ public class BrickDescriptorTests
     }
 
     [Theory]
-    [InlineData(BrickType.Provider, 0)]
     [InlineData(BrickType.Uniform, 0)]
     [InlineData(BrickType.Uniform, 255)]
     [InlineData(BrickType.Dense, 0)]
