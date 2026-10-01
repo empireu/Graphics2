@@ -144,7 +144,7 @@ public readonly struct Section
                 // Ignored
                 break;
             case BrickType.Dense:
-                Arena.FreeVoxelArray(VoxelArrayHandle.Unpack(descriptor.UserData));
+                Arena.FreeVoxelArray(descriptor.UserData);
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(brickIndex), $"The descriptor type is {descriptor.Type}");

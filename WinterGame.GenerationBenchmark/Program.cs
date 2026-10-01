@@ -19,6 +19,7 @@ Console.WriteLine($"  Terrain:  seed {options.Seed}, default TerrainConfig");
 Console.WriteLine($"  Ticket:   horizontal radius {options.Radius}, vertical radius {options.VerticalRadius}, centred on the surface section at the origin");
 Console.WriteLine($"  Unpaced:  {string.Join(", ", options.Workers)} worker(s), updating as fast as the main thread can");
 Console.WriteLine($"  Paced:    {options.Workers.Max()} worker(s) at {options.TickHz} Hz with {string.Join(", ", options.PacedSlots)} slot(s)");
+Console.WriteLine($"  Unloads:  {options.UnloadsPerUpdate} per update");
 Console.WriteLine();
 
 Benchmark.Run(options);
@@ -209,7 +210,7 @@ internal static class Benchmark
     {
         // The level is declared last so it is disposed first, while the scheduler still runs the work it waits on:
         using var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = workers });
-        using var level = new Level(scheduler, graph, slots);
+        using var level = new Level(scheduler, graph, slots, options.UnloadsPerUpdate);
 
         scheduler.Start();
 
@@ -333,19 +334,60 @@ internal static class Benchmark
     }
 
     /// <summary>
-    ///     Walks the ticket one section at a time and then far away, timing the main thread's share: the move itself and the update after it.
+    ///     Walks the ticket one section at a time along X and then up, timing the main thread's share: the move itself and the update after it.
+    ///     Then jumps far away, removes the ticket so nothing new loads, and times the updates that drain the unload backlog, which is what the unload budget is calibrated from.
     /// </summary>
     private static void MeasureMoves(Level level, LevelTicket ticket, BenchmarkOptions options)
     {
-        var moveMilliseconds = new double[options.Moves];
-        var updateMilliseconds = new double[options.Moves];
         var start = ticket.Center;
+        var (horizontalMoves, horizontalUpdates) = MeasureSteps(level, ticket, options.Moves, step => new SectionPos(start.X + step + 1, start.Y, start.Z));
 
-        for (var step = 0; step < options.Moves; step++)
+        var turn = ticket.Center;
+        var (verticalMoves, verticalUpdates) = MeasureSteps(level, ticket, 4, step => new SectionPos(turn.X, turn.Y + step + 1, turn.Z));
+
+        var teleportStart = Stopwatch.GetTimestamp();
+
+        level.MoveTicket(ticket, new SectionPos(start.X + 10_000, start.Y, start.Z + 10_000));
+
+        var teleport = Stopwatch.GetElapsedTime(teleportStart).TotalMilliseconds;
+
+        level.RemoveTicket(ticket);
+
+        var backlog = level.UnloadQueueCount;
+        var drainMilliseconds = new List<double>();
+
+        while (level.UnloadQueueCount > 0)
+        {
+            var updateStart = Stopwatch.GetTimestamp();
+
+            level.Update();
+            drainMilliseconds.Add(Stopwatch.GetElapsedTime(updateStart).TotalMilliseconds);
+        }
+
+        var drainTotal = drainMilliseconds.Sum();
+
+        Console.WriteLine($"Ticket moves on the main thread, {options.Moves} step(s) of one section along X from the filled shape, then 4 up:");
+        Console.WriteLine($"  MoveTicket along X:  {Describe(horizontalMoves)}");
+        Console.WriteLine($"  Update after it:     {Describe(horizontalUpdates)}  (unloads, harvests, rebuilds the load queue and publishes)");
+        Console.WriteLine($"  MoveTicket up:       {Describe(verticalMoves)}");
+        Console.WriteLine($"  Update after it:     {Describe(verticalUpdates)}");
+        Console.WriteLine($"  Teleport 10000 along X and Z: {teleport:F3} ms");
+        Console.WriteLine(
+            $"  Unload drain at {options.UnloadsPerUpdate} per update: {backlog} section(s) in {drainMilliseconds.Count} update(s), median {drainMilliseconds.Order().ElementAt(drainMilliseconds.Count / 2):F3} ms, max {drainMilliseconds.Max():F3} ms, {1000.0 * drainTotal / backlog:F2} us per section"
+        );
+        Console.WriteLine();
+    }
+
+    private static (double[] Moves, double[] Updates) MeasureSteps(Level level, LevelTicket ticket, int count, Func<int, SectionPos> target)
+    {
+        var moveMilliseconds = new double[count];
+        var updateMilliseconds = new double[count];
+
+        for (var step = 0; step < count; step++)
         {
             var moveStart = Stopwatch.GetTimestamp();
 
-            level.MoveTicket(ticket, new SectionPos(start.X + step + 1, start.Y, start.Z));
+            level.MoveTicket(ticket, target(step));
             moveMilliseconds[step] = Stopwatch.GetElapsedTime(moveStart).TotalMilliseconds;
 
             var updateStart = Stopwatch.GetTimestamp();
@@ -354,17 +396,7 @@ internal static class Benchmark
             updateMilliseconds[step] = Stopwatch.GetElapsedTime(updateStart).TotalMilliseconds;
         }
 
-        var teleportStart = Stopwatch.GetTimestamp();
-
-        level.MoveTicket(ticket, new SectionPos(start.X + 10_000, start.Y, start.Z + 10_000));
-
-        var teleport = Stopwatch.GetElapsedTime(teleportStart).TotalMilliseconds;
-
-        Console.WriteLine($"Ticket moves on the main thread, {options.Moves} step(s) of one section along X from the filled shape:");
-        Console.WriteLine($"  MoveTicket:       {Describe(moveMilliseconds)}");
-        Console.WriteLine($"  Update after it:  {Describe(updateMilliseconds)}  (rebuilds the load queue, harvests and publishes)");
-        Console.WriteLine($"  Teleport 10000 along X and Z: {teleport:F3} ms");
-        Console.WriteLine();
+        return (moveMilliseconds, updateMilliseconds);
     }
 
     /// <summary>
@@ -516,6 +548,7 @@ internal sealed class BenchmarkOptions
     public int CostSections = 64;
     public int CostRounds = 3;
     public int Moves = 32;
+    public int UnloadsPerUpdate = Level.DefaultUnloadsPerUpdate;
     public double TimeoutSeconds = 300.0;
 
     public static BenchmarkOptions Parse(string[] args)
@@ -557,11 +590,14 @@ internal sealed class BenchmarkOptions
                 case "--moves":
                     options.Moves = int.Parse(value, CultureInfo.InvariantCulture);
                     break;
+                case "--unloads":
+                    options.UnloadsPerUpdate = int.Parse(value, CultureInfo.InvariantCulture);
+                    break;
                 case "--timeout":
                     options.TimeoutSeconds = double.Parse(value, CultureInfo.InvariantCulture);
                     break;
                 default:
-                    throw new ArgumentException($"Unknown option '{name}'. Options: --seed, --radius, --vertical-radius, --workers 1,2,4, --slots 10,20, --tick-hz, --cost-sections, --cost-rounds, --moves, --timeout.");
+                    throw new ArgumentException($"Unknown option '{name}'. Options: --seed, --radius, --vertical-radius, --workers 1,2,4, --slots 10,20, --tick-hz, --cost-sections, --cost-rounds, --moves, --unloads, --timeout.");
             }
 
             if (hasValue)

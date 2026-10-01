@@ -18,9 +18,9 @@ public class LevelTests
         public readonly JobScheduler Scheduler = new(new JobSchedulerDescription { ThreadCount = 2 });
         public readonly Level Level;
 
-        public Harness(int slotCount = SectionGenerationExecutor.DefaultSlotCount)
+        public Harness(int slotCount = SectionGenerationExecutor.DefaultSlotCount, int unloadsPerUpdate = Level.DefaultUnloadsPerUpdate)
         {
-            Level = new Level(Scheduler, Graph, slotCount);
+            Level = new Level(Scheduler, Graph, slotCount, unloadsPerUpdate);
         }
 
         /// <summary>
@@ -69,8 +69,9 @@ public class LevelTests
 
         harness.Level.AddTicket(center, horizontalRadius: 1, verticalRadius: 1);
 
-        // The keep shape is radius 2 horizontally, which is 13 columns, and 5 sections tall:
-        Assert.Equal(13 * 5, harness.Level.PendingCount);
+        // The keep shape is radius 2 horizontally, which is 13 columns, and 5 sections tall, and only the load shape inside it is pending:
+        Assert.Equal(13 * 5, harness.Level.SectionEntryCount);
+        Assert.Equal(5 * 3, harness.Level.PendingCount);
         Assert.Equal(0, harness.Level.InFlightCount);
         Assert.Equal(SectionStatus.None, harness.Level.GetStatus(center));
     }
@@ -133,8 +134,8 @@ public class LevelTests
             Assert.Equal(inShape ? SectionStatus.Ready : SectionStatus.None, harness.Level.GetStatus(position));
         }
 
-        // The keep shape is radius 2 and 3 sections tall, and the 5 loaded sections are no longer pending:
-        Assert.Equal(13 * 3 - 5, harness.Level.PendingCount);
+        // The keep margin is claimed but never pending, and the 5 loaded sections are no longer pending:
+        Assert.Equal(0, harness.Level.PendingCount);
     }
 
     [Fact]
@@ -211,6 +212,11 @@ public class LevelTests
 
         harness.Level.MoveTicket(ticket, new SectionPos(center.X + 2, center.Y, center.Z));
 
+        // The move only queues the left section, and the next update destroys it:
+        Assert.Equal(SectionStatus.Ready, harness.Level.GetStatus(left));
+
+        harness.Level.Update();
+
         Assert.Equal(SectionStatus.None, harness.Level.GetStatus(left));
         Assert.Equal(SectionStatus.Ready, harness.Level.GetStatus(center));
     }
@@ -224,16 +230,18 @@ public class LevelTests
         var ticket = harness.Level.AddTicket(center, horizontalRadius: 1, verticalRadius: 0);
         harness.TickUntilSettled();
 
-        // The box around both shapes holds about 3 * 10^10 sections here:
+        // The placements cannot overlap, and the rows between them number about 3 * 10^5, so each shape is applied whole:
         harness.Level.MoveTicket(ticket, new SectionPos(center.X + 100_000, center.Y, center.Z + 100_000));
+
+        // The load shape is radius 1 and one section tall, and nothing in it is loaded yet:
+        Assert.Equal(5, harness.Level.PendingCount);
+
+        harness.Level.Update();
 
         foreach (var position in Box(center, 2, 1))
         {
             Assert.Equal(SectionStatus.None, harness.Level.GetStatus(position));
         }
-
-        // The keep shape is radius 2 and 3 sections tall, and nothing in it is loaded yet:
-        Assert.Equal(13 * 3, harness.Level.PendingCount);
     }
 
     [Fact]
@@ -248,15 +256,17 @@ public class LevelTests
 
         Assert.True(harness.Level.TryGetSection(overlap, out var before));
 
-        // Three sections along both horizontal axes is past the point where the shapes are walked one at a time:
+        // Three sections along both horizontal axes still overlaps the keep disc of radius 3, so only the difference is applied:
         harness.Level.MoveTicket(ticket, new SectionPos(center.X + 3, center.Y, center.Z + 3));
+
+        // The load disc of radius 2 holds 13 sections and none of them is loaded, since the overlap is in the keep margin:
+        Assert.Equal(13, harness.Level.PendingCount);
+
+        harness.Level.Update();
 
         Assert.True(harness.Level.TryGetSection(overlap, out var after));
         Assert.Equal(before.DescriptorArray, after.DescriptorArray);
         Assert.Equal(SectionStatus.None, harness.Level.GetStatus(center));
-
-        // The keep disc of radius 3 holds 29 columns in 3 layers, and the overlap is the only loaded section in it:
-        Assert.Equal(29 * 3 - 1, harness.Level.PendingCount);
     }
 
     [Fact]
@@ -284,12 +294,18 @@ public class LevelTests
 
         harness.Level.RemoveTicket(ticket);
 
+        // The 5 loaded sections wait in the unload queue until the next update:
         Assert.Equal(0, harness.Level.PendingCount);
+        Assert.Equal(5, harness.Level.UnloadQueueCount);
+
+        harness.Level.Update();
 
         foreach (var position in Box(center, 2, 1))
         {
             Assert.Equal(SectionStatus.None, harness.Level.GetStatus(position));
         }
+
+        Assert.Equal(0, harness.Level.SectionEntryCount);
     }
 
     [Fact]
@@ -307,8 +323,138 @@ public class LevelTests
         Assert.Equal(SectionStatus.Ready, harness.Level.GetStatus(center));
 
         harness.Level.RemoveTicket(second);
+        harness.Level.Update();
 
         Assert.Equal(SectionStatus.None, harness.Level.GetStatus(center));
+    }
+
+    [Fact]
+    public void ReleasedSection_ClaimedAgainBeforeTheUpdate_KeepsItsData()
+    {
+        using var harness = new Harness();
+        var center = SurfaceSection(0, 0);
+
+        var ticket = harness.Level.AddTicket(center, horizontalRadius: 0, verticalRadius: 0);
+        harness.TickUntilSettled();
+
+        Assert.True(harness.Level.TryGetSection(center, out var before));
+
+        harness.Level.RemoveTicket(ticket);
+
+        // Released but not destroyed yet, so it still reads:
+        Assert.True(harness.Level.TryGetSection(center, out _));
+
+        harness.Level.AddTicket(center, horizontalRadius: 0, verticalRadius: 0);
+        harness.Level.Update();
+
+        Assert.True(harness.Level.TryGetSection(center, out var after));
+        Assert.Equal(before.DescriptorArray, after.DescriptorArray);
+        Assert.Equal(0, harness.Level.UnloadQueueCount);
+        Assert.Equal(0, harness.Level.InFlightCount);
+    }
+
+    [Fact]
+    public void Update_UnloadsNoMoreThanTheBudget()
+    {
+        using var harness = new Harness(unloadsPerUpdate: 2);
+        var center = SurfaceSection(0, 0);
+
+        var ticket = harness.Level.AddTicket(center, horizontalRadius: 1, verticalRadius: 0);
+        harness.TickUntilSettled();
+
+        var shape = Box(center, 1, 0)
+            .Where(position => (position.X - center.X) * (position.X - center.X) + (position.Z - center.Z) * (position.Z - center.Z) <= 1)
+            .ToArray();
+
+        harness.Level.RemoveTicket(ticket);
+
+        foreach (var expectedReady in new[] { 5, 3, 1, 0 })
+        {
+            Assert.Equal(expectedReady, shape.Count(position => harness.Level.GetStatus(position) == SectionStatus.Ready));
+            Assert.Equal(expectedReady, harness.Level.UnloadQueueCount);
+
+            harness.Level.Update();
+        }
+    }
+
+    [Fact]
+    public void UnticketedLoad_ClaimedAndReleasedBeforeTheUpdate_IsUnloadedByTheQueue()
+    {
+        using var harness = new Harness();
+        var position = SurfaceSection(0, 0);
+
+        harness.Level.GetOrLoadSection(position);
+
+        var ticket = harness.Level.AddTicket(position, horizontalRadius: 0, verticalRadius: 0);
+        harness.Level.RemoveTicket(ticket);
+        harness.Level.Update();
+
+        Assert.Equal(SectionStatus.None, harness.Level.GetStatus(position));
+        Assert.Equal(0, harness.Level.UnloadQueueCount);
+        Assert.Equal(0, harness.Level.SectionEntryCount);
+    }
+
+    [Fact]
+    public void Update_DropsPendingSectionsThatLeftEveryLoadShape()
+    {
+        using var harness = new Harness(slotCount: 1);
+        var center = SurfaceSection(0, 0);
+
+        var ticket = harness.Level.AddTicket(center, horizontalRadius: 2, verticalRadius: 0);
+
+        Assert.Equal(13, harness.Level.PendingCount);
+
+        // Each of the disc's 5 rows gains a section ahead and loses one behind, and the one behind stays pending until the next update:
+        harness.Level.MoveTicket(ticket, new SectionPos(center.X + 1, center.Y, center.Z));
+
+        Assert.Equal(13 + 5, harness.Level.PendingCount);
+
+        // The update drops the 5 and publishes one section into the only slot:
+        harness.Level.Update();
+
+        Assert.Equal(13 - 1, harness.Level.PendingCount);
+        Assert.Equal(1, harness.Level.InFlightCount);
+    }
+
+    [Fact]
+    public void TicketCounts_MatchABruteForceCountOverRandomTicketChanges()
+    {
+        using var harness = new Harness();
+        var random = new Random(1234);
+        var tickets = new List<LevelTicket>();
+
+        for (var step = 0; step < 400; step++)
+        {
+            var choice = random.Next(10);
+
+            if (tickets.Count == 0 || (choice == 0 && tickets.Count < 4))
+            {
+                var start = new SectionPos(random.Next(-20, 21), random.Next(-20, 21), random.Next(-20, 21));
+
+                tickets.Add(harness.Level.AddTicket(start, random.Next(0, 4), random.Next(0, 3)));
+            }
+            else if (choice == 1)
+            {
+                var index = random.Next(tickets.Count);
+
+                harness.Level.RemoveTicket(tickets[index]);
+                tickets.RemoveAt(index);
+            }
+            else
+            {
+                var ticket = tickets[random.Next(tickets.Count)];
+                var center = ticket.Center;
+
+                // Mostly short moves along every axis, and now and then a jump the two placements cannot overlap across:
+                var target = choice == 2
+                    ? new SectionPos(center.X + random.Next(-40, 41), center.Y + random.Next(-20, 21), center.Z + random.Next(-40, 41))
+                    : new SectionPos(center.X + random.Next(-3, 4), center.Y + random.Next(-3, 4), center.Z + random.Next(-3, 4));
+
+                harness.Level.MoveTicket(ticket, target);
+            }
+
+            AssertTicketCountsMatchBruteForce(harness.Level, tickets, step);
+        }
     }
 
     [Fact]
@@ -590,6 +736,63 @@ public class LevelTests
                 }
             }
         }
+    }
+
+    /// <summary>
+    ///     Counts each section's keep shapes by testing every section of every ticket's box, and checks the level's counts, its entries and its pending set against that.
+    ///     The level is never updated here, so every section is unloaded and has an entry exactly when some keep shape holds it.
+    /// </summary>
+    private static void AssertTicketCountsMatchBruteForce(Level level, List<LevelTicket> tickets, int step)
+    {
+        var expectedCounts = new Dictionary<SectionPos, int>();
+        var wanted = new HashSet<SectionPos>();
+
+        foreach (var ticket in tickets)
+        {
+            var keepHorizontal = ticket.HorizontalRadius + Level.KeepMargin;
+            var keepVertical = ticket.VerticalRadius + Level.KeepMargin;
+
+            foreach (var position in Box(ticket.Center, keepHorizontal, keepVertical))
+            {
+                if (IsInsideCylinder(ticket.Center, position, keepHorizontal, keepVertical))
+                {
+                    expectedCounts[position] = expectedCounts.GetValueOrDefault(position) + 1;
+                }
+
+                if (IsInsideCylinder(ticket.Center, position, ticket.HorizontalRadius, ticket.VerticalRadius))
+                {
+                    wanted.Add(position);
+                }
+            }
+        }
+
+        Assert.Equal(expectedCounts.Count, level.SectionEntryCount);
+
+        foreach (var (position, expected) in expectedCounts)
+        {
+            var actual = level.GetTicketCount(position);
+
+            if (actual != expected)
+            {
+                Assert.Fail($"Step {step}: section ({position.X}, {position.Y}, {position.Z}) has {actual} ticket reference(s), expected {expected}.");
+            }
+        }
+
+        foreach (var position in wanted)
+        {
+            if (!level.IsPending(position))
+            {
+                Assert.Fail($"Step {step}: section ({position.X}, {position.Y}, {position.Z}) is inside a load shape but not pending.");
+            }
+        }
+    }
+
+    private static bool IsInsideCylinder(SectionPos center, SectionPos position, int horizontalRadius, int verticalRadius)
+    {
+        var deltaX = position.X - center.X;
+        var deltaZ = position.Z - center.Z;
+
+        return deltaX * deltaX + deltaZ * deltaZ <= horizontalRadius * horizontalRadius && Math.Abs(position.Y - center.Y) <= verticalRadius;
     }
 
     private static Section GenerateReference(SectionPos position)

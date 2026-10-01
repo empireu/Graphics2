@@ -38,6 +38,31 @@ public sealed class Level : IDisposable
     /// </summary>
     public const int KeepMargin = 1;
 
+    /// <summary>
+    ///     Released sections one <see cref="Update"/> destroys by default.
+    /// </summary>
+    public const int DefaultUnloadsPerUpdate = 512;
+
+    /// <summary>
+    ///     What a row walk does to every section of a row.
+    /// </summary>
+    private enum RowOperation
+    {
+        None,
+        /// <summary>
+        ///     Adds a ticket reference, creating the entry if there is none.
+        /// </summary>
+        Claim,
+        /// <summary>
+        ///     Removes a ticket reference, which unloads the section once none is left.
+        /// </summary>
+        Release,
+        /// <summary>
+        ///     Makes a section that is neither generating nor loaded pending. Only for load shapes, whose sections always have an entry.
+        /// </summary>
+        Want
+    }
+
     private struct SectionEntry
     {
         public SectionPos Position;
@@ -48,6 +73,11 @@ public sealed class Level : IDisposable
         public int TicketCount;
 
         public SectionStatus Status;
+
+        /// <summary>
+        ///     True while the key is in the unload queue, which it enters when the ticket count of a loaded section reaches zero.
+        /// </summary>
+        public bool UnloadQueued;
 
         /// <summary>
         ///     The job generating the section while <see cref="Status"/> is <see cref="SectionStatus.Generating"/>.
@@ -81,13 +111,26 @@ public sealed class Level : IDisposable
     /// </summary>
     private readonly float _skyMinimumY;
 
+    private readonly int _unloadsPerUpdate;
+
     private readonly SectionArena _terrain = new();
     private readonly Dictionary<ulong, SectionEntry> _sections = [];
 
     /// <summary>
-    ///     Sections a ticket covers that are neither generating nor loaded.
+    ///     Sections inside some ticket's load shape that are neither generating nor loaded.
+    ///     A section that has left every load shape since is only dropped by the next <see cref="RebuildLoadQueue"/>, so a move does no work for the sections leaving a load shape.
     /// </summary>
     private readonly HashSet<ulong> _pending = [];
+
+    /// <summary>
+    ///     Pending sections the last rebuild found outside every load shape, removed once the rebuild has walked the set.
+    /// </summary>
+    private readonly List<ulong> _stalePending = [];
+
+    /// <summary>
+    ///     Loaded sections whose ticket count reached zero, oldest first. Each <see cref="Update"/> destroys up to <see cref="_unloadsPerUpdate"/> of them, and skips one a ticket has claimed again since.
+    /// </summary>
+    private readonly Queue<ulong> _unloadQueue = new();
 
     /// <summary>
     ///     The pending sections inside some ticket's shape, by squared distance to the nearest ticket center.
@@ -110,10 +153,15 @@ public sealed class Level : IDisposable
     /// <summary>
     ///     Creates a level and registers its generation executor.
     /// </summary>
-    public Level(JobScheduler scheduler, TerrainGraph graph, int slotCount = SectionGenerationExecutor.DefaultSlotCount)
+    public Level(
+        JobScheduler scheduler,
+        TerrainGraph graph,
+        int slotCount = SectionGenerationExecutor.DefaultSlotCount,
+        int unloadsPerUpdate = DefaultUnloadsPerUpdate)
     {
         ArgumentNullException.ThrowIfNull(scheduler);
         ArgumentNullException.ThrowIfNull(graph);
+        ArgumentOutOfRangeException.ThrowIfLessThan(unloadsPerUpdate, 1);
 
         if (scheduler.IsStarted)
         {
@@ -124,11 +172,29 @@ public sealed class Level : IDisposable
         _executor = new SectionGenerationExecutor(graph, scheduler.ThreadCount, slotCount);
         _providerId = scheduler.RegisterExecutor(_executor);
         _skyMinimumY = graph.MaxSurfaceY + WorldConstants.VoxelSize;
+        _unloadsPerUpdate = unloadsPerUpdate;
     }
 
     internal int PendingCount => _pending.Count;
 
     internal int InFlightCount => _inFlight.Count;
+
+    /// <summary>
+    ///     Released sections waiting to be destroyed, the backlog a long move leaves behind.
+    /// </summary>
+    public int UnloadQueueCount => _unloadQueue.Count;
+
+    internal int SectionEntryCount => _sections.Count;
+
+    internal int GetTicketCount(SectionPos position)
+    {
+        return _sections.TryGetValue(position.GetKey(), out var entry) ? entry.TicketCount : 0;
+    }
+
+    internal bool IsPending(SectionPos position)
+    {
+        return _pending.Contains(position.GetKey());
+    }
 
     /// <summary>
     ///     Adds a ticket and claims every section in its keep shape. The sections load over the following ticks.
@@ -143,7 +209,8 @@ public sealed class Level : IDisposable
         var ticket = new LevelTicket(this, center, horizontalRadius, verticalRadius);
 
         _tickets.Add(ticket);
-        AdjustKeepShape(ticket, center, 1);
+        ApplyShape(ticket.KeepShape, center, RowOperation.Claim);
+        ApplyShape(ticket.LoadShape, center, RowOperation.Want);
         _loadQueueDirty = true;
 
         return ticket;
@@ -151,6 +218,7 @@ public sealed class Level : IDisposable
 
     /// <summary>
     ///     Moves a ticket, claiming the sections that entered its keep shape and releasing the ones that left it.
+    ///     The work is the rows of the box around both placements plus the sections that changed.
     /// </summary>
     public void MoveTicket(LevelTicket ticket, SectionPos center)
     {
@@ -167,64 +235,28 @@ public sealed class Level : IDisposable
 
         ticket.Center = center;
 
-        var keepHorizontal = ticket.HorizontalRadius + KeepMargin;
-        var keepVertical = ticket.VerticalRadius + KeepMargin;
+        var keepShape = ticket.KeepShape;
 
-        var shapeWidth = 2.0 * keepHorizontal + 1.0;
-        var shapeHeight = 2.0 * keepVertical + 1.0;
-        var boxVolume = (Math.Abs((double)center.X - previous.X) + shapeWidth) *
-                        (Math.Abs((double)center.Y - previous.Y) + shapeHeight) *
-                        (Math.Abs((double)center.Z - previous.Z) + shapeWidth);
-
-        // A long move makes the box around both shapes far larger than the shapes, so each shape is walked on its own instead.
-        // The new shape is claimed first, which keeps any overlap from reaching zero and unloading:
-        if (boxVolume > 2.0 * shapeWidth * shapeWidth * shapeHeight)
+        // Placements that cannot overlap are applied whole, since the difference would walk every row between them.
+        // The new shape is claimed before the old one is released:
+        if (!keepShape.CanOverlap(previous, center))
         {
-            AdjustKeepShape(ticket, center, 1);
-            AdjustKeepShape(ticket, previous, -1);
+            ApplyShape(keepShape, center, RowOperation.Claim);
+            ApplyShape(ticket.LoadShape, center, RowOperation.Want);
+            ApplyShape(keepShape, previous, RowOperation.Release);
             _loadQueueDirty = true;
 
             return;
         }
 
-        var minX = Math.Min(previous.X, center.X) - keepHorizontal;
-        var maxX = Math.Max(previous.X, center.X) + keepHorizontal;
-        var minY = Math.Min(previous.Y, center.Y) - keepVertical;
-        var maxY = Math.Max(previous.Y, center.Y) + keepVertical;
-        var minZ = Math.Min(previous.Z, center.Z) - keepHorizontal;
-        var maxZ = Math.Max(previous.Z, center.Z) + keepHorizontal;
-
-        for (var z = minZ; z <= maxZ; z++)
-        {
-            for (var y = minY; y <= maxY; y++)
-            {
-                for (var x = minX; x <= maxX; x++)
-                {
-                    var wasInside = IsInsideShape(previous, x, y, z, keepHorizontal, keepVertical);
-                    var isInside = IsInsideShape(center, x, y, z, keepHorizontal, keepVertical);
-
-                    if (wasInside == isInside)
-                    {
-                        continue;
-                    }
-
-                    if (isInside)
-                    {
-                        AddTicketReference(new SectionPos(x, y, z));
-                    }
-                    else
-                    {
-                        RemoveTicketReference(new SectionPos(x, y, z));
-                    }
-                }
-            }
-        }
-
+        // The keep difference goes first, since a section entering the load shape needs the entry that claiming it creates:
+        ApplyShapeDifference(keepShape, previous, center, RowOperation.Claim, RowOperation.Release);
+        ApplyShapeDifference(ticket.LoadShape, previous, center, RowOperation.Want, RowOperation.None);
         _loadQueueDirty = true;
     }
 
     /// <summary>
-    ///     Removes a ticket, unloading every section no other ticket keeps.
+    ///     Removes a ticket, releasing every section of its keep shape. The sections no other ticket keeps are unloaded by the following ticks.
     /// </summary>
     public void RemoveTicket(LevelTicket ticket)
     {
@@ -232,14 +264,14 @@ public sealed class Level : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         ValidateTicket(ticket);
 
-        AdjustKeepShape(ticket, ticket.Center, -1);
+        ApplyShape(ticket.KeepShape, ticket.Center, RowOperation.Release);
         _tickets.Remove(ticket);
         ticket.Owner = null;
         _loadQueueDirty = true;
     }
 
     /// <summary>
-    ///     Unloads the previous tick's unticketed loads, copies finished generations into the level, and publishes the nearest wanted sections into the free executor slots.
+    ///     Unloads the previous tick's unticketed loads and up to the budget of released sections, copies finished generations into the level, and publishes the nearest wanted sections into the free executor slots.
     /// </summary>
     public void Update()
     {
@@ -249,6 +281,7 @@ public sealed class Level : IDisposable
         _scheduler.Pool.ThrowIfFaulted();
 
         UnloadUnticketedLoads();
+        UnloadReleasedSections();
         HarvestGenerations();
 
         if (!RepublishRefusedGenerations())
@@ -288,7 +321,7 @@ public sealed class Level : IDisposable
     /// <summary>
     ///     Returns the section, loading it on the calling thread if it is not loaded.
     ///     A generation already in flight for it is discarded when it completes.
-    ///     A section no ticket keeps is unloaded on the next <see cref="Update"/>, so a caller that needs it for longer needs a ticket.
+    ///     A section no ticket keeps can be unloaded by the next <see cref="Update"/>, so a caller that needs it for longer needs a ticket.
     /// </summary>
     public Section GetOrLoadSection(SectionPos position)
     {
@@ -568,48 +601,111 @@ public sealed class Level : IDisposable
         return x + (y + z * span.SizeY) * span.SizeX;
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool IsInsideShape(SectionPos center, int x, int y, int z, int horizontalRadius, int verticalRadius)
+    /// <summary>
+    ///     Applies the operation to every section of the shape placed at <paramref name="center"/>.
+    /// </summary>
+    private void ApplyShape(TicketShape shape, SectionPos center, RowOperation operation)
     {
-        var deltaX = x - center.X;
-        var deltaZ = z - center.Z;
-
-        return deltaX * deltaX + deltaZ * deltaZ <= horizontalRadius * horizontalRadius && Math.Abs(y - center.Y) <= verticalRadius;
-    }
-
-    private void AdjustKeepShape(LevelTicket ticket, SectionPos center, int delta)
-    {
-        var keepHorizontal = ticket.HorizontalRadius + KeepMargin;
-        var keepVertical = ticket.VerticalRadius + KeepMargin;
-
-        for (var z = center.Z - keepHorizontal; z <= center.Z + keepHorizontal; z++)
+        for (var z = center.Z - shape.HorizontalRadius; z <= center.Z + shape.HorizontalRadius; z++)
         {
-            for (var y = center.Y - keepVertical; y <= center.Y + keepVertical; y++)
+            for (var y = center.Y - shape.VerticalRadius; y <= center.Y + shape.VerticalRadius; y++)
             {
-                for (var x = center.X - keepHorizontal; x <= center.X + keepHorizontal; x++)
+                if (shape.TryGetRow(center, y, z, out var minX, out var maxX))
                 {
-                    if (!IsInsideShape(center, x, y, z, keepHorizontal, keepVertical))
-                    {
-                        continue;
-                    }
-
-                    if (delta > 0)
-                    {
-                        AddTicketReference(new SectionPos(x, y, z));
-                    }
-                    else
-                    {
-                        RemoveTicketReference(new SectionPos(x, y, z));
-                    }
+                    ApplyRow(operation, minX, maxX, y, z);
                 }
             }
         }
     }
 
+    /// <summary>
+    ///     Applies <paramref name="entering"/> to the sections inside the shape at <paramref name="center"/> and outside it at <paramref name="previous"/>, and <paramref name="leaving"/> to the reverse.
+    ///     Each row of the two placements is one X interval, so a row's difference is at most two intervals per direction and no section is tested on its own.
+    /// </summary>
+    private void ApplyShapeDifference(TicketShape shape, SectionPos previous, SectionPos center, RowOperation entering, RowOperation leaving)
+    {
+        var minY = Math.Min(previous.Y, center.Y) - shape.VerticalRadius;
+        var maxY = Math.Max(previous.Y, center.Y) + shape.VerticalRadius;
+        var minZ = Math.Min(previous.Z, center.Z) - shape.HorizontalRadius;
+        var maxZ = Math.Max(previous.Z, center.Z) + shape.HorizontalRadius;
+
+        for (var z = minZ; z <= maxZ; z++)
+        {
+            for (var y = minY; y <= maxY; y++)
+            {
+                var wasInside = shape.TryGetRow(previous, y, z, out var previousMinX, out var previousMaxX);
+                var isInside = shape.TryGetRow(center, y, z, out var minX, out var maxX);
+
+                if (isInside)
+                {
+                    ApplyRowOutside(entering, minX, maxX, wasInside, previousMinX, previousMaxX, y, z);
+                }
+
+                if (wasInside && leaving != RowOperation.None)
+                {
+                    ApplyRowOutside(leaving, previousMinX, previousMaxX, isInside, minX, maxX, y, z);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Applies the operation to the part of the row from <paramref name="minX"/> to <paramref name="maxX"/> outside the excluded interval, when there is one.
+    /// </summary>
+    private void ApplyRowOutside(RowOperation operation, int minX, int maxX, bool hasExcluded, int excludedMinX, int excludedMaxX, int y, int z)
+    {
+        if (!hasExcluded || excludedMaxX < minX || excludedMinX > maxX)
+        {
+            ApplyRow(operation, minX, maxX, y, z);
+            return;
+        }
+
+        if (minX < excludedMinX)
+        {
+            ApplyRow(operation, minX, excludedMinX - 1, y, z);
+        }
+
+        if (maxX > excludedMaxX)
+        {
+            ApplyRow(operation, excludedMaxX + 1, maxX, y, z);
+        }
+    }
+
+    private void ApplyRow(RowOperation operation, int minX, int maxX, int y, int z)
+    {
+        switch (operation)
+        {
+            case RowOperation.None:
+                break;
+            case RowOperation.Claim:
+                for (var x = minX; x <= maxX; x++)
+                {
+                    AddTicketReference(new SectionPos(x, y, z));
+                }
+
+                break;
+            case RowOperation.Release:
+                for (var x = minX; x <= maxX; x++)
+                {
+                    RemoveTicketReference(new SectionPos(x, y, z));
+                }
+
+                break;
+            case RowOperation.Want:
+                for (var x = minX; x <= maxX; x++)
+                {
+                    MarkWanted(new SectionPos(x, y, z));
+                }
+
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(operation), operation, null);
+        }
+    }
+
     private void AddTicketReference(SectionPos position)
     {
-        var key = position.GetKey();
-        ref var entry = ref CollectionsMarshal.GetValueRefOrAddDefault(_sections, key, out var exists);
+        ref var entry = ref CollectionsMarshal.GetValueRefOrAddDefault(_sections, position.GetKey(), out var exists);
 
         if (!exists)
         {
@@ -617,11 +713,6 @@ public sealed class Level : IDisposable
         }
 
         entry.TicketCount++;
-
-        if (entry.TicketCount == 1 && entry.Status == SectionStatus.None)
-        {
-            _pending.Add(key);
-        }
     }
 
     private void RemoveTicketReference(SectionPos position)
@@ -645,8 +736,13 @@ public sealed class Level : IDisposable
                 _sections.Remove(key);
                 break;
             case SectionStatus.Ready:
-                _terrain.Destroy(position);
-                _sections.Remove(key);
+                // A queued section claimed again before its turn is skipped then, so it is queued at most once:
+                if (!entry.UnloadQueued)
+                {
+                    entry.UnloadQueued = true;
+                    _unloadQueue.Enqueue(key);
+                }
+
                 break;
             case SectionStatus.Generating:
                 // The entry stays until the generation completes, and the harvest discards it then.
@@ -656,13 +752,27 @@ public sealed class Level : IDisposable
         }
     }
 
+    private void MarkWanted(SectionPos position)
+    {
+        var key = position.GetKey();
+        ref var entry = ref CollectionsMarshal.GetValueRefOrNullRef(_sections, key);
+
+        Debug.Assert(!Unsafe.IsNullRef(ref entry), $"Section ({position.X}, {position.Y}, {position.Z}) entered a load shape without being claimed by the keep shape around it.");
+
+        if (entry.Status == SectionStatus.None)
+        {
+            _pending.Add(key);
+        }
+    }
+
     private void UnloadUnticketedLoads()
     {
         foreach (var key in _unticketedLoads)
         {
             ref var entry = ref CollectionsMarshal.GetValueRefOrNullRef(_sections, key);
 
-            if (Unsafe.IsNullRef(ref entry) || entry.TicketCount > 0 || entry.Status != SectionStatus.Ready)
+            // A section a ticket claimed and released since is in the unload queue, which owns its unload now:
+            if (Unsafe.IsNullRef(ref entry) || entry.TicketCount > 0 || entry.Status != SectionStatus.Ready || entry.UnloadQueued)
             {
                 continue;
             }
@@ -672,6 +782,35 @@ public sealed class Level : IDisposable
         }
 
         _unticketedLoads.Clear();
+    }
+
+    /// <summary>
+    ///     Destroys up to <see cref="_unloadsPerUpdate"/> queued sections, oldest first. A section a ticket claimed again since it was queued is dropped from the queue and kept.
+    /// </summary>
+    private void UnloadReleasedSections()
+    {
+        var unloaded = 0;
+
+        while (unloaded < _unloadsPerUpdate && _unloadQueue.TryDequeue(out var key))
+        {
+            ref var entry = ref CollectionsMarshal.GetValueRefOrNullRef(_sections, key);
+
+            Debug.Assert(
+                !Unsafe.IsNullRef(ref entry) && entry.UnloadQueued && entry.Status == SectionStatus.Ready,
+                "Only the unload queue removes a queued entry, and a queued entry stays loaded until then."
+            );
+
+            entry.UnloadQueued = false;
+
+            if (entry.TicketCount > 0)
+            {
+                continue;
+            }
+
+            _terrain.Destroy(entry.Position);
+            _sections.Remove(key);
+            unloaded++;
+        }
     }
 
     private void HarvestGenerations()
@@ -749,13 +888,23 @@ public sealed class Level : IDisposable
             {
                 _loadQueue.Enqueue(key, priority);
             }
+            else
+            {
+                _stalePending.Add(key);
+            }
         }
 
+        foreach (var key in _stalePending)
+        {
+            _pending.Remove(key);
+        }
+
+        _stalePending.Clear();
         _loadQueueDirty = false;
     }
 
     /// <summary>
-    ///     The squared distance from the section to the nearest ticket whose shape holds it. False when it is only in some ticket's keep margin.
+    ///     The squared distance from the section to the nearest ticket whose load shape holds it. False when no load shape holds it.
     /// </summary>
     private bool TryGetLoadPriority(SectionPos position, out long priority)
     {
@@ -765,7 +914,7 @@ public sealed class Level : IDisposable
         {
             var center = ticket.Center;
 
-            if (!IsInsideShape(center, position.X, position.Y, position.Z, ticket.HorizontalRadius, ticket.VerticalRadius))
+            if (!ticket.LoadShape.Contains(center, position.X, position.Y, position.Z))
             {
                 continue;
             }

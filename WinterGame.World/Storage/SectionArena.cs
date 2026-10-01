@@ -49,13 +49,23 @@ public sealed class SectionArena
     private readonly int _voxelArraysPerPage;
 
     private readonly List<BrickDescriptor[]> _descriptorPages = [];
-    private readonly Stack<DescriptorArray> _freeDescriptorArrays = [];
+
+    /// <summary>
+    ///     Free descriptor arrays by page and address.
+    ///     Neither free list holds a reference, since storing a struct that holds one into a heap array costs a GC write barrier per push.
+    /// </summary>
+    private readonly Stack<(int PageIndex, int Address)> _freeDescriptorArrays = [];
+
     private readonly List<byte[]> _voxelPages = [];
-    private readonly Stack<VoxelArray> _freeVoxelArrays = [];
+
+    /// <summary>
+    ///     Free voxel arrays as packed <see cref="VoxelArrayHandle"/>s, the same value a dense descriptor carries as its user data.
+    /// </summary>
+    private readonly Stack<uint> _freeVoxelArrays = [];
 
 #if DEBUG
     private readonly HashSet<DescriptorArray> _descriptorArraysInUse = [];
-    private readonly HashSet<VoxelArray> _voxelArraysInUse = [];
+    private readonly HashSet<uint> _voxelArraysInUse = [];
 #endif
 
     private readonly Dictionary<ulong, Section> _sections = [];
@@ -97,10 +107,10 @@ public sealed class SectionArena
 
         for (var i = capacity - Section.DescriptorsPerSection; i >= 0; i -= Section.DescriptorsPerSection)
         {
-           _freeDescriptorArrays.Push(new DescriptorArray(page, pageIndex, i));
+           _freeDescriptorArrays.Push((pageIndex, i));
         }
     }
-    
+
     internal DescriptorArray AllocateDescriptorArray()
     {
         if (!_freeDescriptorArrays.TryPop(out var slot))
@@ -110,11 +120,13 @@ public sealed class SectionArena
             slot = _freeDescriptorArrays.Pop();
         }
 
+        var array = new DescriptorArray(_descriptorPages[slot.PageIndex], slot.PageIndex, slot.Address);
+
 #if DEBUG
-        Debug.Assert(_descriptorArraysInUse.Add(slot));
+        Debug.Assert(_descriptorArraysInUse.Add(array));
 #endif
 
-        return slot;
+        return array;
     }
 
     internal void FreeDescriptorArray(DescriptorArray array)
@@ -122,8 +134,8 @@ public sealed class SectionArena
 #if DEBUG
         Debug.Assert(_descriptorArraysInUse.Remove(array));
 #endif
-        
-        _freeDescriptorArrays.Push(array);
+
+        _freeDescriptorArrays.Push((array.PageIndex, array.Address));
     }
 
     private void AllocateVoxelPage()
@@ -145,24 +157,26 @@ public sealed class SectionArena
 
         for (var i = capacity - Section.VoxelsPerBrick; i >= 0; i -= Section.VoxelsPerBrick)
         {
-            _freeVoxelArrays.Push(new VoxelArray(page, pageIndex, i));
+            _freeVoxelArrays.Push(new VoxelArrayHandle(pageIndex, i).Pack());
         }
     }
 
     internal VoxelArray AllocateVoxelArray()
     {
-        if (!_freeVoxelArrays.TryPop(out var slot))
+        if (!_freeVoxelArrays.TryPop(out var packedHandle))
         {
             AllocateVoxelPage();
 
-            slot = _freeVoxelArrays.Pop();
+            packedHandle = _freeVoxelArrays.Pop();
         }
 
 #if DEBUG
-        Debug.Assert(_voxelArraysInUse.Add(slot));
+        Debug.Assert(_voxelArraysInUse.Add(packedHandle));
 #endif
-        
-        return slot;
+
+        var handle = VoxelArrayHandle.Unpack(packedHandle);
+
+        return new VoxelArray(_voxelPages[handle.PageIndex], handle.PageIndex, handle.Address);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -170,26 +184,29 @@ public sealed class SectionArena
     {
         var page = _voxelPages[handle.PageIndex];
         var result = new VoxelArray(page, handle.PageIndex, handle.Address);
-        
+
 #if DEBUG
-        Debug.Assert(_voxelArraysInUse.Contains(result));
+        Debug.Assert(_voxelArraysInUse.Contains(handle.Pack()));
 #endif
 
         return result;
     }
 
-    internal void FreeVoxelArray(VoxelArrayHandle handle)
-    {
-        FreeVoxelArray(new VoxelArray(_voxelPages[handle.PageIndex], handle.PageIndex, handle.Address));
-    }
-    
     internal void FreeVoxelArray(VoxelArray array)
     {
+        FreeVoxelArray(array.Handle.Pack());
+    }
+
+    /// <summary>
+    ///     Frees an array by its packed handle, which is the user data of the dense descriptor that held it.
+    /// </summary>
+    internal void FreeVoxelArray(uint packedHandle)
+    {
 #if DEBUG
-        Debug.Assert(_voxelArraysInUse.Remove(array));
+        Debug.Assert(_voxelArraysInUse.Remove(packedHandle));
 #endif
-        
-        _freeVoxelArrays.Push(array);
+
+        _freeVoxelArrays.Push(packedHandle);
     }
 
     public Section Create(SectionPos pos)
@@ -265,7 +282,7 @@ public sealed class SectionArena
         {
             if (descriptor.Type == BrickType.Dense)
             {
-                FreeVoxelArray(VoxelArrayHandle.Unpack(descriptor.UserData));
+                FreeVoxelArray(descriptor.UserData);
             }
         }
 

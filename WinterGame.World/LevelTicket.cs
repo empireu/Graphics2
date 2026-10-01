@@ -1,18 +1,30 @@
 namespace WinterGame.World;
 
 /// <summary>
-///     A loader's claim on the sections around it, handed out by <see cref="Level.AddTicket"/>.
+///     A loader's claim on the surrounding sections, handed out by <see cref="Level.AddTicket"/>.
 ///     The shape is a vertical cylinder in section units: a horizontal disc of <see cref="HorizontalRadius"/> around <see cref="Center"/>, and <see cref="VerticalRadius"/> sections above and below it.
 ///     Sections inside the shape are loaded nearest first, and the shape grown by <see cref="Level.KeepMargin"/> is what keeps them loaded.
 /// </summary>
 public sealed class LevelTicket
 {
+    /// <summary>
+    ///     The shape whose sections are loaded.
+    /// </summary>
+    internal readonly TicketShape LoadShape;
+
+    /// <summary>
+    ///     The load shape grown by <see cref="Level.KeepMargin"/>, whose sections stay loaded once they are.
+    /// </summary>
+    internal readonly TicketShape KeepShape;
+
     internal LevelTicket(Level owner, SectionPos center, int horizontalRadius, int verticalRadius)
     {
         Owner = owner;
         Center = center;
         HorizontalRadius = horizontalRadius;
         VerticalRadius = verticalRadius;
+        LoadShape = new TicketShape(horizontalRadius, verticalRadius);
+        KeepShape = new TicketShape(horizontalRadius + Level.KeepMargin, verticalRadius + Level.KeepMargin);
     }
 
     /// <summary>
