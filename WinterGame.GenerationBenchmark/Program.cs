@@ -277,12 +277,18 @@ internal static class Benchmark
         var contentDense = new long[kinds.Length];
         var materialDense = new long[kinds.Length];
         var surfaceMaximum = 0;
+        var explicitSections = 0L;
 
         foreach (var position in shape)
         {
             if (!level.TryGetSection(position, out var section))
             {
                 throw new InvalidOperationException($"Section {position.X}, {position.Y}, {position.Z} is not loaded.");
+            }
+
+            if (section.Type == SectionType.Explicit)
+            {
+                explicitSections++;
             }
 
             var content = CountDense(section, VoxelChannel.Content);
@@ -302,8 +308,7 @@ internal static class Benchmark
         var totalSections = sections.Sum();
         var totalDense = contentDense.Sum() + materialDense.Sum();
         var densePerColumn = (double)totalDense / columns;
-        var descriptorBytes = totalSections * DescriptorBytesPerSection;
-        var airDescriptorBytes = sections[(int)SectionKind.Air] * DescriptorBytesPerSection;
+        var descriptorBytes = explicitSections * DescriptorBytesPerSection;
 
         Console.WriteLine("Storage after the fill:");
         Console.WriteLine("  Kind      Sections  Content dense  Material dense  Dense per section");
@@ -316,9 +321,9 @@ internal static class Benchmark
             Console.WriteLine($"  {kind,-8}  {sections[index],8}  {contentDense[index],13}  {materialDense[index],14}  {perSection,17:F1}");
         }
 
-        Console.WriteLine($"  Descriptors:  {Mib(descriptorBytes):F1} MiB, of which {Mib(airDescriptorBytes):F1} MiB are all-air sections");
+        Console.WriteLine($"  Descriptors:  {Mib(descriptorBytes):F1} MiB for {explicitSections} explicit section(s), and the {totalSections - explicitSections} shared section(s) hold none of their own");
         Console.WriteLine($"  Dense bricks: {totalDense} ({Mib(totalDense * Section.VoxelsPerBrick):F1} MiB), a surface section holds at most {surfaceMaximum}");
-        Console.WriteLine($"  Per column:   {densePerColumn:F0} dense brick(s) and {totalSections * DescriptorBytesPerSection / 1024.0 / columns:F0} KiB of descriptors");
+        Console.WriteLine($"  Per column:   {densePerColumn:F0} dense brick(s) and {descriptorBytes / 1024.0 / columns:F0} KiB of descriptors");
         Console.WriteLine();
         Console.WriteLine($"The arena addresses {PageNumbers} voxel pages. The radius at which it fills, for this vertical radius:");
 

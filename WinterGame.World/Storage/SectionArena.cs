@@ -68,6 +68,28 @@ public sealed class SectionArena
     private readonly HashSet<uint> _voxelArraysInUse = [];
 #endif
 
+    /// <summary>
+    ///     One slot per section, holding its type and the descriptor array it reads.
+    /// </summary>
+    private readonly struct SectionSlot(SectionType type, DescriptorArray descriptors)
+    {
+        public readonly SectionType Type = type;
+        public readonly DescriptorArray Descriptors = descriptors;
+    }
+
+    /// <summary>
+    ///     Indexed by <see cref="Section.SlotIndex"/>. Growing reallocates it, which is safe because a handle holds the index and never the element.
+    /// </summary>
+    private SectionSlot[] _slots = [];
+
+    private readonly Stack<int> _freeSlots = [];
+
+    /// <summary>
+    ///     The arrays that <see cref="SectionType.Shared"/> sections read, keyed by the content value in the low byte and the material value in the high byte.
+    ///     They come from the descriptor pages and are never freed.
+    /// </summary>
+    private readonly Dictionary<ushort, DescriptorArray> _sharedDescriptorArrays = [];
+
     private readonly Dictionary<ulong, Section> _sections = [];
 
     /// <summary>
@@ -209,29 +231,143 @@ public sealed class SectionArena
         _freeVoxelArrays.Push(packedHandle);
     }
 
+    private void GrowSlots()
+    {
+        var previousLength = _slots.Length;
+
+        Array.Resize(ref _slots, Math.Max(1, previousLength * 2));
+
+        for (var i = _slots.Length - 1; i >= previousLength; i--)
+        {
+            _freeSlots.Push(i);
+        }
+    }
+
+    private int AllocateSlot(SectionType type, DescriptorArray descriptors)
+    {
+        if (!_freeSlots.TryPop(out var slotIndex))
+        {
+            GrowSlots();
+
+            slotIndex = _freeSlots.Pop();
+        }
+
+        _slots[slotIndex] = new SectionSlot(type, descriptors);
+
+        return slotIndex;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal SectionType GetSectionType(int slotIndex)
+    {
+        return _slots[slotIndex].Type;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal DescriptorArray GetDescriptorArray(int slotIndex)
+    {
+        return _slots[slotIndex].Descriptors;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal ReadOnlySpan<BrickDescriptor> GetDescriptors(int slotIndex)
+    {
+        return _slots[slotIndex].Descriptors.Span;
+    }
+
+    /// <summary>
+    ///     The descriptors a write goes to. A shared section first gets its own copy of the shared array and becomes explicit.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal Span<BrickDescriptor> GetWritableDescriptors(int slotIndex)
+    {
+        var slot = _slots[slotIndex];
+
+        if (slot.Type == SectionType.Explicit)
+        {
+            return slot.Descriptors.Span;
+        }
+
+        var descriptors = AllocateDescriptorArray();
+
+        slot.Descriptors.Span.CopyTo(descriptors.Span);
+        _slots[slotIndex] = new SectionSlot(SectionType.Explicit, descriptors);
+
+        return descriptors.Span;
+    }
+
+    private DescriptorArray GetSharedDescriptorArray(byte content, byte material)
+    {
+        var key = (ushort)(content | material << 8);
+
+        if (_sharedDescriptorArrays.TryGetValue(key, out var shared))
+        {
+            return shared;
+        }
+
+        shared = AllocateDescriptorArray();
+
+        var span = shared.Span;
+
+        span.Slice(Section.GetChannelDescriptorOffset(VoxelChannel.Content), Section.DescriptorsPerChannel).Fill(BrickDescriptor.Pack(BrickType.Uniform, content));
+        span.Slice(Section.GetChannelDescriptorOffset(VoxelChannel.Material), Section.DescriptorsPerChannel).Fill(BrickDescriptor.Pack(BrickType.Uniform, material));
+
+        _sharedDescriptorArrays.Add(key, shared);
+
+        return shared;
+    }
+
+    private void ThrowIfExists(SectionPos pos)
+    {
+        if (_sections.ContainsKey(pos.GetKey()))
+        {
+            throw new InvalidOperationException($"Tried to create duplicate section at {pos}");
+        }
+    }
+
+    private Section AddSection(SectionPos pos, SectionType type, DescriptorArray descriptors)
+    {
+        var section = new Section(this, pos, AllocateSlot(type, descriptors));
+
+        _sections.Add(pos.GetKey(), section);
+
+        return section;
+    }
+
     public Section Create(SectionPos pos)
     {
+        ThrowIfExists(pos);
+
         var descriptorArray = AllocateDescriptorArray();
 
         descriptorArray.Span.Fill(BrickDescriptor.Pack(BrickType.None, 0));
 
-        var section = new Section(this, pos, descriptorArray);
+        return AddSection(pos, SectionType.Explicit, descriptorArray);
+    }
 
-        if (!_sections.TryAdd(pos.GetKey(), section))
-        {
-            throw new InvalidOperationException($"Tried to create duplicate section at {pos}");
-        }
+    /// <summary>
+    ///     Creates a <see cref="SectionType.Shared"/> section holding one content value and one material value in every brick, with no descriptor array of its own.
+    /// </summary>
+    public Section CreateUniform(SectionPos pos, byte content, byte material)
+    {
+        ThrowIfExists(pos);
 
-        return section;
+        return AddSection(pos, SectionType.Shared, GetSharedDescriptorArray(content, material));
     }
 
     /// <summary>
     ///     Creates a section in this arena at the source's position, holding a copy of the source's bricks.
     ///     Uniform descriptors are copied as they are, and every dense brick gets an array from this arena, since a dense handle is only meaningful in the arena that allocated it.
+    ///     A shared source gives a shared copy, which reads this arena's array for the same values and copies nothing.
     ///     Every brick of the source has to be written. The source is not modified.
     /// </summary>
     public Section CreateCopy(Section source)
     {
+        if (source.Type == SectionType.Shared)
+        {
+            return CreateUniform(source.Position, source.GetUniformValue(VoxelChannel.Content, 0), source.GetUniformValue(VoxelChannel.Material, 0));
+        }
+
         var destination = Create(source.Position);
 
         var sourceDescriptors = source.DescriptorArray.Span;
@@ -277,8 +413,18 @@ public sealed class SectionArena
             throw new InvalidOperationException($"Tried to destroy unknown section at {pos}");
         }
 
+        var slot = _slots[value.SlotIndex];
+
+        _freeSlots.Push(value.SlotIndex);
+
+        // A shared array holds no dense brick and stays for the other sections that read it:
+        if (slot.Type == SectionType.Shared)
+        {
+            return;
+        }
+
         // Only a dense brick holds storage, so one pass over both channels' descriptors finds every array to free:
-        foreach (var descriptor in value.DescriptorArray.Span)
+        foreach (var descriptor in slot.Descriptors.Span)
         {
             if (descriptor.Type == BrickType.Dense)
             {
@@ -286,6 +432,6 @@ public sealed class SectionArena
             }
         }
 
-        FreeDescriptorArray(value.DescriptorArray);
+        FreeDescriptorArray(slot.Descriptors);
     }
 }

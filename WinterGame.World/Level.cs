@@ -982,14 +982,6 @@ public sealed class Level : IDisposable
 
     private Section WriteSky(SectionPos position)
     {
-        var section = _terrain.Create(position);
-
-        for (var brick = 0; brick < Section.Bricks; brick++)
-        {
-            section.SetUniform(VoxelChannel.Content, brick, 0);
-            section.SetUniform(VoxelChannel.Material, brick, SurfaceMaterial.Null);
-        }
-
-        return section;
+        return _terrain.CreateUniform(position, 0, SurfaceMaterial.Null);
     }
 }

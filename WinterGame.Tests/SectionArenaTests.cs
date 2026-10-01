@@ -115,6 +115,90 @@ public class SectionArenaTests
         arena.Create(Origin);
 
         Assert.Throws<InvalidOperationException>(() => arena.Create(Origin));
+
+        // The refused create took no descriptor array, so the next one is the second of the page:
+        Assert.Equal(Section.DescriptorsPerSection, arena.AllocateDescriptorArray().Address);
+    }
+
+    [Fact]
+    public void CreateUniform_ReadsItsValuesInEveryBrick()
+    {
+        var section = new SectionArena().CreateUniform(Origin, 255, 6);
+
+        Assert.Equal(SectionType.Shared, section.Type);
+
+        for (var index = 0; index < Section.Bricks; index++)
+        {
+            Assert.Equal(BrickType.Uniform, section.GetBrickType(VoxelChannel.Content, index));
+            Assert.Equal(255, section.GetUniformValue(VoxelChannel.Content, index));
+            Assert.Equal(BrickType.Uniform, section.GetBrickType(VoxelChannel.Material, index));
+            Assert.Equal(6, section.GetUniformValue(VoxelChannel.Material, index));
+        }
+    }
+
+    [Fact]
+    public void CreateUniform_SharesOneArrayPerValuePair()
+    {
+        var arena = new SectionArena();
+
+        var first = arena.CreateUniform(new SectionPos(0, 0, 0), 255, 6);
+        var second = arena.CreateUniform(new SectionPos(1, 0, 0), 255, 6);
+        var other = arena.CreateUniform(new SectionPos(2, 0, 0), 255, 7);
+
+        Assert.NotEqual(first.SlotIndex, second.SlotIndex);
+        Assert.Equal(first.DescriptorArray, second.DescriptorArray);
+        Assert.NotEqual(first.DescriptorArray, other.DescriptorArray);
+    }
+
+    [Fact]
+    public void CreateUniform_RejectsADuplicatePosition()
+    {
+        var arena = new SectionArena();
+        arena.Create(Origin);
+
+        Assert.Throws<InvalidOperationException>(() => arena.CreateUniform(Origin, 0, 255));
+    }
+
+    [Fact]
+    public void Destroy_OfASharedSection_KeepsTheArrayForTheOthers()
+    {
+        var arena = new SectionArena();
+        var kept = arena.CreateUniform(new SectionPos(1, 0, 0), 255, 6);
+        arena.CreateUniform(Origin, 255, 6);
+
+        arena.Destroy(Origin);
+
+        // A freed array would be the next one handed out:
+        Assert.NotEqual(kept.DescriptorArray, arena.AllocateDescriptorArray());
+        Assert.Equal(255, kept.GetUniformValue(VoxelChannel.Content, 0));
+        Assert.Equal(6, kept.GetUniformValue(VoxelChannel.Material, Section.Bricks - 1));
+    }
+
+    [Fact]
+    public void Destroy_FreesTheSlotForTheNextSection()
+    {
+        var arena = new SectionArena();
+        var first = arena.CreateUniform(Origin, 0, 255);
+
+        arena.Destroy(Origin);
+
+        Assert.Equal(first.SlotIndex, arena.Create(new SectionPos(1, 0, 0)).SlotIndex);
+    }
+
+    [Fact]
+    public void Sections_KeepTheirDataWhileTheSlotTableGrows()
+    {
+        var arena = new SectionArena();
+        var first = arena.Create(Origin);
+
+        FillPattern(first);
+
+        for (var x = 1; x <= 100; x++)
+        {
+            arena.CreateUniform(new SectionPos(x, 0, 0), 0, 255);
+        }
+
+        AssertMatchesPattern(first);
     }
 
     [Fact]
@@ -287,6 +371,19 @@ public class SectionArenaTests
         destination.Create(Origin);
 
         Assert.Throws<InvalidOperationException>(() => destination.CreateCopy(source));
+    }
+
+    [Fact]
+    public void CreateCopy_OfASharedSection_SharesTheDestinationArray()
+    {
+        var source = CreateSectionSizedArena().CreateUniform(Origin, 255, 6);
+        var destination = new SectionArena();
+        var resident = destination.CreateUniform(new SectionPos(1, 0, 0), 255, 6);
+
+        var copy = destination.CreateCopy(source);
+
+        Assert.Equal(SectionType.Shared, copy.Type);
+        Assert.Equal(resident.DescriptorArray, copy.DescriptorArray);
     }
 
     [Fact]

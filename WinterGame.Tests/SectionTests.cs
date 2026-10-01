@@ -237,6 +237,46 @@ public class SectionTests
         Assert.True(second.AreAllBricksOfType(VoxelChannel.Material, BrickType.None));
     }
 
+    [Fact]
+    public void SharedSection_FirstWrite_MakesItExplicitAndLeavesTheOthersShared()
+    {
+        var arena = new SectionArena();
+        var written = arena.CreateUniform(new SectionPos(0, 0, 0), 255, 6);
+        var other = arena.CreateUniform(new SectionPos(1, 0, 0), 255, 6);
+        var shared = other.DescriptorArray;
+
+        written.SetDense(VoxelChannel.Material, 17);
+
+        Assert.Equal(SectionType.Explicit, written.Type);
+        Assert.NotEqual(shared, written.DescriptorArray);
+        Assert.Equal(BrickType.Dense, written.GetBrickType(VoxelChannel.Material, 17));
+
+        // The copy kept every brick the write did not touch:
+        Assert.Equal(255, written.GetUniformValue(VoxelChannel.Content, 17));
+        Assert.Equal(6, written.GetUniformValue(VoxelChannel.Material, 16));
+
+        Assert.Equal(SectionType.Shared, other.Type);
+        Assert.True(other.AreAllBricksOfType(VoxelChannel.Material, BrickType.Uniform));
+        Assert.Equal(6, other.GetUniformValue(VoxelChannel.Material, 17));
+    }
+
+    [Fact]
+    public void SharedSection_WritingTheValueItHolds_StaysShared()
+    {
+        var section = new SectionArena().CreateUniform(Origin, 0, 255);
+
+        section.SetUniform(VoxelChannel.Content, 3, 0);
+        section.SetUniform(VoxelChannel.Material, 3, 255);
+
+        Assert.Equal(SectionType.Shared, section.Type);
+
+        section.SetUniform(VoxelChannel.Content, 3, 1);
+
+        Assert.Equal(SectionType.Explicit, section.Type);
+        Assert.Equal(1, section.GetUniformValue(VoxelChannel.Content, 3));
+        Assert.Equal(0, section.GetUniformValue(VoxelChannel.Content, 4));
+    }
+
     private static Section CreateSection()
     {
         return new SectionArena().Create(Origin);

@@ -265,7 +265,7 @@ public class LevelTests
         harness.Level.Update();
 
         Assert.True(harness.Level.TryGetSection(overlap, out var after));
-        Assert.Equal(before.DescriptorArray, after.DescriptorArray);
+        Assert.Equal(before.SlotIndex, after.SlotIndex);
         Assert.Equal(SectionStatus.None, harness.Level.GetStatus(center));
     }
 
@@ -348,7 +348,7 @@ public class LevelTests
         harness.Level.Update();
 
         Assert.True(harness.Level.TryGetSection(center, out var after));
-        Assert.Equal(before.DescriptorArray, after.DescriptorArray);
+        Assert.Equal(before.SlotIndex, after.SlotIndex);
         Assert.Equal(0, harness.Level.UnloadQueueCount);
         Assert.Equal(0, harness.Level.InFlightCount);
     }
@@ -542,7 +542,7 @@ public class LevelTests
 
         Assert.Equal(0, harness.Level.InFlightCount);
         Assert.True(harness.Level.TryGetSection(center, out var section));
-        Assert.Equal(loaded.DescriptorArray, section.DescriptorArray);
+        Assert.Equal(loaded.SlotIndex, section.SlotIndex);
     }
 
     [Fact]
@@ -555,7 +555,7 @@ public class LevelTests
         harness.TickUntilSettled();
 
         Assert.True(harness.Level.TryGetSection(center, out var section));
-        Assert.Equal(section.DescriptorArray, harness.Level.GetOrLoadSection(center).DescriptorArray);
+        Assert.Equal(section.SlotIndex, harness.Level.GetOrLoadSection(center).SlotIndex);
     }
 
     [Fact]
@@ -831,6 +831,8 @@ public class LevelTests
 
     private static void AssertUniformAir(Section section)
     {
+        Assert.Equal(SectionType.Shared, section.Type);
+
         for (var brick = 0; brick < Section.Bricks; brick++)
         {
             Assert.Equal(BrickType.Uniform, section.GetBrickType(VoxelChannel.Content, brick));

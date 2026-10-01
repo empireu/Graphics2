@@ -66,6 +66,7 @@ public class SectionGenerationExecutorTests
 
         var types = Enumerable.Range(0, Section.Bricks).Select(index => section.GetBrickType(VoxelChannel.Content, index)).ToArray();
 
+        Assert.Equal(SectionType.Explicit, section.Type);
         Assert.Contains(BrickType.Uniform, types);
         Assert.Contains(BrickType.Dense, types);
     }
@@ -78,6 +79,8 @@ public class SectionGenerationExecutorTests
 
         var section = harness.Executor.GetResult(harness.Generate(new SectionPos(0, skyY, 0)));
 
+        Assert.Equal(SectionType.Shared, section.Type);
+
         for (var index = 0; index < Section.Bricks; index++)
         {
             Assert.Equal(BrickType.Uniform, section.GetBrickType(VoxelChannel.Content, index));
@@ -85,6 +88,18 @@ public class SectionGenerationExecutorTests
             Assert.Equal(BrickType.Uniform, section.GetBrickType(VoxelChannel.Material, index));
             Assert.Equal(SurfaceMaterial.Null, section.GetUniformValue(VoxelChannel.Material, index));
         }
+    }
+
+    [Fact]
+    public void Execute_DeepInTheBasement_IsSharedAndMatchesTheSource()
+    {
+        using var harness = new Harness();
+
+        var section = harness.Executor.GetResult(harness.Generate(new SectionPos(0, -100, 0)));
+
+        Assert.Equal(SectionType.Shared, section.Type);
+        Assert.Equal(byte.MaxValue, section.GetUniformValue(VoxelChannel.Content, 0));
+        AssertMatchesSource(section);
     }
 
     [Fact]
@@ -130,6 +145,23 @@ public class SectionGenerationExecutorTests
         harness.Executor.Free(slot);
         harness.Generate(SurfaceSection(2, 2));
 
+        AssertMatchesSource(copy);
+    }
+
+    [Fact]
+    public void CopiedSharedResult_OutlivesTheSlot()
+    {
+        using var harness = new Harness(slotCount: 1);
+        var position = new SectionPos(0, -100, 0);
+        var level = new SectionArena();
+
+        var slot = harness.Generate(position);
+        var copy = level.CreateCopy(harness.Executor.GetResult(slot));
+
+        harness.Executor.Free(slot);
+        harness.Generate(SurfaceSection(2, 2));
+
+        Assert.Equal(SectionType.Shared, copy.Type);
         AssertMatchesSource(copy);
     }
 

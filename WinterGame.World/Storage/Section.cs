@@ -23,7 +23,24 @@ public enum BrickType : byte
 }
 
 /// <summary>
+///     Where a section's descriptors live.
+/// </summary>
+public enum SectionType : byte
+{
+    /// <summary>
+    ///     The section owns its descriptor array.
+    /// </summary>
+    Explicit,
+    /// <summary>
+    ///     The section holds one content value and one material value, and reads a descriptor array the arena shares with every section holding the same pair.
+    ///     The first write gives it its own copy and makes it <see cref="Explicit"/>.
+    /// </summary>
+    Shared
+}
+
+/// <summary>
 ///     Handle for a section. The backing data lives in the owning <see cref="SectionArena"/>.
+///     The handle stays valid for the section's whole life, since the arena slot it names holds wherever the descriptors currently are.
 /// </summary>
 public readonly struct Section
 {
@@ -63,19 +80,26 @@ public readonly struct Section
     public readonly SectionPos Position;
     
     /// <summary>
-    ///     Holds the actual reference to the array as well, since it doesn't move.
+    ///     The arena slot holding the section's type and descriptor array.
     /// </summary>
-    public readonly DescriptorArray DescriptorArray;
+    public readonly int SlotIndex;
 
     /// <summary>
     ///     Handle to the voxel storage for a section of the world.
     /// </summary>
-    public Section(SectionArena arena, SectionPos position, DescriptorArray descriptorArray)
+    internal Section(SectionArena arena, SectionPos position, int slotIndex)
     {
         Arena = arena;
         Position = position;
-        DescriptorArray = descriptorArray;
+        SlotIndex = slotIndex;
     }
+
+    public SectionType Type => Arena.GetSectionType(SlotIndex);
+
+    /// <summary>
+    ///     The descriptor array the section reads now, which changes when a write makes a shared section explicit.
+    /// </summary>
+    internal DescriptorArray DescriptorArray => Arena.GetDescriptorArray(SlotIndex);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public BrickType GetBrickType(VoxelChannel channel, int brickIndex)
@@ -160,8 +184,17 @@ public readonly struct Section
     public void SetUniform(VoxelChannel channel, int brickIndex, byte value)
     {
         DebugValidateBrickIndex(channel, brickIndex);
+
+        var descriptor = BrickDescriptor.Pack(BrickType.Uniform, value);
+
+        // Writing the value a brick already holds changes nothing, so it does not make a shared section explicit:
+        if (ReadDescriptor(channel, brickIndex) == descriptor)
+        {
+            return;
+        }
+
         FreeStorage(channel, brickIndex);
-        WriteDescriptor(channel, brickIndex, BrickDescriptor.Pack(BrickType.Uniform, value));
+        WriteDescriptor(channel, brickIndex, descriptor);
     }
 
     /// <summary>
@@ -191,8 +224,8 @@ public readonly struct Section
     {
         DebugValidateChannel(channel);
 
-        var span = DescriptorArray.Span;
-        
+        var span = Arena.GetDescriptors(SlotIndex);
+
         var start = GetChannelDescriptorOffset(channel);
 
         for (var index = 0; index < DescriptorsPerChannel; index++)
@@ -235,7 +268,7 @@ public readonly struct Section
     ///     Descriptor offset of a channel's first brick, relative to the section's first descriptor.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int GetChannelDescriptorOffset(VoxelChannel channel)
+    internal static int GetChannelDescriptorOffset(VoxelChannel channel)
     {
         return (int)channel * DescriptorsPerChannel;
     }
@@ -243,13 +276,13 @@ public readonly struct Section
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private BrickDescriptor ReadDescriptor(VoxelChannel channel, int brickIndex)
     {
-        return DescriptorArray.Span[GetChannelDescriptorOffset(channel) + brickIndex];
+        return Arena.GetDescriptors(SlotIndex)[GetChannelDescriptorOffset(channel) + brickIndex];
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void WriteDescriptor(VoxelChannel channel, int brickIndex, BrickDescriptor descriptor)
     {
-        DescriptorArray.Span[GetChannelDescriptorOffset(channel) + brickIndex] = descriptor;
+        Arena.GetWritableDescriptors(SlotIndex)[GetChannelDescriptorOffset(channel) + brickIndex] = descriptor;
     }
 
     [Conditional("DEBUG")]

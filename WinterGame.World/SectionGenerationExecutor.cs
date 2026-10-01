@@ -134,6 +134,15 @@ public sealed class SectionGenerationExecutor : IWorkExecutor
 
         _sources[scratch].Generate(min, maxInclusive, content, material);
 
+        var contentData = content.Data;
+        var materialData = material.Data;
+
+        // A section holding one value in each channel reads the arena's shared array for that pair instead of storing bricks:
+        if (contentData.IndexOfAnyExcept(contentData[0]) < 0 && materialData.IndexOfAnyExcept(materialData[0]) < 0)
+        {
+            return target.CreateUniform(position, contentData[0], materialData[0]);
+        }
+
         var section = target.Create(position);
 
         try
