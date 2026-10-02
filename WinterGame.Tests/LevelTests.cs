@@ -462,6 +462,57 @@ public class LevelTests
     }
 
     [Fact]
+    public void Residency_MatchesABruteForceModelOverRandomTicketChangesAndUpdates()
+    {
+        using var harness = new Harness(unloadsPerUpdate: 16);
+        var random = new Random(4321);
+        var tickets = new List<LevelTicket>();
+        var readySlots = new Dictionary<SectionPos, int>();
+
+        // Every load shape stays above the highest surface, where a section loads in the update that wants it, with no job:
+        var minimumY = LowestSkySectionY() + 2;
+        var maximumY = minimumY + 20;
+
+        for (var step = 0; step < 400; step++)
+        {
+            var changes = random.Next(1, 3);
+
+            for (var change = 0; change < changes; change++)
+            {
+                ApplyRandomTicketChange(harness.Level, tickets, random, minimumY, maximumY);
+            }
+
+            harness.Level.Update();
+
+            AssertResidencyMatchesModel(harness.Level, tickets, readySlots, step);
+
+            // A synchronous load now and then, which the next update unloads unless a ticket claims it first:
+            if (random.Next(4) == 0)
+            {
+                var near = tickets.Count > 0 ? tickets[random.Next(tickets.Count)].Center : new SectionPos(0, minimumY, 0);
+                var position = new SectionPos(near.X + random.Next(-5, 6), Math.Max(near.Y + random.Next(-3, 4), minimumY), near.Z + random.Next(-5, 6));
+
+                readySlots[position] = harness.Level.GetOrLoadSection(position).SlotIndex;
+            }
+        }
+
+        foreach (var ticket in tickets)
+        {
+            harness.Level.RemoveTicket(ticket);
+        }
+
+        harness.Level.Update();
+
+        for (var update = 0; update < 1000 && harness.Level.UnloadQueueCount > 0; update++)
+        {
+            harness.Level.Update();
+        }
+
+        Assert.Equal(0, harness.Level.UnloadQueueCount);
+        Assert.Equal(0, harness.Level.SectionEntryCount);
+    }
+
+    [Fact]
     public void RemovedTicket_IsRejected()
     {
         using var harness = new Harness();
@@ -790,6 +841,149 @@ public class LevelTests
             {
                 Assert.Fail($"Step {step}: section ({position.X}, {position.Y}, {position.Z}) is inside a load shape but not pending.");
             }
+        }
+    }
+
+    /// <summary>
+    ///     Adds, removes or moves a ticket the way the brute-force count test does, keeping every center's Y in [<paramref name="minimumY"/>, <paramref name="maximumY"/>].
+    /// </summary>
+    private static void ApplyRandomTicketChange(Level level, List<LevelTicket> tickets, Random random, int minimumY, int maximumY)
+    {
+        var choice = random.Next(10);
+
+        if (tickets.Count == 0 || (choice == 0 && tickets.Count < 4))
+        {
+            var start = new SectionPos(random.Next(-20, 21), random.Next(minimumY, maximumY + 1), random.Next(-20, 21));
+
+            tickets.Add(level.AddTicket(start, random.Next(0, 4), random.Next(0, 3)));
+        }
+        else if (choice == 1)
+        {
+            var index = random.Next(tickets.Count);
+
+            level.RemoveTicket(tickets[index]);
+            tickets.RemoveAt(index);
+        }
+        else
+        {
+            var ticket = tickets[random.Next(tickets.Count)];
+            var center = ticket.Center;
+
+            var target = choice == 2
+                ? new SectionPos(center.X + random.Next(-40, 41), center.Y + random.Next(-20, 21), center.Z + random.Next(-40, 41))
+                : new SectionPos(center.X + random.Next(-3, 4), center.Y + random.Next(-3, 4), center.Z + random.Next(-3, 4));
+
+            level.MoveTicket(ticket, new SectionPos(target.X, Math.Clamp(target.Y, minimumY, maximumY), target.Z));
+        }
+    }
+
+    /// <summary>
+    ///     Checks every section a ticket claims or that was loaded at the previous check against a brute-force model, right after an update.
+    ///     With every shape above the surface, an update loads every section a load shape holds, and a loaded section no ticket holds waits in the unload queue.
+    ///     A section that stayed loaded since the previous check has to be the same section, never one destroyed and loaded again.
+    /// </summary>
+    private static void AssertResidencyMatchesModel(Level level, List<LevelTicket> tickets, Dictionary<SectionPos, int> readySlots, int step)
+    {
+        var expectedCounts = new Dictionary<SectionPos, int>();
+        var wanted = new HashSet<SectionPos>();
+
+        foreach (var ticket in tickets)
+        {
+            var keepHorizontal = ticket.HorizontalRadius + Level.KeepMargin;
+            var keepVertical = ticket.VerticalRadius + Level.KeepMargin;
+
+            foreach (var position in Box(ticket.Center, keepHorizontal, keepVertical))
+            {
+                if (IsInsideCylinder(ticket.Center, position, keepHorizontal, keepVertical))
+                {
+                    expectedCounts[position] = expectedCounts.GetValueOrDefault(position) + 1;
+                }
+
+                if (IsInsideCylinder(ticket.Center, position, ticket.HorizontalRadius, ticket.VerticalRadius))
+                {
+                    wanted.Add(position);
+                }
+            }
+        }
+
+        // A loaded section is either claimed or was loaded at the previous check, so these positions hold every entry:
+        var positions = new HashSet<SectionPos>(expectedCounts.Keys);
+        positions.UnionWith(readySlots.Keys);
+
+        var entries = 0;
+        var queued = 0;
+        var nowReady = new Dictionary<SectionPos, int>();
+
+        foreach (var position in positions)
+        {
+            var expected = expectedCounts.GetValueOrDefault(position);
+            var count = level.GetTicketCount(position);
+            var status = level.GetStatus(position);
+            var isQueued = level.IsUnloadQueued(position);
+            var name = $"Step {step}: section ({position.X}, {position.Y}, {position.Z})";
+
+            if (count != expected)
+            {
+                Assert.Fail($"{name} has {count} ticket reference(s), expected {expected}.");
+            }
+
+            if (wanted.Contains(position) && status != SectionStatus.Ready)
+            {
+                Assert.Fail($"{name} is inside a load shape but {status}.");
+            }
+
+            if (status == SectionStatus.Generating)
+            {
+                Assert.Fail($"{name} is generating above the surface.");
+            }
+
+            if (status == SectionStatus.Ready && expected == 0 && !isQueued)
+            {
+                Assert.Fail($"{name} is loaded with no ticket but not queued for unloading.");
+            }
+
+            if (isQueued && status != SectionStatus.Ready)
+            {
+                Assert.Fail($"{name} is queued for unloading but {status}.");
+            }
+
+            if (status == SectionStatus.Ready)
+            {
+                Assert.True(level.TryGetSection(position, out var section));
+
+                if (readySlots.TryGetValue(position, out var slot) && slot != section.SlotIndex)
+                {
+                    Assert.Fail($"{name} was loaded again instead of staying loaded.");
+                }
+
+                nowReady[position] = section.SlotIndex;
+            }
+            else if (expected > 0 && readySlots.ContainsKey(position))
+            {
+                Assert.Fail($"{name} was unloaded while a ticket holds it.");
+            }
+
+            if (expected > 0 || status != SectionStatus.None)
+            {
+                entries++;
+            }
+
+            if (isQueued)
+            {
+                queued++;
+            }
+        }
+
+        Assert.Equal(entries, level.SectionEntryCount);
+        Assert.Equal(queued, level.UnloadQueueCount);
+        Assert.Equal(0, level.PendingCount);
+        Assert.Equal(0, level.InFlightCount);
+
+        readySlots.Clear();
+
+        foreach (var (position, slot) in nowReady)
+        {
+            readySlots[position] = slot;
         }
     }
 

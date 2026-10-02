@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Runtime;
 using System.Runtime.InteropServices;
 using Graphics2.Data;
+using WinterGame.GenerationBenchmark;
 using WinterGame.Jobs;
 using WinterGame.World;
 using WinterGame.World.Storage;
@@ -12,6 +13,12 @@ using WinterGame.World.Storage;
 Debug.Fail("Run the generation benchmark in Release");
 
 var options = BenchmarkOptions.Parse(args);
+
+if (options.Residency)
+{
+    ResidencyBenchmark.Run(options);
+    return;
+}
 
 Console.WriteLine("Section generation and storage benchmark");
 Console.WriteLine($"  Runtime:  {RuntimeInformation.FrameworkDescription}, {(GCSettings.IsServerGC ? "server" : "workstation")} GC, {Environment.ProcessorCount} core(s)");
@@ -484,7 +491,7 @@ internal static class Benchmark
     /// <summary>
     ///     The sections of a ticket's load shape, which is the vertical cylinder <see cref="Level"/> loads.
     /// </summary>
-    private static SectionPos[] GetLoadShape(SectionPos center, int horizontalRadius, int verticalRadius, out int columns)
+    internal static SectionPos[] GetLoadShape(SectionPos center, int horizontalRadius, int verticalRadius, out int columns)
     {
         var positions = new List<SectionPos>();
 
@@ -555,6 +562,7 @@ internal sealed class BenchmarkOptions
     public int Moves = 32;
     public int UnloadsPerUpdate = Level.DefaultUnloadsPerUpdate;
     public double TimeoutSeconds = 300.0;
+    public bool Residency;
 
     public static BenchmarkOptions Parse(string[] args)
     {
@@ -601,8 +609,12 @@ internal sealed class BenchmarkOptions
                 case "--timeout":
                     options.TimeoutSeconds = double.Parse(value, CultureInfo.InvariantCulture);
                     break;
+                case "--residency":
+                    options.Residency = true;
+                    hasValue = false;
+                    break;
                 default:
-                    throw new ArgumentException($"Unknown option '{name}'. Options: --seed, --radius, --vertical-radius, --workers 1,2,4, --slots 10,20, --tick-hz, --cost-sections, --cost-rounds, --moves, --unloads, --timeout.");
+                    throw new ArgumentException($"Unknown option '{name}'. Options: --seed, --radius, --vertical-radius, --workers 1,2,4, --slots 10,20, --tick-hz, --cost-sections, --cost-rounds, --moves, --unloads, --timeout, --residency.");
             }
 
             if (hasValue)

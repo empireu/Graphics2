@@ -1,5 +1,5 @@
 using System.Diagnostics;
-using System.Runtime.CompilerServices;
+using System.Numerics;
 using System.Runtime.InteropServices;
 using Graphics2.Data;
 using Graphics2.Mathematics;
@@ -63,32 +63,27 @@ public sealed class Level : IDisposable
         Want
     }
 
-    private struct SectionEntry
+    /// <summary>
+    ///     One X interval of one row and what to do to its sections.
+    /// </summary>
+    private readonly struct RowRun(int minX, int maxX, int y, int z, RowOperation operation)
     {
-        public SectionPos Position;
-
-        /// <summary>
-        ///     Tickets whose keep shape covers the section.
-        /// </summary>
-        public int TicketCount;
-
-        public SectionStatus Status;
-
-        /// <summary>
-        ///     True while the key is in the unload queue, which it enters when the ticket count of a loaded section reaches zero.
-        /// </summary>
-        public bool UnloadQueued;
-
-        /// <summary>
-        ///     The job generating the section while <see cref="Status"/> is <see cref="SectionStatus.Generating"/>.
-        /// </summary>
-        public Job Job;
-
-        /// <summary>
-        ///     The section in the level's arena while <see cref="Status"/> is <see cref="SectionStatus.Ready"/>.
-        /// </summary>
-        public Section Section;
+        public readonly int MinX = minX;
+        public readonly int MaxX = maxX;
+        public readonly int Y = y;
+        public readonly int Z = z;
+        public readonly RowOperation Operation = operation;
     }
+
+    /// <summary>
+    ///     The most runs one row of blocks can hold: each of its rows has at most two intervals entering a shape and two leaving it.
+    /// </summary>
+    private const int MaxRunsPerBlockRow = SectionBlockPos.BlockSize * SectionBlockPos.BlockSize * 4;
+
+    /// <summary>
+    ///     The widest row of blocks whose scratch is taken from the stack.
+    /// </summary>
+    private const int MaxStackBlocksPerRow = 256;
 
     private struct InFlightGeneration
     {
@@ -114,7 +109,13 @@ public sealed class Level : IDisposable
     private readonly int _unloadsPerUpdate;
 
     private readonly SectionArena _terrain = new();
-    private readonly Dictionary<ulong, SectionEntry> _sections = [];
+
+    /// <summary>
+    ///     Every block holding a section that has an entry, by block key. A section has an entry while it is claimed, generating or ready, and a block left with none is freed.
+    /// </summary>
+    private readonly Dictionary<ulong, SectionBlock> _blocks = [];
+
+    private readonly SectionBlockAllocator _blockStorage = new();
 
     /// <summary>
     ///     Sections inside some ticket's load shape that are neither generating nor loaded.
@@ -151,6 +152,11 @@ public sealed class Level : IDisposable
     private bool _disposed;
 
     /// <summary>
+    ///     Counts the blocks added and removed, so a <see cref="FastSectionAccessor"/> can check that the block it remembers is still the level's.
+    /// </summary>
+    private int _blockVersion;
+
+    /// <summary>
     ///     Creates a level and registers its generation executor.
     /// </summary>
     public Level(
@@ -184,16 +190,36 @@ public sealed class Level : IDisposable
     /// </summary>
     public int UnloadQueueCount => _unloadQueue.Count;
 
-    internal int SectionEntryCount => _sections.Count;
+    internal int SectionEntryCount
+    {
+        get
+        {
+            var count = 0;
+
+            foreach (var block in _blocks.Values)
+            {
+                count += BitOperations.PopCount(_blockStorage.Get(block).Occupied);
+            }
+
+            return count;
+        }
+    }
+
+    internal int BlockVersion => _blockVersion;
 
     internal int GetTicketCount(SectionPos position)
     {
-        return _sections.TryGetValue(position.GetKey(), out var entry) ? entry.TicketCount : 0;
+        return TryGetBlock(position, out _, out var view) ? view.TicketCounts[SectionBlockPos.GetLocalIndex(position)] : 0;
     }
 
     internal bool IsPending(SectionPos position)
     {
         return _pending.Contains(position.GetKey());
+    }
+
+    internal bool IsUnloadQueued(SectionPos position)
+    {
+        return TryGetBlock(position, out _, out var view) && (view.UnloadQueued & GetBit(position)) != 0;
     }
 
     /// <summary>
@@ -308,17 +334,16 @@ public sealed class Level : IDisposable
     {
         WgAssert.DebugIsOnGameThread();
 
-        return _sections.TryGetValue(position.GetKey(), out var entry) ? entry.Status : SectionStatus.None;
+        return _blocks.TryGetValue(SectionBlockPos.FromSection(position).GetKey(), out var block) ? GetStatus(block, GetBit(position)) : SectionStatus.None;
     }
 
     public bool TryGetSection(SectionPos position, out Section section)
     {
         WgAssert.DebugIsOnGameThread();
 
-        if (_sections.TryGetValue(position.GetKey(), out var entry) && entry.Status == SectionStatus.Ready)
+        if (_blocks.TryGetValue(SectionBlockPos.FromSection(position).GetKey(), out var block))
         {
-            section = entry.Section;
-            return true;
+            return TryGetSection(block, position, out section);
         }
 
         section = default;
@@ -335,29 +360,24 @@ public sealed class Level : IDisposable
         WgAssert.DebugIsOnGameThread();
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        if (TryGetSection(position, out var loaded))
+        {
+            return loaded;
+        }
+
         var key = position.GetKey();
-
-        if (_sections.TryGetValue(key, out var existing) && existing.Status == SectionStatus.Ready)
-        {
-            return existing.Section;
-        }
-
         var section = IsSky(position) ? WriteSky(position) : _executor.GenerateNow(position, _terrain);
-
-        ref var entry = ref CollectionsMarshal.GetValueRefOrAddDefault(_sections, key, out var exists);
-
-        if (!exists)
-        {
-            entry.Position = position;
-        }
+        var view = GetOrAddBlock(SectionBlockPos.FromSection(position).GetKey());
+        var index = SectionBlockPos.GetLocalIndex(position);
+        var bit = 1UL << index;
 
         _pending.Remove(key);
 
-        entry.Status = SectionStatus.Ready;
-        entry.Job = default;
-        entry.Section = section;
+        view.Slots[index] = section.SlotIndex;
+        view.Generating &= ~bit;
+        view.Ready |= bit;
 
-        if (entry.TicketCount == 0)
+        if (view.TicketCounts[index] == 0)
         {
             _unticketedLoads.Add(key);
         }
@@ -375,6 +395,7 @@ public sealed class Level : IDisposable
         WgAssert.DebugIsOnGameThread();
         ValidateRange(min, maxInclusive, content, material);
 
+        var accessor = new FastSectionAccessor(this);
         var complete = true;
         var sectionMin = min >> SectionPos.Log;
         var sectionMax = maxInclusive >> SectionPos.Log;
@@ -390,7 +411,7 @@ public sealed class Level : IDisposable
                     var clipMin = Vector3i.Max(min, origin);
                     var clipMax = Vector3i.Min(maxInclusive, origin + SectionPos.SectionMask);
 
-                    if (TryGetSection(position, out var section))
+                    if (accessor.TryGetSection(position, out var section))
                     {
                         ReadSection(section, clipMin - origin, clipMax - origin, origin - min, content, material);
                         continue;
@@ -411,32 +432,7 @@ public sealed class Level : IDisposable
     /// </summary>
     public bool ReadPoint(Vector3i position, out byte content, out byte material)
     {
-        WgAssert.DebugIsOnGameThread();
-
-        var sectionPosition = new SectionPos(
-            SectionPos.VoxelToSectionCoord(position.X),
-            SectionPos.VoxelToSectionCoord(position.Y),
-            SectionPos.VoxelToSectionCoord(position.Z)
-        );
-
-        if (!TryGetSection(sectionPosition, out var section))
-        {
-            content = VoxelChannel.Content.GetClearValue();
-            material = VoxelChannel.Material.GetClearValue();
-
-            return false;
-        }
-
-        var local = position & SectionPos.SectionMask;
-        var brick = local >> Section.BrickLog;
-        var inBrick = local & (Section.BrickSize - 1);
-        var brickIndex = Section.GetBrickIndex(brick.X, brick.Y, brick.Z);
-        var voxelIndex = Section.GetBrickVoxelIndex(inBrick.X, inBrick.Y, inBrick.Z);
-
-        content = ReadVoxel(section, VoxelChannel.Content, brickIndex, voxelIndex);
-        material = ReadVoxel(section, VoxelChannel.Material, brickIndex, voxelIndex);
-
-        return true;
+        return new FastSectionAccessor(this).ReadPoint(position, out content, out material);
     }
 
     /// <summary>
@@ -581,7 +577,7 @@ public sealed class Level : IDisposable
         }
     }
 
-    private static byte ReadVoxel(Section section, VoxelChannel channel, int brickIndex, int voxelIndex)
+    internal static byte ReadVoxel(Section section, VoxelChannel channel, int brickIndex, int voxelIndex)
     {
         return section.GetBrickType(channel, brickIndex) == BrickType.Uniform
             ? section.GetUniformValue(channel, brickIndex)
@@ -613,14 +609,31 @@ public sealed class Level : IDisposable
     /// </summary>
     private void ApplyShape(TicketShape shape, SectionPos center, RowOperation operation)
     {
-        for (var z = center.Z - shape.HorizontalRadius; z <= center.Z + shape.HorizontalRadius; z++)
+        Span<RowRun> runs = stackalloc RowRun[MaxRunsPerBlockRow];
+
+        var minY = center.Y - shape.VerticalRadius;
+        var maxY = center.Y + shape.VerticalRadius;
+        var minZ = center.Z - shape.HorizontalRadius;
+        var maxZ = center.Z + shape.HorizontalRadius;
+
+        for (var blockZ = minZ >> SectionBlockPos.Log; blockZ <= maxZ >> SectionBlockPos.Log; blockZ++)
         {
-            for (var y = center.Y - shape.VerticalRadius; y <= center.Y + shape.VerticalRadius; y++)
+            for (var blockY = minY >> SectionBlockPos.Log; blockY <= maxY >> SectionBlockPos.Log; blockY++)
             {
-                if (shape.TryGetRow(center, y, z, out var minX, out var maxX))
+                var count = 0;
+
+                for (var z = Math.Max(minZ, blockZ << SectionBlockPos.Log); z <= Math.Min(maxZ, (blockZ << SectionBlockPos.Log) + SectionBlockPos.BlockMask); z++)
                 {
-                    ApplyRow(operation, minX, maxX, y, z);
+                    for (var y = Math.Max(minY, blockY << SectionBlockPos.Log); y <= Math.Min(maxY, (blockY << SectionBlockPos.Log) + SectionBlockPos.BlockMask); y++)
+                    {
+                        if (shape.TryGetRow(center, y, z, out var minX, out var maxX))
+                        {
+                            runs[count++] = new RowRun(minX, maxX, y, z, operation);
+                        }
+                    }
                 }
+
+                ApplyRuns(runs[..count], blockY, blockZ);
             }
         }
     }
@@ -631,55 +644,146 @@ public sealed class Level : IDisposable
     /// </summary>
     private void ApplyShapeDifference(TicketShape shape, SectionPos previous, SectionPos center, RowOperation entering, RowOperation leaving)
     {
+        Span<RowRun> runs = stackalloc RowRun[MaxRunsPerBlockRow];
+
         var minY = Math.Min(previous.Y, center.Y) - shape.VerticalRadius;
         var maxY = Math.Max(previous.Y, center.Y) + shape.VerticalRadius;
         var minZ = Math.Min(previous.Z, center.Z) - shape.HorizontalRadius;
         var maxZ = Math.Max(previous.Z, center.Z) + shape.HorizontalRadius;
 
-        for (var z = minZ; z <= maxZ; z++)
+        for (var blockZ = minZ >> SectionBlockPos.Log; blockZ <= maxZ >> SectionBlockPos.Log; blockZ++)
         {
-            for (var y = minY; y <= maxY; y++)
+            for (var blockY = minY >> SectionBlockPos.Log; blockY <= maxY >> SectionBlockPos.Log; blockY++)
             {
-                var wasInside = shape.TryGetRow(previous, y, z, out var previousMinX, out var previousMaxX);
-                var isInside = shape.TryGetRow(center, y, z, out var minX, out var maxX);
+                var count = 0;
 
-                if (isInside)
+                for (var z = Math.Max(minZ, blockZ << SectionBlockPos.Log); z <= Math.Min(maxZ, (blockZ << SectionBlockPos.Log) + SectionBlockPos.BlockMask); z++)
                 {
-                    ApplyRowOutside(entering, minX, maxX, wasInside, previousMinX, previousMaxX, y, z);
+                    for (var y = Math.Max(minY, blockY << SectionBlockPos.Log); y <= Math.Min(maxY, (blockY << SectionBlockPos.Log) + SectionBlockPos.BlockMask); y++)
+                    {
+                        var wasInside = shape.TryGetRow(previous, y, z, out var previousMinX, out var previousMaxX);
+                        var isInside = shape.TryGetRow(center, y, z, out var minX, out var maxX);
+
+                        if (isInside)
+                        {
+                            count = AddRunsOutside(runs, count, entering, minX, maxX, wasInside, previousMinX, previousMaxX, y, z);
+                        }
+
+                        if (wasInside && leaving != RowOperation.None)
+                        {
+                            count = AddRunsOutside(runs, count, leaving, previousMinX, previousMaxX, isInside, minX, maxX, y, z);
+                        }
+                    }
                 }
 
-                if (wasInside && leaving != RowOperation.None)
-                {
-                    ApplyRowOutside(leaving, previousMinX, previousMaxX, isInside, minX, maxX, y, z);
-                }
+                ApplyRuns(runs[..count], blockY, blockZ);
             }
         }
     }
 
     /// <summary>
-    ///     Applies the operation to the part of the row from <paramref name="minX"/> to <paramref name="maxX"/> outside the excluded interval, when there is one.
+    ///     Adds the part of the row from <paramref name="minX"/> to <paramref name="maxX"/> outside the excluded interval, when there is one, and returns the new run count.
     /// </summary>
-    private void ApplyRowOutside(RowOperation operation, int minX, int maxX, bool hasExcluded, int excludedMinX, int excludedMaxX, int y, int z)
+    private static int AddRunsOutside(Span<RowRun> runs, int count, RowOperation operation, int minX, int maxX, bool hasExcluded, int excludedMinX, int excludedMaxX, int y, int z)
     {
         if (!hasExcluded || excludedMaxX < minX || excludedMinX > maxX)
         {
-            ApplyRow(operation, minX, maxX, y, z);
-            return;
+            runs[count++] = new RowRun(minX, maxX, y, z, operation);
+            return count;
         }
 
         if (minX < excludedMinX)
         {
-            ApplyRow(operation, minX, excludedMinX - 1, y, z);
+            runs[count++] = new RowRun(minX, excludedMinX - 1, y, z, operation);
         }
 
         if (maxX > excludedMaxX)
         {
-            ApplyRow(operation, excludedMaxX + 1, maxX, y, z);
+            runs[count++] = new RowRun(excludedMaxX + 1, maxX, y, z, operation);
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    ///     Applies the runs of one row of blocks, one block at a time, so each block the runs touch is looked up once.
+    /// </summary>
+    private void ApplyRuns(ReadOnlySpan<RowRun> runs, int blockY, int blockZ)
+    {
+        if (runs.IsEmpty)
+        {
+            return;
+        }
+
+        var minX = int.MaxValue;
+        var maxX = int.MinValue;
+
+        foreach (var run in runs)
+        {
+            minX = Math.Min(minX, run.MinX);
+            maxX = Math.Max(maxX, run.MaxX);
+        }
+
+        var firstBlockX = minX >> SectionBlockPos.Log;
+        var blockCount = (maxX >> SectionBlockPos.Log) - firstBlockX + 1;
+
+        // A move's runs sit at the two ends of the row, so only the blocks some run touches are visited:
+        Span<bool> touched = blockCount <= MaxStackBlocksPerRow ? stackalloc bool[blockCount] : new bool[blockCount];
+
+        foreach (var run in runs)
+        {
+            touched[((run.MinX >> SectionBlockPos.Log) - firstBlockX)..((run.MaxX >> SectionBlockPos.Log) - firstBlockX + 1)].Fill(true);
+        }
+
+        for (var offset = 0; offset < blockCount; offset++)
+        {
+            if (touched[offset])
+            {
+                ApplyRunsToBlock(runs, firstBlockX + offset, blockY, blockZ);
+            }
         }
     }
 
-    private void ApplyRow(RowOperation operation, int minX, int maxX, int y, int z)
+    private void ApplyRunsToBlock(ReadOnlySpan<RowRun> runs, int blockX, int blockY, int blockZ)
     {
+        var blockMinX = blockX << SectionBlockPos.Log;
+        var blockMaxX = blockMinX + SectionBlockPos.BlockMask;
+        var blockKey = SectionBlockPos.Pack(blockX, blockY, blockZ);
+        var fetched = false;
+        var released = false;
+        var view = default(SectionBlockView);
+
+        foreach (var run in runs)
+        {
+            var minX = Math.Max(run.MinX, blockMinX);
+            var maxX = Math.Min(run.MaxX, blockMaxX);
+
+            if (minX > maxX)
+            {
+                continue;
+            }
+
+            if (!fetched)
+            {
+                // Only a claim creates a block, since a released or wanted section is already claimed:
+                view = run.Operation == RowOperation.Claim ? GetOrAddBlock(blockKey) : _blockStorage.Get(_blocks[blockKey]);
+                fetched = true;
+            }
+
+            released |= run.Operation == RowOperation.Release;
+            ApplyRun(view, run.Operation, minX, maxX, run.Y, run.Z);
+        }
+
+        if (released)
+        {
+            FreeBlockIfEmpty(blockKey, view);
+        }
+    }
+
+    private void ApplyRun(SectionBlockView view, RowOperation operation, int minX, int maxX, int y, int z)
+    {
+        var rowIndex = SectionBlockPos.GetLocalIndex(0, y, z);
+
         switch (operation)
         {
             case RowOperation.None:
@@ -687,21 +791,21 @@ public sealed class Level : IDisposable
             case RowOperation.Claim:
                 for (var x = minX; x <= maxX; x++)
                 {
-                    AddTicketReference(new SectionPos(x, y, z));
+                    AddTicketReference(view, rowIndex | (x & SectionBlockPos.BlockMask));
                 }
 
                 break;
             case RowOperation.Release:
                 for (var x = minX; x <= maxX; x++)
                 {
-                    RemoveTicketReference(new SectionPos(x, y, z));
+                    RemoveTicketReference(view, rowIndex | (x & SectionBlockPos.BlockMask), new SectionPos(x, y, z));
                 }
 
                 break;
             case RowOperation.Want:
                 for (var x = minX; x <= maxX; x++)
                 {
-                    MarkWanted(new SectionPos(x, y, z));
+                    MarkWanted(view, rowIndex | (x & SectionBlockPos.BlockMask), new SectionPos(x, y, z));
                 }
 
                 break;
@@ -710,65 +814,55 @@ public sealed class Level : IDisposable
         }
     }
 
-    private void AddTicketReference(SectionPos position)
+    private static void AddTicketReference(SectionBlockView view, int index)
     {
-        ref var entry = ref CollectionsMarshal.GetValueRefOrAddDefault(_sections, position.GetKey(), out var exists);
-
-        if (!exists)
+        if (view.TicketCounts[index]++ == 0)
         {
-            entry.Position = position;
+            view.Claimed |= 1UL << index;
         }
-
-        entry.TicketCount++;
     }
 
-    private void RemoveTicketReference(SectionPos position)
+    private void RemoveTicketReference(SectionBlockView view, int index, SectionPos position)
     {
-        var key = position.GetKey();
-        ref var entry = ref CollectionsMarshal.GetValueRefOrNullRef(_sections, key);
+        var bit = 1UL << index;
 
-        Debug.Assert(!Unsafe.IsNullRef(ref entry), $"Released a ticket reference on section ({position.X}, {position.Y}, {position.Z}), which no ticket claimed.");
+        Debug.Assert(view.TicketCounts[index] > 0, $"Released a ticket reference on section ({position.X}, {position.Y}, {position.Z}), which no ticket claimed.");
 
-        entry.TicketCount--;
-
-        if (entry.TicketCount > 0)
+        if (--view.TicketCounts[index] > 0)
         {
             return;
         }
 
-        switch (entry.Status)
-        {
-            case SectionStatus.None:
-                _pending.Remove(key);
-                _sections.Remove(key);
-                break;
-            case SectionStatus.Ready:
-                // A queued section claimed again before its turn is skipped then, so it is queued at most once:
-                if (!entry.UnloadQueued)
-                {
-                    entry.UnloadQueued = true;
-                    _unloadQueue.Enqueue(key);
-                }
+        view.Claimed &= ~bit;
 
-                break;
-            case SectionStatus.Generating:
-                // The entry stays until the generation completes, and the harvest discards it then.
-                break;
-            default:
-                throw new InvalidOperationException($"Section status {entry.Status} is not handled.");
+        if ((view.Ready & bit) != 0)
+        {
+            // A queued section claimed again before its turn is skipped then, so it is queued at most once:
+            if ((view.UnloadQueued & bit) == 0)
+            {
+                view.UnloadQueued |= bit;
+                _unloadQueue.Enqueue(position.GetKey());
+            }
+
+            return;
+        }
+
+        // A generating section keeps its entry until the generation completes and the harvest discards it, and any other was at most pending:
+        if ((view.Generating & bit) == 0)
+        {
+            _pending.Remove(position.GetKey());
         }
     }
 
-    private void MarkWanted(SectionPos position)
+    private void MarkWanted(SectionBlockView view, int index, SectionPos position)
     {
-        var key = position.GetKey();
-        ref var entry = ref CollectionsMarshal.GetValueRefOrNullRef(_sections, key);
+        var bit = 1UL << index;
 
-        Debug.Assert(!Unsafe.IsNullRef(ref entry), $"Section ({position.X}, {position.Y}, {position.Z}) entered a load shape without being claimed by the keep shape around it.");
+        Debug.Assert((view.Claimed & bit) != 0, $"Section ({position.X}, {position.Y}, {position.Z}) entered a load shape without being claimed by the keep shape around it.");
 
-        if (entry.Status == SectionStatus.None)
+        if (((view.Ready | view.Generating) & bit) == 0)
         {
-            _pending.Add(key);
+            _pending.Add(position.GetKey());
         }
     }
 
@@ -776,16 +870,23 @@ public sealed class Level : IDisposable
     {
         foreach (var key in _unticketedLoads)
         {
-            ref var entry = ref CollectionsMarshal.GetValueRefOrNullRef(_sections, key);
+            var position = new SectionPos(key);
 
-            // A section a ticket claimed and released since is in the unload queue, which owns its unload now:
-            if (Unsafe.IsNullRef(ref entry) || entry.TicketCount > 0 || entry.Status != SectionStatus.Ready || entry.UnloadQueued)
+            if (!TryGetBlock(position, out var blockKey, out var view))
             {
                 continue;
             }
 
-            _terrain.Destroy(entry.Position);
-            _sections.Remove(key);
+            var index = SectionBlockPos.GetLocalIndex(position);
+            var bit = 1UL << index;
+
+            // A section a ticket claimed and released since is in the unload queue, which owns its unload now:
+            if (view.TicketCounts[index] > 0 || (view.Ready & bit) == 0 || (view.UnloadQueued & bit) != 0)
+            {
+                continue;
+            }
+
+            DestroySection(position, blockKey, view, bit);
         }
 
         _unticketedLoads.Clear();
@@ -800,22 +901,24 @@ public sealed class Level : IDisposable
 
         while (unloaded < _unloadsPerUpdate && _unloadQueue.TryDequeue(out var key))
         {
-            ref var entry = ref CollectionsMarshal.GetValueRefOrNullRef(_sections, key);
+            var position = new SectionPos(key);
+            var found = TryGetBlock(position, out var blockKey, out var view);
+            var index = SectionBlockPos.GetLocalIndex(position);
+            var bit = 1UL << index;
 
             Debug.Assert(
-                !Unsafe.IsNullRef(ref entry) && entry.UnloadQueued && entry.Status == SectionStatus.Ready,
+                found && (view.UnloadQueued & bit) != 0 && (view.Ready & bit) != 0,
                 "Only the unload queue removes a queued entry, and a queued entry stays loaded until then."
             );
 
-            entry.UnloadQueued = false;
+            view.UnloadQueued &= ~bit;
 
-            if (entry.TicketCount > 0)
+            if (view.TicketCounts[index] > 0)
             {
                 continue;
             }
 
-            _terrain.Destroy(entry.Position);
-            _sections.Remove(key);
+            DestroySection(position, blockKey, view, bit);
             unloaded++;
         }
     }
@@ -833,20 +936,28 @@ public sealed class Level : IDisposable
                 continue;
             }
 
-            ref var entry = ref CollectionsMarshal.GetValueRefOrNullRef(_sections, inFlight.Key);
+            var position = new SectionPos(inFlight.Key);
 
-            // An entry that no longer names this job was unloaded or loaded synchronously since, so the result is dropped:
-            if (!Unsafe.IsNullRef(ref entry) && entry.Status == SectionStatus.Generating && entry.Job == inFlight.Job)
+            if (TryGetBlock(position, out var blockKey, out var view))
             {
-                if (entry.TicketCount > 0)
+                var localIndex = SectionBlockPos.GetLocalIndex(position);
+                var bit = 1UL << localIndex;
+
+                // An entry that is no longer generating into this slot was unloaded or loaded synchronously since, so the result is dropped.
+                // The slot tells the generations apart, because it stays allocated until its own harvest:
+                if ((view.Generating & bit) != 0 && view.Slots[localIndex] == inFlight.Slot)
                 {
-                    entry.Section = _terrain.CreateCopy(_executor.GetResult(inFlight.Slot));
-                    entry.Status = SectionStatus.Ready;
-                    entry.Job = default;
-                }
-                else
-                {
-                    _sections.Remove(inFlight.Key);
+                    if (view.TicketCounts[localIndex] > 0)
+                    {
+                        view.Slots[localIndex] = _terrain.CreateCopy(_executor.GetResult(inFlight.Slot)).SlotIndex;
+                        view.Generating &= ~bit;
+                        view.Ready |= bit;
+                    }
+                    else
+                    {
+                        view.Generating &= ~bit;
+                        FreeBlockIfEmpty(blockKey, view);
+                    }
                 }
             }
 
@@ -942,28 +1053,37 @@ public sealed class Level : IDisposable
 
         while (_executor.FreeSlotCount > 0 && _loadQueue.TryDequeue(out var key, out _))
         {
-            ref var entry = ref CollectionsMarshal.GetValueRefOrNullRef(_sections, key);
+            var position = new SectionPos(key);
 
-            if (Unsafe.IsNullRef(ref entry) || entry.Status != SectionStatus.None)
+            if (!TryGetBlock(position, out _, out var view))
+            {
+                continue;
+            }
+
+            var index = SectionBlockPos.GetLocalIndex(position);
+            var bit = 1UL << index;
+
+            // A section that left every keep shape or loaded since the rebuild went stale in the queue:
+            if ((view.Claimed & bit) == 0 || ((view.Ready | view.Generating) & bit) != 0)
             {
                 continue;
             }
 
             _pending.Remove(key);
 
-            if (IsSky(entry.Position))
+            if (IsSky(position))
             {
-                entry.Section = WriteSky(entry.Position);
-                entry.Status = SectionStatus.Ready;
+                view.Slots[index] = WriteSky(position).SlotIndex;
+                view.Ready |= bit;
                 continue;
             }
 
-            var slot = _executor.Allocate(entry.Position);
+            var slot = _executor.Allocate(position);
             var job = pool.CreateJob();
             var published = _scheduler.Publish(job, _providerId, slot);
 
-            entry.Status = SectionStatus.Generating;
-            entry.Job = job;
+            view.Slots[index] = slot;
+            view.Generating |= bit;
 
             _inFlight.Add(
                 new InFlightGeneration
@@ -990,5 +1110,94 @@ public sealed class Level : IDisposable
     private Section WriteSky(SectionPos position)
     {
         return _terrain.CreateUniform(position, 0, SurfaceMaterial.Null);
+    }
+
+    /// <summary>
+    ///     The storage of the block holding the section. False when no section of that block has an entry.
+    /// </summary>
+    private bool TryGetBlock(SectionPos position, out ulong blockKey, out SectionBlockView view)
+    {
+        blockKey = SectionBlockPos.FromSection(position).GetKey();
+
+        if (_blocks.TryGetValue(blockKey, out var block))
+        {
+            view = _blockStorage.Get(block);
+            return true;
+        }
+
+        view = default;
+        return false;
+    }
+
+    internal bool TryGetBlock(ulong blockKey, out SectionBlock block)
+    {
+        return _blocks.TryGetValue(blockKey, out block);
+    }
+
+    private SectionBlockView GetOrAddBlock(ulong blockKey)
+    {
+        ref var block = ref CollectionsMarshal.GetValueRefOrAddDefault(_blocks, blockKey, out var exists);
+
+        if (!exists)
+        {
+            block = _blockStorage.Allocate();
+            _blockVersion++;
+        }
+
+        return _blockStorage.Get(block);
+    }
+
+    private void FreeBlockIfEmpty(ulong blockKey, SectionBlockView view)
+    {
+        if (view.Occupied != 0)
+        {
+            return;
+        }
+
+        _blocks.Remove(blockKey, out var block);
+        _blockStorage.Free(block);
+        _blockVersion++;
+    }
+
+    /// <summary>
+    ///     Destroys a loaded section that no ticket holds, and frees its block when nothing else in it has an entry.
+    /// </summary>
+    private void DestroySection(SectionPos position, ulong blockKey, SectionBlockView view, ulong bit)
+    {
+        _terrain.Destroy(position);
+        view.Ready &= ~bit;
+        FreeBlockIfEmpty(blockKey, view);
+    }
+
+    internal SectionStatus GetStatus(SectionBlock block, ulong bit)
+    {
+        if ((_blockStorage.GetMask(block, SectionBlockView.ReadyMask) & bit) != 0)
+        {
+            return SectionStatus.Ready;
+        }
+
+        return (_blockStorage.GetMask(block, SectionBlockView.GeneratingMask) & bit) != 0 ? SectionStatus.Generating : SectionStatus.None;
+    }
+
+    /// <summary>
+    ///     The section's handle when it is loaded, rebuilt from the arena slot its block holds.
+    /// </summary>
+    internal bool TryGetSection(SectionBlock block, SectionPos position, out Section section)
+    {
+        var index = SectionBlockPos.GetLocalIndex(position);
+
+        if ((_blockStorage.GetMask(block, SectionBlockView.ReadyMask) & (1UL << index)) != 0)
+        {
+            section = new Section(_terrain, position, _blockStorage.GetSlot(block, index));
+            return true;
+        }
+
+        section = default;
+        return false;
+    }
+
+    private static ulong GetBit(SectionPos position)
+    {
+        return 1UL << SectionBlockPos.GetLocalIndex(position);
     }
 }
