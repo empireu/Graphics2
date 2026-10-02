@@ -38,10 +38,21 @@ internal readonly struct SectionBlock(int index) : IEquatable<SectionBlock>
 }
 
 /// <summary>
-///     One block's storage: a ticket count, a slot and the content sides for each section, and one bit for each section in every mask.
+///     A section's slot, which is its arena slot while it is ready and its executor slot while it is generating, and the content sides of a ready section.
+///     It is only meaningful while its section is generating or ready.
+///     The sides share the slot's element because a fourth span in <see cref="SectionBlockView"/> measured slower on every unload.
+/// </summary>
+internal readonly struct SectionSlot(int index, SectionContentSides contentSides)
+{
+    public readonly int Index = index;
+    public readonly SectionContentSides ContentSides = contentSides;
+}
+
+/// <summary>
+///     One block's storage: a ticket count and a slot for each section, and one bit for each section in every mask.
 ///     Pages never move, so a view stays valid until its block is freed.
 /// </summary>
-internal readonly ref struct SectionBlockView(Span<int> ticketCounts, Span<int> slots, Span<SectionContentSides> contentSides, Span<ulong> masks)
+internal readonly ref struct SectionBlockView(Span<int> ticketCounts, Span<SectionSlot> slots, Span<ulong> masks)
 {
     /// <summary>
     ///     The sections whose ticket count is above zero.
@@ -64,14 +75,9 @@ internal readonly ref struct SectionBlockView(Span<int> ticketCounts, Span<int> 
     public readonly Span<int> TicketCounts = ticketCounts;
 
     /// <summary>
-    ///     Each section's arena slot while it is ready, and its executor slot while it is generating.
+    ///     Each section's slot, and its content sides while it is ready.
     /// </summary>
-    public readonly Span<int> Slots = slots;
-
-    /// <summary>
-    ///     The sides of the iso level each ready section's content is on, and the default for any other section.
-    /// </summary>
-    public readonly Span<SectionContentSides> ContentSides = contentSides;
+    public readonly Span<SectionSlot> Slots = slots;
 
     private readonly Span<ulong> _masks = masks;
 
@@ -152,7 +158,7 @@ internal readonly ref struct SectionBlockView(Span<int> ticketCounts, Span<int> 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void SetGenerating(int localIndex, int executorSlot)
     {
-        Slots[localIndex] = executorSlot;
+        Slots[localIndex] = new SectionSlot(executorSlot, default);
         _masks[GeneratingMask] |= GetBit(localIndex);
     }
 
@@ -170,19 +176,17 @@ internal readonly ref struct SectionBlockView(Span<int> ticketCounts, Span<int> 
     {
         var bit = GetBit(localIndex);
 
-        Slots[localIndex] = arenaSlot;
-        ContentSides[localIndex] = contentSides;
+        Slots[localIndex] = new SectionSlot(arenaSlot, contentSides);
         _masks[GeneratingMask] &= ~bit;
         _masks[ReadyMask] |= bit;
     }
 
     /// <summary>
-    ///     Marks the section no longer ready and resets its content sides.
+    ///     Marks the section no longer ready. Its slot keeps its old value, which nothing reads until the section is generating or ready again.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void ClearReady(int localIndex)
     {
-        ContentSides[localIndex] = default;
         _masks[ReadyMask] &= ~GetBit(localIndex);
     }
 }
@@ -203,8 +207,7 @@ internal sealed class SectionBlockAllocator
     private const int PageMask = PageSize - 1;
 
     private readonly List<int[]> _ticketCountPages = [];
-    private readonly List<int[]> _slotPages = [];
-    private readonly List<SectionContentSides[]> _contentSidesPages = [];
+    private readonly List<SectionSlot[]> _slotPages = [];
     private readonly List<ulong[]> _maskPages = [];
     private readonly Stack<int> _freeBlocks = [];
 
@@ -213,7 +216,7 @@ internal sealed class SectionBlockAllocator
 #endif
 
     /// <summary>
-    ///     Hands out a block whose ticket counts, content sides and masks are all zero.
+    ///     Hands out a block whose ticket counts and masks are all zero.
     /// </summary>
     public SectionBlock Allocate()
     {
@@ -231,7 +234,7 @@ internal sealed class SectionBlockAllocator
     }
 
     /// <summary>
-    ///     Returns an empty block, one with no ticket count, no content sides and no mask bit, so its next owner starts from zero.
+    ///     Returns an empty block, one with no ticket count and no mask bit, so its next owner starts from zero.
     /// </summary>
     public void Free(SectionBlock block)
     {
@@ -240,13 +243,7 @@ internal sealed class SectionBlockAllocator
 
         var view = Get(block);
 
-        Debug.Assert(
-            view.Occupied == 0 &&
-            view.GetMask(SectionBlockView.UnloadQueuedMask) == 0 &&
-            !view.TicketCounts.ContainsAnyExcept(0) &&
-            !view.ContentSides.ContainsAnyExcept(default(SectionContentSides)),
-            $"Block {block.Index} was freed while not empty."
-        );
+        Debug.Assert(view.Occupied == 0 && view.GetMask(SectionBlockView.UnloadQueuedMask) == 0 && !view.TicketCounts.ContainsAnyExcept(0), $"Block {block.Index} was freed while not empty.");
 #endif
 
         _freeBlocks.Push(block.Index);
@@ -271,15 +268,9 @@ internal sealed class SectionBlockAllocator
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public int GetSlot(SectionBlock block, int localIndex)
+    public SectionSlot GetSlot(SectionBlock block, int localIndex)
     {
         return _slotPages[block.Index >> PageLog][(block.Index & PageMask) * SectionBlockPos.SectionsPerBlock + localIndex];
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public SectionContentSides GetContentSides(SectionBlock block, int localIndex)
-    {
-        return _contentSidesPages[block.Index >> PageLog][(block.Index & PageMask) * SectionBlockPos.SectionsPerBlock + localIndex];
     }
 
     public SectionBlockView Get(SectionBlock block)
@@ -290,7 +281,6 @@ internal sealed class SectionBlockAllocator
         return new SectionBlockView(
             _ticketCountPages[page].AsSpan(offset * SectionBlockPos.SectionsPerBlock, SectionBlockPos.SectionsPerBlock),
             _slotPages[page].AsSpan(offset * SectionBlockPos.SectionsPerBlock, SectionBlockPos.SectionsPerBlock),
-            _contentSidesPages[page].AsSpan(offset * SectionBlockPos.SectionsPerBlock, SectionBlockPos.SectionsPerBlock),
             _maskPages[page].AsSpan(offset * SectionBlockView.MaskCount, SectionBlockView.MaskCount)
         );
     }
@@ -300,8 +290,7 @@ internal sealed class SectionBlockAllocator
         var first = _ticketCountPages.Count * PageSize;
 
         _ticketCountPages.Add(new int[PageSize * SectionBlockPos.SectionsPerBlock]);
-        _slotPages.Add(new int[PageSize * SectionBlockPos.SectionsPerBlock]);
-        _contentSidesPages.Add(new SectionContentSides[PageSize * SectionBlockPos.SectionsPerBlock]);
+        _slotPages.Add(new SectionSlot[PageSize * SectionBlockPos.SectionsPerBlock]);
         _maskPages.Add(new ulong[PageSize * SectionBlockView.MaskCount]);
 
         // Pushed from the end, so the page hands out its blocks in address order:

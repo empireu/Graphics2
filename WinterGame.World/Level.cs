@@ -227,7 +227,9 @@ public sealed class Level : IDisposable
     /// </summary>
     internal SectionContentSides GetContentSides(SectionPos position)
     {
-        return TryGetBlock(position, out _, out var view) ? view.ContentSides[SectionBlockPos.GetLocalIndex(position)] : default;
+        var index = SectionBlockPos.GetLocalIndex(position);
+
+        return TryGetBlock(position, out _, out var view) && view.IsReady(index) ? view.Slots[index].ContentSides : default;
     }
 
     /// <summary>
@@ -943,7 +945,7 @@ public sealed class Level : IDisposable
 
                 // An entry that is no longer generating into this slot was unloaded or loaded synchronously since, so the result is dropped.
                 // The slot tells the generations apart, because it stays allocated until its own harvest:
-                if (view.IsGenerating(localIndex) && view.Slots[localIndex] == inFlight.Slot)
+                if (view.IsGenerating(localIndex) && view.Slots[localIndex].Index == inFlight.Slot)
                 {
                     if (view.TicketCounts[localIndex] > 0)
                     {
@@ -1185,7 +1187,7 @@ public sealed class Level : IDisposable
 
         if (_blockStorage.IsSet(block, SectionBlockView.ReadyMask, index))
         {
-            section = new Section(_terrain, position, _blockStorage.GetSlot(block, index));
+            section = new Section(_terrain, position, _blockStorage.GetSlot(block, index).Index);
             return true;
         }
 
