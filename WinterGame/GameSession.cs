@@ -1,12 +1,12 @@
 using Graphics2.Core.Render;
 using Graphics2.Windowing.Input;
 using Silk.NET.Maths;
+using WinterGame.Simulation;
 using WinterGame.Utilities;
 
 namespace WinterGame;
 
 /// <summary>
-///     A running game, from the moment one is started until it is quit to the menu. It owns the camera and the world.
 ///     It knows nothing about the screens drawn over it, and it is told whether it has focus instead.
 /// </summary>
 internal sealed class GameSession : IDisposable
@@ -24,6 +24,14 @@ internal sealed class GameSession : IDisposable
     private readonly App _app;
     private readonly Camera3D _camera = new();
     private readonly WorldLayer _world;
+    private readonly GameSimulation _simulation;
+    private readonly TickInput _tickInput = new();
+    private GameSnapshot _snapshot;
+
+    /// <summary>
+    ///     Real time since the last tick was due, so its fraction of a tick is how far rendering interpolates.
+    /// </summary>
+    private double _timeSinceTick;
 
     public GameSession(App app, Vector2D<int> framebufferSize)
     {
@@ -32,6 +40,8 @@ internal sealed class GameSession : IDisposable
         _app = app;
         _world = new WorldLayer(app, _camera);
         _world.OnResize(framebufferSize);
+        _simulation = new GameSimulation(_world.SpawnPosition);
+        _snapshot = _simulation.Extract();
     }
 
     /// <summary>
@@ -57,13 +67,44 @@ internal sealed class GameSession : IDisposable
             _camera.ToggleFpsMode(_app.G2Wnd);
         }
 
-        _camera.Update((float)deltaTime, input, _app.G2Wnd.Window.FramebufferSize);
+        _camera.Update(input, _app.G2Wnd.Window.FramebufferSize);
+
+        if (hasFocus)
+        {
+            _tickInput.AddFrame(input);
+        }
+        else
+        {
+            _tickInput.ReleaseKeys();
+        }
+
+        RunDueTick(deltaTime);
+
+        _camera.Position = _snapshot.GetPlayerPosition((float)(_timeSinceTick / GameSimulation.TickSeconds));
         _world.Update(frame, IsLoaded ? PlayingBuildBudgetMilliseconds : LoadingBuildBudgetMilliseconds);
 
         if (!_world.IsBuilding)
         {
             IsLoaded = true;
         }
+    }
+
+    private void RunDueTick(double deltaTime)
+    {
+        _timeSinceTick += deltaTime;
+
+        if (_timeSinceTick < GameSimulation.TickSeconds)
+        {
+            return;
+        }
+
+        _tickInput.Yaw = _camera.Yaw;
+        _tickInput.Pitch = _camera.Pitch;
+        _simulation.Tick(_tickInput);
+        _tickInput.ClearPresses();
+        _snapshot = _simulation.Extract();
+
+        _timeSinceTick %= GameSimulation.TickSeconds;
     }
 
     public void Render(Frame frame)

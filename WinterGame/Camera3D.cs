@@ -7,10 +7,12 @@ namespace WinterGame;
 
 internal sealed class Camera3D
 {
-    public float MoveSpeed = 2.0f;
     public float LookSensitivity = 0.0025f;
     public float MaxPitch = MathF.PI / 2.0f - 0.01f;
 
+    /// <summary>
+    ///     Set every frame from the game's snapshot. The camera owns only its rotation.
+    /// </summary>
     public Vector3 Position = new(0.0f, 0.0f, -3.0f);
     public float Yaw;
     public float Pitch;
@@ -36,7 +38,10 @@ internal sealed class Camera3D
         _switchedMode = true;
     }
 
-    public void Update(float deltaTime, InputSnapshot input, Vector2D<int> framebufferSize)
+    /// <summary>
+    ///     Turns the camera by the mouse every frame while it is in FPS mode.
+    /// </summary>
+    public void Update(InputSnapshot input, Vector2D<int> framebufferSize)
     {
         SetAspect(framebufferSize);
 
@@ -44,7 +49,7 @@ internal sealed class Camera3D
         {
             return;
         }
-        
+
         if (!_switchedMode)
         {
             var mouseDelta = input.MousePosition - input.PreviousMousePosition;
@@ -52,46 +57,8 @@ internal sealed class Camera3D
             Pitch -= mouseDelta.Y * LookSensitivity;
             Pitch = Math.Clamp(Pitch, -MaxPitch, MaxPitch);
         }
-        
+
         _switchedMode = false;
-      
-        var move = Vector3.Zero;
-        if (input.IsKeyDown(G2Key.W))
-        {
-            move += Forward;
-        }
-
-        if (input.IsKeyDown(G2Key.S))
-        {
-            move -= Forward;
-        }
-
-        if (input.IsKeyDown(G2Key.A))
-        {
-            move -= Right;
-        }
-
-        if (input.IsKeyDown(G2Key.D))
-        {
-            move += Right;
-        }
-
-        if (input.IsKeyDown(G2Key.Space))
-        {
-            move += Up;
-        }
-
-        if (input.IsKeyDown(G2Key.C))
-        {
-            move -= Up;
-        }
-
-        if (move != Vector3.Zero)
-        {
-            move = Vector3.Normalize(move);
-            var speed = input.IsKeyDown(G2Key.ShiftLeft) ? MoveSpeed * 5 : MoveSpeed;
-            Position += move * speed * deltaTime;
-        }
     }
 
     public Matrix4x4 ViewProj
@@ -113,7 +80,10 @@ internal sealed class Camera3D
             : 1.0f;
     }
 
-    public Vector3 Forward => new(MathF.Cos(Pitch) * MathF.Sin(Yaw), MathF.Sin(Pitch), MathF.Cos(Pitch) * MathF.Cos(Yaw));
-    public Vector3 Right => new(-MathF.Cos(Yaw), 0.0f, MathF.Sin(Yaw));
+    public Vector3 Forward => GetForward(Yaw, Pitch);
+    public Vector3 Right => GetRight(Yaw);
     public Vector3 Up => Vector3.Cross(Right, Forward);
+
+    public static Vector3 GetForward(float yaw, float pitch) => new(MathF.Cos(pitch) * MathF.Sin(yaw), MathF.Sin(pitch), MathF.Cos(pitch) * MathF.Cos(yaw));
+    public static Vector3 GetRight(float yaw) => new(-MathF.Cos(yaw), 0.0f, MathF.Sin(yaw));
 }

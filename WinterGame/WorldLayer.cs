@@ -308,6 +308,12 @@ internal sealed unsafe class WorldLayer : IDisposable
         frame.CopyBuffer(staging.Buffer, staging.Offset, destination, (ulong)destinationOffset, (ulong)data.Length);
     }
 
+    public Vector3 SpawnPosition => new(
+        _sectionsX * _chunkCells * WorldConstants.VoxelSize * 0.5f,
+        _cutFloorY + 14.0f,
+        -8.0f
+    );
+
     /// <summary>
     ///     Whether a build is requested or under way, which means the world is incomplete.
     /// </summary>
@@ -630,11 +636,6 @@ internal sealed unsafe class WorldLayer : IDisposable
         if (!_cameraPlaced)
         {
             _cameraPlaced = true;
-            _camera.Position = new Vector3(
-                _sectionsX * _chunkCells * WorldConstants.VoxelSize * 0.5f,
-                _cutFloorY + 14.0f,
-                -8.0f
-            );
             _camera.Pitch = -0.2f;
         }
 
