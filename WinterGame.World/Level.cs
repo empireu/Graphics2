@@ -297,6 +297,13 @@ public sealed class Level : IDisposable
         PublishGenerations();
     }
 
+    public LevelStats GetStats()
+    {
+        WgAssert.DebugIsOnGameThread();
+
+        return new LevelStats(_terrain.SectionCount, _inFlight.Count, _pending.Count, _unloadQueue.Count);
+    }
+
     public SectionStatus GetStatus(SectionPos position)
     {
         WgAssert.DebugIsOnGameThread();

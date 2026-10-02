@@ -118,6 +118,11 @@ public sealed class SectionArena
     /// </summary>
     public long MaxVoxelArrays => (long)(MaxPageNumber + 1) * _voxelArraysPerPage;
 
+    /// <summary>
+    ///     Sections currently in the arena, shared ones included.
+    /// </summary>
+    public int SectionCount => _sections.Count;
+
     private void AllocateDescriptorPage()
     {
         var capacity = Section.DescriptorsPerSection * _descriptorArraysPerPage;

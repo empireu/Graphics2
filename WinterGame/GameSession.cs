@@ -1,5 +1,6 @@
 using Graphics2.Core.Render;
 using Graphics2.Windowing.Input;
+using ImGuiNET;
 using Silk.NET.Maths;
 using WinterGame.Simulation;
 using WinterGame.Utilities;
@@ -25,6 +26,7 @@ internal sealed class GameSession : IDisposable
     private readonly Camera3D _camera = new();
     private readonly WorldLayer _world;
     private readonly GameThread _gameThread;
+    private GameSnapshot _snapshot;
 
     public GameSession(App app, Vector2D<int> framebufferSize)
     {
@@ -64,9 +66,9 @@ internal sealed class GameSession : IDisposable
         _camera.Update(input, _app.G2Wnd.Window.FramebufferSize);
         _gameThread.SubmitFrame(input, hasFocus, _camera.Yaw, _camera.Pitch);
 
-        var snapshot = _gameThread.GetSnapshot(input.Timestamp, out var tickFraction);
+        _snapshot = _gameThread.GetSnapshot(input.Timestamp, out var tickFraction);
 
-        _camera.Position = snapshot.GetPlayerPosition(tickFraction);
+        _camera.Position = _snapshot.GetPlayerPosition(tickFraction);
         _world.Update(frame, IsLoaded ? PlayingBuildBudgetMilliseconds : LoadingBuildBudgetMilliseconds);
 
         if (!_world.IsBuilding)
@@ -87,6 +89,19 @@ internal sealed class GameSession : IDisposable
         WgAssert.DebugIsOnRenderThread();
 
         _world.DrawPanel();
+
+        if (ImGui.Begin("Level"))
+        {
+            var stats = _snapshot.LevelStats;
+
+            ImGui.Text($"Loaded: {stats.LoadedSections} section(s)");
+            ImGui.Text($"Generating: {stats.GeneratingSections}");
+            ImGui.Text($"Pending: {stats.PendingSections}");
+            ImGui.Text($"Unload queue: {stats.UnloadQueueCount}");
+            ImGui.Text($"Tick: {_snapshot.TickMilliseconds:F2} ms, worst of the last second {_snapshot.WorstTickMilliseconds:F2} ms");
+        }
+
+        ImGui.End();
     }
 
     public void Dispose()
