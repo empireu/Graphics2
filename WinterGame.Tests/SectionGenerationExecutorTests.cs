@@ -53,7 +53,7 @@ public class SectionGenerationExecutorTests
         var position = SurfaceSection(0, 0);
 
         var slot = harness.Generate(position);
-        var section = harness.Executor.GetResult(slot);
+        var section = harness.Executor.GetResult(slot).Section;
 
         Assert.Equal(position, section.Position);
         AssertMatchesSource(section);
@@ -64,7 +64,7 @@ public class SectionGenerationExecutorTests
     {
         using var harness = new Harness();
 
-        var section = harness.Executor.GetResult(harness.Generate(SurfaceSection(0, 0)));
+        var section = harness.Executor.GetResult(harness.Generate(SurfaceSection(0, 0))).Section;
 
         var types = Enumerable.Range(0, Section.Bricks).Select(index => section.GetBrickType(VoxelChannel.Content, index)).ToArray();
 
@@ -79,7 +79,7 @@ public class SectionGenerationExecutorTests
         using var harness = new Harness();
         var skyY = SectionPos.VoxelToSectionCoord((int)MathF.Ceiling(Graph.MaxSurfaceY / WorldConstants.VoxelSize)) + 1;
 
-        var section = harness.Executor.GetResult(harness.Generate(new SectionPos(0, skyY, 0)));
+        var section = harness.Executor.GetResult(harness.Generate(new SectionPos(0, skyY, 0))).Section;
 
         Assert.Equal(SectionType.Shared, section.Type);
 
@@ -97,7 +97,7 @@ public class SectionGenerationExecutorTests
     {
         using var harness = new Harness();
 
-        var section = harness.Executor.GetResult(harness.Generate(new SectionPos(0, -100, 0)));
+        var section = harness.Executor.GetResult(harness.Generate(new SectionPos(0, -100, 0))).Section;
 
         Assert.Equal(SectionType.Shared, section.Type);
         Assert.Equal(byte.MaxValue, section.GetUniformValue(VoxelChannel.Content, 0));
@@ -113,7 +113,8 @@ public class SectionGenerationExecutorTests
         var first = harness.Executor.GetResult(harness.Generate(position, workerId: 0));
         var second = harness.Executor.GetResult(harness.Generate(position, workerId: 1));
 
-        AssertSameVoxels(first, second);
+        AssertSameVoxels(first.Section, second.Section);
+        Assert.Equal(first.ContentSides, second.ContentSides);
     }
 
     [Fact]
@@ -125,7 +126,7 @@ public class SectionGenerationExecutorTests
         {
             var position = SurfaceSection(round, 0);
             var slot = harness.Generate(position);
-            var section = harness.Executor.GetResult(slot);
+            var section = harness.Executor.GetResult(slot).Section;
 
             Assert.Equal(position, section.Position);
             AssertMatchesSource(section);
@@ -142,7 +143,7 @@ public class SectionGenerationExecutorTests
         var level = new SectionArena();
 
         var slot = harness.Generate(position);
-        var copy = level.CreateCopy(harness.Executor.GetResult(slot));
+        var copy = level.CreateCopy(harness.Executor.GetResult(slot).Section);
 
         harness.Executor.Free(slot);
         harness.Generate(SurfaceSection(2, 2));
@@ -158,7 +159,7 @@ public class SectionGenerationExecutorTests
         var level = new SectionArena();
 
         var slot = harness.Generate(position);
-        var copy = level.CreateCopy(harness.Executor.GetResult(slot));
+        var copy = level.CreateCopy(harness.Executor.GetResult(slot).Section);
 
         harness.Executor.Free(slot);
         harness.Generate(SurfaceSection(2, 2));
@@ -214,7 +215,7 @@ public class SectionGenerationExecutorTests
 
         var executor = new SectionGenerationExecutor(Graph, workerCount: 1, slotCount: 1);
         var position = SurfaceSection(0, 0);
-        var reference = executor.GenerateNow(position, new SectionArena());
+        var reference = executor.GenerateNow(position, new SectionArena()).Section;
 
         var denseBricks = Enum.GetValues<VoxelChannel>().Sum(
             channel => Enumerable.Range(0, Section.Bricks).Count(index => reference.GetBrickType(channel, index) == BrickType.Dense)

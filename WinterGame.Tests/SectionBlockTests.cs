@@ -64,12 +64,18 @@ public class SectionBlockTests
 
         firstView.TicketCounts.Fill(7);
         firstView.Slots.Fill(9);
-        firstView.Ready = ulong.MaxValue;
+
+        for (var index = 0; index < SectionBlockPos.SectionsPerBlock; index++)
+        {
+            firstView.SetReady(index, index, SectionContentSides.FromOneSide(ContentSide.Solid));
+        }
 
         Assert.False(secondView.TicketCounts.ContainsAnyExcept(0));
+        Assert.False(secondView.ContentSides.ContainsAnyExcept(default(SectionContentSides)));
         Assert.Equal(0UL, secondView.Occupied);
         Assert.Equal(7, allocator.Get(first).TicketCounts[SectionBlockPos.SectionsPerBlock - 1]);
-        Assert.Equal(ulong.MaxValue, allocator.Get(first).Ready);
+        Assert.Equal(ulong.MaxValue, allocator.Get(first).GetMask(SectionBlockView.ReadyMask));
+        Assert.Equal(SectionContentSides.FromOneSide(ContentSide.Solid), allocator.GetContentSides(first, SectionBlockPos.SectionsPerBlock - 1));
     }
 
     [Fact]

@@ -191,7 +191,7 @@ public class LevelTests
         {
             for (var z = -2; z <= 2; z++)
             {
-                AssertUniformAir(executor.GenerateNow(new SectionPos(x, skyY, z), arena));
+                AssertUniformAir(executor.GenerateNow(new SectionPos(x, skyY, z), arena).Section);
             }
         }
     }
@@ -614,6 +614,32 @@ public class LevelTests
     }
 
     [Fact]
+    public void GetContentSides_OfGeneratedAndSynchronousLoads_MatchesTheirContent()
+    {
+        using var harness = new Harness();
+        var center = SurfaceSection(0, 0);
+        var synchronous = new SectionPos(center.X + 3, center.Y, center.Z);
+
+        harness.Level.AddTicket(center, horizontalRadius: 0, verticalRadius: 1);
+        harness.TickUntilSettled();
+        harness.Level.GetOrLoadSection(synchronous);
+
+        var content = Memory3D<byte>.Allocate(SectionPos.SectionSize, SectionPos.SectionSize, SectionPos.SectionSize);
+        var material = Memory3D<byte>.Allocate(SectionPos.SectionSize, SectionPos.SectionSize, SectionPos.SectionSize);
+
+        foreach (var position in new[] { center with { Y = center.Y - 1 }, center, center with { Y = center.Y + 1 }, synchronous })
+        {
+            var min = position.GetOrigin();
+
+            Assert.True(harness.Level.ReadRange(min, min + SectionPos.SectionMask, content.Span, material.Span));
+            Assert.Equal(SectionContentSidesTests.BruteForce(content.Span), harness.Level.GetContentSides(position));
+        }
+
+        // The keep margin is claimed but not loaded:
+        Assert.Equal(default(SectionContentSides), harness.Level.GetContentSides(new SectionPos(center.X + 1, center.Y, center.Z)));
+    }
+
+    [Fact]
     public void ReadRange_AcrossLoadedSections_MatchesTheGenerator()
     {
         using var harness = new Harness();
@@ -947,6 +973,14 @@ public class LevelTests
                 Assert.Fail($"{name} is queued for unloading but {status}.");
             }
 
+            var contentSides = level.GetContentSides(position);
+            var expectedSides = status == SectionStatus.Ready ? SectionContentSides.FromOneSide(ContentSide.Air) : default;
+
+            if (contentSides != expectedSides)
+            {
+                Assert.Fail($"{name} is {status} with content sides {contentSides}, expected {expectedSides}.");
+            }
+
             if (status == SectionStatus.Ready)
             {
                 Assert.True(level.TryGetSection(position, out var section));
@@ -1001,7 +1035,7 @@ public class LevelTests
 
         var executor = new SectionGenerationExecutor(Graph, workerCount: 1, slotCount: 1);
 
-        return executor.GenerateNow(position, new SectionArena());
+        return executor.GenerateNow(position, new SectionArena()).Section;
     }
 
     /// <summary>

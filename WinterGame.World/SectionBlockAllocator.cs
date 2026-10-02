@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using System.Runtime.CompilerServices;
 
 namespace WinterGame.World;
 
@@ -37,15 +38,24 @@ internal readonly struct SectionBlock(int index) : IEquatable<SectionBlock>
 }
 
 /// <summary>
-///     One block's storage: a ticket count and a slot for each section, and one bit for each section in every mask.
+///     One block's storage: a ticket count, a slot and the content sides for each section, and one bit for each section in every mask.
 ///     Pages never move, so a view stays valid until its block is freed.
 /// </summary>
-internal readonly ref struct SectionBlockView(Span<int> ticketCounts, Span<int> slots, Span<ulong> masks)
+internal readonly ref struct SectionBlockView(Span<int> ticketCounts, Span<int> slots, Span<SectionContentSides> contentSides, Span<ulong> masks)
 {
+    /// <summary>
+    ///     The sections whose ticket count is above zero.
+    /// </summary>
     public const int ClaimedMask = 0;
+
     public const int ReadyMask = 1;
     public const int GeneratingMask = 2;
+
+    /// <summary>
+    ///     The ready sections waiting in the unload queue.
+    /// </summary>
     public const int UnloadQueuedMask = 3;
+
     public const int MaskCount = 4;
 
     /// <summary>
@@ -58,26 +68,123 @@ internal readonly ref struct SectionBlockView(Span<int> ticketCounts, Span<int> 
     /// </summary>
     public readonly Span<int> Slots = slots;
 
+    /// <summary>
+    ///     The sides of the iso level each ready section's content is on, and the default for any other section.
+    /// </summary>
+    public readonly Span<SectionContentSides> ContentSides = contentSides;
+
     private readonly Span<ulong> _masks = masks;
-
-    /// <summary>
-    ///     The sections whose ticket count is above zero.
-    /// </summary>
-    public ref ulong Claimed => ref _masks[ClaimedMask];
-
-    public ref ulong Ready => ref _masks[ReadyMask];
-
-    public ref ulong Generating => ref _masks[GeneratingMask];
-
-    /// <summary>
-    ///     The ready sections waiting in the unload queue.
-    /// </summary>
-    public ref ulong UnloadQueued => ref _masks[UnloadQueuedMask];
 
     /// <summary>
     ///     The sections that have an entry, which are the claimed, generating and ready ones. A block with none is freed.
     /// </summary>
-    public ulong Occupied => Claimed | Ready | Generating;
+    public ulong Occupied => _masks[ClaimedMask] | _masks[ReadyMask] | _masks[GeneratingMask];
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong GetBit(int localIndex)
+    {
+        return 1UL << localIndex;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ulong GetMask(int mask)
+    {
+        return _masks[mask];
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsClaimed(int localIndex)
+    {
+        return (_masks[ClaimedMask] & GetBit(localIndex)) != 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsReady(int localIndex)
+    {
+        return (_masks[ReadyMask] & GetBit(localIndex)) != 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsGenerating(int localIndex)
+    {
+        return (_masks[GeneratingMask] & GetBit(localIndex)) != 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsReadyOrGenerating(int localIndex)
+    {
+        return ((_masks[ReadyMask] | _masks[GeneratingMask]) & GetBit(localIndex)) != 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsUnloadQueued(int localIndex)
+    {
+        return (_masks[UnloadQueuedMask] & GetBit(localIndex)) != 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void SetClaimed(int localIndex)
+    {
+        _masks[ClaimedMask] |= GetBit(localIndex);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void ClearClaimed(int localIndex)
+    {
+        _masks[ClaimedMask] &= ~GetBit(localIndex);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void SetUnloadQueued(int localIndex)
+    {
+        _masks[UnloadQueuedMask] |= GetBit(localIndex);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void ClearUnloadQueued(int localIndex)
+    {
+        _masks[UnloadQueuedMask] &= ~GetBit(localIndex);
+    }
+
+    /// <summary>
+    ///     Marks the section generating into <paramref name="executorSlot"/>.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void SetGenerating(int localIndex, int executorSlot)
+    {
+        Slots[localIndex] = executorSlot;
+        _masks[GeneratingMask] |= GetBit(localIndex);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void ClearGenerating(int localIndex)
+    {
+        _masks[GeneratingMask] &= ~GetBit(localIndex);
+    }
+
+    /// <summary>
+    ///     Marks the section ready in <paramref name="arenaSlot"/>, replacing a generation in flight if there is one.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void SetReady(int localIndex, int arenaSlot, SectionContentSides contentSides)
+    {
+        var bit = GetBit(localIndex);
+
+        Slots[localIndex] = arenaSlot;
+        ContentSides[localIndex] = contentSides;
+        _masks[GeneratingMask] &= ~bit;
+        _masks[ReadyMask] |= bit;
+    }
+
+    /// <summary>
+    ///     Marks the section no longer ready and resets its content sides.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void ClearReady(int localIndex)
+    {
+        ContentSides[localIndex] = default;
+        _masks[ReadyMask] &= ~GetBit(localIndex);
+    }
 }
 
 /// <summary>
@@ -97,6 +204,7 @@ internal sealed class SectionBlockAllocator
 
     private readonly List<int[]> _ticketCountPages = [];
     private readonly List<int[]> _slotPages = [];
+    private readonly List<SectionContentSides[]> _contentSidesPages = [];
     private readonly List<ulong[]> _maskPages = [];
     private readonly Stack<int> _freeBlocks = [];
 
@@ -105,7 +213,7 @@ internal sealed class SectionBlockAllocator
 #endif
 
     /// <summary>
-    ///     Hands out a block whose ticket counts and masks are all zero.
+    ///     Hands out a block whose ticket counts, content sides and masks are all zero.
     /// </summary>
     public SectionBlock Allocate()
     {
@@ -123,7 +231,7 @@ internal sealed class SectionBlockAllocator
     }
 
     /// <summary>
-    ///     Returns an empty block, one with no ticket count and no mask bit, so its next owner starts from zero.
+    ///     Returns an empty block, one with no ticket count, no content sides and no mask bit, so its next owner starts from zero.
     /// </summary>
     public void Free(SectionBlock block)
     {
@@ -132,7 +240,13 @@ internal sealed class SectionBlockAllocator
 
         var view = Get(block);
 
-        Debug.Assert(view.Occupied == 0 && view.UnloadQueued == 0 && !view.TicketCounts.ContainsAnyExcept(0), $"Block {block.Index} was freed while not empty.");
+        Debug.Assert(
+            view.Occupied == 0 &&
+            view.GetMask(SectionBlockView.UnloadQueuedMask) == 0 &&
+            !view.TicketCounts.ContainsAnyExcept(0) &&
+            !view.ContentSides.ContainsAnyExcept(default(SectionContentSides)),
+            $"Block {block.Index} was freed while not empty."
+        );
 #endif
 
         _freeBlocks.Push(block.Index);
@@ -141,14 +255,31 @@ internal sealed class SectionBlockAllocator
     /// <summary>
     ///     One mask of a block, read without making a view, which is the cheaper path for a read.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ulong GetMask(SectionBlock block, int mask)
     {
         return _maskPages[block.Index >> PageLog][(block.Index & PageMask) * SectionBlockView.MaskCount + mask];
     }
 
+    /// <summary>
+    ///     Whether one section's bit is set in a mask, read without making a view.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsSet(SectionBlock block, int mask, int localIndex)
+    {
+        return (GetMask(block, mask) & SectionBlockView.GetBit(localIndex)) != 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public int GetSlot(SectionBlock block, int localIndex)
     {
         return _slotPages[block.Index >> PageLog][(block.Index & PageMask) * SectionBlockPos.SectionsPerBlock + localIndex];
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public SectionContentSides GetContentSides(SectionBlock block, int localIndex)
+    {
+        return _contentSidesPages[block.Index >> PageLog][(block.Index & PageMask) * SectionBlockPos.SectionsPerBlock + localIndex];
     }
 
     public SectionBlockView Get(SectionBlock block)
@@ -159,6 +290,7 @@ internal sealed class SectionBlockAllocator
         return new SectionBlockView(
             _ticketCountPages[page].AsSpan(offset * SectionBlockPos.SectionsPerBlock, SectionBlockPos.SectionsPerBlock),
             _slotPages[page].AsSpan(offset * SectionBlockPos.SectionsPerBlock, SectionBlockPos.SectionsPerBlock),
+            _contentSidesPages[page].AsSpan(offset * SectionBlockPos.SectionsPerBlock, SectionBlockPos.SectionsPerBlock),
             _maskPages[page].AsSpan(offset * SectionBlockView.MaskCount, SectionBlockView.MaskCount)
         );
     }
@@ -169,6 +301,7 @@ internal sealed class SectionBlockAllocator
 
         _ticketCountPages.Add(new int[PageSize * SectionBlockPos.SectionsPerBlock]);
         _slotPages.Add(new int[PageSize * SectionBlockPos.SectionsPerBlock]);
+        _contentSidesPages.Add(new SectionContentSides[PageSize * SectionBlockPos.SectionsPerBlock]);
         _maskPages.Add(new ulong[PageSize * SectionBlockView.MaskCount]);
 
         // Pushed from the end, so the page hands out its blocks in address order:

@@ -34,7 +34,7 @@ public ref struct FastSectionAccessor
 
     public SectionStatus GetStatus(SectionPos position)
     {
-        return TryGetBlock(position, out var block) ? _level.GetStatus(block, 1UL << SectionBlockPos.GetLocalIndex(position)) : SectionStatus.None;
+        return TryGetBlock(position, out var block) ? _level.GetStatus(block, SectionBlockPos.GetLocalIndex(position)) : SectionStatus.None;
     }
 
     public bool TryGetSection(SectionPos position, out Section section)

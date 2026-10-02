@@ -219,7 +219,15 @@ public sealed class Level : IDisposable
 
     internal bool IsUnloadQueued(SectionPos position)
     {
-        return TryGetBlock(position, out _, out var view) && (view.UnloadQueued & GetBit(position)) != 0;
+        return TryGetBlock(position, out _, out var view) && view.IsUnloadQueued(SectionBlockPos.GetLocalIndex(position));
+    }
+
+    /// <summary>
+    ///     The sides of the iso level a ready section's content is on, and the default for a section that is not ready.
+    /// </summary>
+    internal SectionContentSides GetContentSides(SectionPos position)
+    {
+        return TryGetBlock(position, out _, out var view) ? view.ContentSides[SectionBlockPos.GetLocalIndex(position)] : default;
     }
 
     /// <summary>
@@ -334,7 +342,7 @@ public sealed class Level : IDisposable
     {
         WgAssert.DebugIsOnGameThread();
 
-        return _blocks.TryGetValue(SectionBlockPos.FromSection(position).GetKey(), out var block) ? GetStatus(block, GetBit(position)) : SectionStatus.None;
+        return _blocks.TryGetValue(SectionBlockPos.FromSection(position).GetKey(), out var block) ? GetStatus(block, SectionBlockPos.GetLocalIndex(position)) : SectionStatus.None;
     }
 
     public bool TryGetSection(SectionPos position, out Section section)
@@ -366,23 +374,20 @@ public sealed class Level : IDisposable
         }
 
         var key = position.GetKey();
-        var section = IsSky(position) ? WriteSky(position) : _executor.GenerateNow(position, _terrain);
+        var generated = IsSky(position) ? WriteSky(position) : _executor.GenerateNow(position, _terrain);
         var view = GetOrAddBlock(SectionBlockPos.FromSection(position).GetKey());
         var index = SectionBlockPos.GetLocalIndex(position);
-        var bit = 1UL << index;
 
         _pending.Remove(key);
 
-        view.Slots[index] = section.SlotIndex;
-        view.Generating &= ~bit;
-        view.Ready |= bit;
+        view.SetReady(index, generated.Section.SlotIndex, generated.ContentSides);
 
         if (view.TicketCounts[index] == 0)
         {
             _unticketedLoads.Add(key);
         }
 
-        return section;
+        return generated.Section;
     }
 
     /// <summary>
@@ -818,14 +823,12 @@ public sealed class Level : IDisposable
     {
         if (view.TicketCounts[index]++ == 0)
         {
-            view.Claimed |= 1UL << index;
+            view.SetClaimed(index);
         }
     }
 
     private void RemoveTicketReference(SectionBlockView view, int index, SectionPos position)
     {
-        var bit = 1UL << index;
-
         Debug.Assert(view.TicketCounts[index] > 0, $"Released a ticket reference on section ({position.X}, {position.Y}, {position.Z}), which no ticket claimed.");
 
         if (--view.TicketCounts[index] > 0)
@@ -833,14 +836,14 @@ public sealed class Level : IDisposable
             return;
         }
 
-        view.Claimed &= ~bit;
+        view.ClearClaimed(index);
 
-        if ((view.Ready & bit) != 0)
+        if (view.IsReady(index))
         {
             // A queued section claimed again before its turn is skipped then, so it is queued at most once:
-            if ((view.UnloadQueued & bit) == 0)
+            if (!view.IsUnloadQueued(index))
             {
-                view.UnloadQueued |= bit;
+                view.SetUnloadQueued(index);
                 _unloadQueue.Enqueue(position.GetKey());
             }
 
@@ -848,7 +851,7 @@ public sealed class Level : IDisposable
         }
 
         // A generating section keeps its entry until the generation completes and the harvest discards it, and any other was at most pending:
-        if ((view.Generating & bit) == 0)
+        if (!view.IsGenerating(index))
         {
             _pending.Remove(position.GetKey());
         }
@@ -856,11 +859,9 @@ public sealed class Level : IDisposable
 
     private void MarkWanted(SectionBlockView view, int index, SectionPos position)
     {
-        var bit = 1UL << index;
+        Debug.Assert(view.IsClaimed(index), $"Section ({position.X}, {position.Y}, {position.Z}) entered a load shape without being claimed by the keep shape around it.");
 
-        Debug.Assert((view.Claimed & bit) != 0, $"Section ({position.X}, {position.Y}, {position.Z}) entered a load shape without being claimed by the keep shape around it.");
-
-        if (((view.Ready | view.Generating) & bit) == 0)
+        if (!view.IsReadyOrGenerating(index))
         {
             _pending.Add(position.GetKey());
         }
@@ -878,15 +879,14 @@ public sealed class Level : IDisposable
             }
 
             var index = SectionBlockPos.GetLocalIndex(position);
-            var bit = 1UL << index;
 
             // A section a ticket claimed and released since is in the unload queue, which owns its unload now:
-            if (view.TicketCounts[index] > 0 || (view.Ready & bit) == 0 || (view.UnloadQueued & bit) != 0)
+            if (view.TicketCounts[index] > 0 || !view.IsReady(index) || view.IsUnloadQueued(index))
             {
                 continue;
             }
 
-            DestroySection(position, blockKey, view, bit);
+            DestroySection(position, blockKey, view, index);
         }
 
         _unticketedLoads.Clear();
@@ -904,21 +904,20 @@ public sealed class Level : IDisposable
             var position = new SectionPos(key);
             var found = TryGetBlock(position, out var blockKey, out var view);
             var index = SectionBlockPos.GetLocalIndex(position);
-            var bit = 1UL << index;
 
             Debug.Assert(
-                found && (view.UnloadQueued & bit) != 0 && (view.Ready & bit) != 0,
+                found && view.IsUnloadQueued(index) && view.IsReady(index),
                 "Only the unload queue removes a queued entry, and a queued entry stays loaded until then."
             );
 
-            view.UnloadQueued &= ~bit;
+            view.ClearUnloadQueued(index);
 
             if (view.TicketCounts[index] > 0)
             {
                 continue;
             }
 
-            DestroySection(position, blockKey, view, bit);
+            DestroySection(position, blockKey, view, index);
             unloaded++;
         }
     }
@@ -941,21 +940,20 @@ public sealed class Level : IDisposable
             if (TryGetBlock(position, out var blockKey, out var view))
             {
                 var localIndex = SectionBlockPos.GetLocalIndex(position);
-                var bit = 1UL << localIndex;
 
                 // An entry that is no longer generating into this slot was unloaded or loaded synchronously since, so the result is dropped.
                 // The slot tells the generations apart, because it stays allocated until its own harvest:
-                if ((view.Generating & bit) != 0 && view.Slots[localIndex] == inFlight.Slot)
+                if (view.IsGenerating(localIndex) && view.Slots[localIndex] == inFlight.Slot)
                 {
                     if (view.TicketCounts[localIndex] > 0)
                     {
-                        view.Slots[localIndex] = _terrain.CreateCopy(_executor.GetResult(inFlight.Slot)).SlotIndex;
-                        view.Generating &= ~bit;
-                        view.Ready |= bit;
+                        var generated = _executor.GetResult(inFlight.Slot);
+
+                        view.SetReady(localIndex, _terrain.CreateCopy(generated.Section).SlotIndex, generated.ContentSides);
                     }
                     else
                     {
-                        view.Generating &= ~bit;
+                        view.ClearGenerating(localIndex);
                         FreeBlockIfEmpty(blockKey, view);
                     }
                 }
@@ -1061,10 +1059,9 @@ public sealed class Level : IDisposable
             }
 
             var index = SectionBlockPos.GetLocalIndex(position);
-            var bit = 1UL << index;
 
             // A section that left every keep shape or loaded since the rebuild went stale in the queue:
-            if ((view.Claimed & bit) == 0 || ((view.Ready | view.Generating) & bit) != 0)
+            if (!view.IsClaimed(index) || view.IsReadyOrGenerating(index))
             {
                 continue;
             }
@@ -1073,8 +1070,9 @@ public sealed class Level : IDisposable
 
             if (IsSky(position))
             {
-                view.Slots[index] = WriteSky(position).SlotIndex;
-                view.Ready |= bit;
+                var sky = WriteSky(position);
+
+                view.SetReady(index, sky.Section.SlotIndex, sky.ContentSides);
                 continue;
             }
 
@@ -1082,8 +1080,7 @@ public sealed class Level : IDisposable
             var job = pool.CreateJob();
             var published = _scheduler.Publish(job, _providerId, slot);
 
-            view.Slots[index] = slot;
-            view.Generating |= bit;
+            view.SetGenerating(index, slot);
 
             _inFlight.Add(
                 new InFlightGeneration
@@ -1107,9 +1104,9 @@ public sealed class Level : IDisposable
         return SectionPos.SectionToVoxelCoord(position.Y) * WorldConstants.VoxelSize >= _skyMinimumY;
     }
 
-    private Section WriteSky(SectionPos position)
+    private GeneratedSection WriteSky(SectionPos position)
     {
-        return _terrain.CreateUniform(position, 0, SurfaceMaterial.Null);
+        return new GeneratedSection(_terrain.CreateUniform(position, 0, SurfaceMaterial.Null), SectionContentSides.FromOneSide(ContentSide.Air));
     }
 
     /// <summary>
@@ -1162,21 +1159,21 @@ public sealed class Level : IDisposable
     /// <summary>
     ///     Destroys a loaded section that no ticket holds, and frees its block when nothing else in it has an entry.
     /// </summary>
-    private void DestroySection(SectionPos position, ulong blockKey, SectionBlockView view, ulong bit)
+    private void DestroySection(SectionPos position, ulong blockKey, SectionBlockView view, int localIndex)
     {
         _terrain.Destroy(position);
-        view.Ready &= ~bit;
+        view.ClearReady(localIndex);
         FreeBlockIfEmpty(blockKey, view);
     }
 
-    internal SectionStatus GetStatus(SectionBlock block, ulong bit)
+    internal SectionStatus GetStatus(SectionBlock block, int localIndex)
     {
-        if ((_blockStorage.GetMask(block, SectionBlockView.ReadyMask) & bit) != 0)
+        if (_blockStorage.IsSet(block, SectionBlockView.ReadyMask, localIndex))
         {
             return SectionStatus.Ready;
         }
 
-        return (_blockStorage.GetMask(block, SectionBlockView.GeneratingMask) & bit) != 0 ? SectionStatus.Generating : SectionStatus.None;
+        return _blockStorage.IsSet(block, SectionBlockView.GeneratingMask, localIndex) ? SectionStatus.Generating : SectionStatus.None;
     }
 
     /// <summary>
@@ -1186,7 +1183,7 @@ public sealed class Level : IDisposable
     {
         var index = SectionBlockPos.GetLocalIndex(position);
 
-        if ((_blockStorage.GetMask(block, SectionBlockView.ReadyMask) & (1UL << index)) != 0)
+        if (_blockStorage.IsSet(block, SectionBlockView.ReadyMask, index))
         {
             section = new Section(_terrain, position, _blockStorage.GetSlot(block, index));
             return true;
@@ -1194,10 +1191,5 @@ public sealed class Level : IDisposable
 
         section = default;
         return false;
-    }
-
-    private static ulong GetBit(SectionPos position)
-    {
-        return 1UL << SectionBlockPos.GetLocalIndex(position);
     }
 }

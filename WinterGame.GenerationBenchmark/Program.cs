@@ -160,7 +160,7 @@ internal static class Benchmark
 
             for (var index = 0; index < positions.Length; index++)
             {
-                sections[index] = executor.GenerateNow(positions[index], generatedArena);
+                sections[index] = executor.GenerateNow(positions[index], generatedArena).Section;
             }
 
             var generate = watch.Elapsed.TotalMilliseconds;
@@ -191,10 +191,10 @@ internal static class Benchmark
 
         Console.WriteLine($"Per section on one thread, best of {options.CostRounds} round(s) over the {count} generated section(s) nearest the centre:");
         Console.WriteLine($"  Sampler:      {bestSampler / count:F3} ms  (TerrainGraphSource.Generate over 32^3)");
-        Console.WriteLine($"  GenerateNow:  {bestGenerate / count:F3} ms  (the sampler, then the brick write into an arena)");
+        Console.WriteLine($"  GenerateNow:  {bestGenerate / count:F3} ms  (the sampler, then the content sides scan and the brick write into an arena)");
         Console.WriteLine(
             brickWrite > 0.001
-                ? $"  Brick write:  {brickWrite:F3} ms  (the difference)"
+                ? $"  Brick write:  {brickWrite:F3} ms  (the difference, the content sides scan included)"
                 : "  Brick write:  below the noise of the two timings"
         );
         Console.WriteLine($"  Copy:         {bestCopy / count:F3} ms  (CreateCopy into another arena, which the harvest does on the main thread)");

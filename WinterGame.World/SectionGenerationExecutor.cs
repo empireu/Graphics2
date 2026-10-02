@@ -6,6 +6,15 @@ using WinterGame.World.Storage;
 namespace WinterGame.World;
 
 /// <summary>
+///     A generated section and the sides of the iso level its content is on.
+/// </summary>
+public readonly struct GeneratedSection(Section section, SectionContentSides contentSides)
+{
+    public readonly Section Section = section;
+    public readonly SectionContentSides ContentSides = contentSides;
+}
+
+/// <summary>
 ///     Generates one section per work item into bricks.
 ///     Every slot owns a <see cref="SectionArena"/> sized to one section, and the worker running a slot writes its arena without locks and the main thread reads it once the job has completed.
 ///     The generation buffers are per worker and indexed by <see cref="WorkExecutionContext.ThreadId"/>, plus one set reserved for <see cref="GenerateNow"/> on the game thread.
@@ -15,7 +24,7 @@ public sealed class SectionGenerationExecutor : IWorkExecutor
 {
     public const int DefaultSlotCount = 10;
 
-    private readonly WorkExecutorTransformScratch<SectionPos, Section?> _slots;
+    private readonly WorkExecutorTransformScratch<SectionPos, GeneratedSection?> _slots;
     private readonly SectionArena[] _slotArenas;
     private readonly TerrainGraphSource[] _sources;
     private readonly Memory3D<byte>[] _content;
@@ -32,7 +41,7 @@ public sealed class SectionGenerationExecutor : IWorkExecutor
         ArgumentOutOfRangeException.ThrowIfLessThan(workerCount, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(slotCount, 1);
 
-        _slots = new WorkExecutorTransformScratch<SectionPos, Section?>(new SectionPos[slotCount], clearInputToDefault: false);
+        _slots = new WorkExecutorTransformScratch<SectionPos, GeneratedSection?>(new SectionPos[slotCount], clearInputToDefault: false);
         _slotArenas = new SectionArena[slotCount];
 
         for (var slot = 0; slot < slotCount; slot++)
@@ -78,7 +87,7 @@ public sealed class SectionGenerationExecutor : IWorkExecutor
     ///     The generated section of a slot whose job has completed.
     ///     It lives in the slot's arena, so it is valid until <see cref="Free"/> and has to be copied into a longer lived arena with <see cref="SectionArena.CreateCopy"/>.
     /// </summary>
-    public Section GetResult(int slot)
+    public GeneratedSection GetResult(int slot)
     {
         WgAssert.DebugIsOnGameThread();
 
@@ -94,11 +103,11 @@ public sealed class SectionGenerationExecutor : IWorkExecutor
     {
         WgAssert.DebugIsOnGameThread();
 
-        var section = _slots.GetOutput(slot);
+        var generated = _slots.GetOutput(slot);
 
-        if (section != null)
+        if (generated != null)
         {
-            _slotArenas[slot].Destroy(section.Value.Position);
+            _slotArenas[slot].Destroy(generated.Value.Section.Position);
         }
 
         _slots.Free(slot);
@@ -107,16 +116,16 @@ public sealed class SectionGenerationExecutor : IWorkExecutor
 
     public void Execute(in WorkExecutionContext context, int item)
     {
-        var section = Generate(context.ThreadId, _slots.GetInputSlot(item), _slotArenas[item]);
+        var generated = Generate(context.ThreadId, _slots.GetInputSlot(item), _slotArenas[item]);
 
-        _slots.WriteOutput(item, section);
+        _slots.WriteOutput(item, generated);
     }
 
     /// <summary>
     ///     Generates a section on the calling thread straight into <see cref="target"/>, with no slot and no copy.
     ///     The target must not already hold a section at <see cref="position"/>.
     /// </summary>
-    public Section GenerateNow(SectionPos position, SectionArena target)
+    public GeneratedSection GenerateNow(SectionPos position, SectionArena target)
     {
         WgAssert.DebugIsOnGameThread();
         ArgumentNullException.ThrowIfNull(target);
@@ -124,7 +133,7 @@ public sealed class SectionGenerationExecutor : IWorkExecutor
         return Generate(_gameThreadScratch, position, target);
     }
 
-    private Section Generate(int scratch, SectionPos position, SectionArena target)
+    private GeneratedSection Generate(int scratch, SectionPos position, SectionArena target)
     {
         var min = position.GetOrigin();
         var maxInclusive = min + SectionPos.SectionMask;
@@ -136,11 +145,12 @@ public sealed class SectionGenerationExecutor : IWorkExecutor
 
         var contentData = content.Data;
         var materialData = material.Data;
+        var contentSides = SectionContentSides.FromContent(content);
 
         // A section holding one value in each channel reads the arena's shared array for that pair instead of storing bricks:
         if (contentData.IndexOfAnyExcept(contentData[0]) < 0 && materialData.IndexOfAnyExcept(materialData[0]) < 0)
         {
-            return target.CreateUniform(position, contentData[0], materialData[0]);
+            return new GeneratedSection(target.CreateUniform(position, contentData[0], materialData[0]), contentSides);
         }
 
         var section = target.Create(position);
@@ -157,7 +167,7 @@ public sealed class SectionGenerationExecutor : IWorkExecutor
             throw;
         }
 
-        return section;
+        return new GeneratedSection(section, contentSides);
     }
 
     /// <summary>
