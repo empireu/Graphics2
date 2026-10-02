@@ -1,45 +1,40 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 
 namespace WinterGame.Utilities;
 
+/// <summary>
+///     Debug checks that a call runs on the thread that owns its state.
+///     A claim marks only the calling thread, so each session's game thread claims itself and each test claims the thread it runs on.
+/// </summary>
 public static class WgAssert
 {
-    private static Thread? _gameThread;
-    private static Thread? _renderThread;
+    [ThreadStatic]
+    private static bool _isGameThread;
+
+    [ThreadStatic]
+    private static bool _isRenderThread;
 
     [Conditional("DEBUG")]
     public static void InitGameThread()
     {
-        if (Interlocked.CompareExchange(ref _gameThread, Thread.CurrentThread, null) != null)
-        {
-            throw new InvalidOperationException("Tried to set game thread multiple times");
-        }
+        _isGameThread = true;
     }
 
     [Conditional("DEBUG")]
     public static void InitRenderThread()
     {
-        if (Interlocked.CompareExchange(ref _renderThread, Thread.CurrentThread, null) != null)
-        {
-            throw new InvalidOperationException("Tried to set render thread multiple times");
-        }
+        _isRenderThread = true;
     }
-    
+
     [Conditional("DEBUG")]
     public static void DebugIsOnGameThread()
     {
-        //var thread = Volatile.Read(ref _gameThread);
-        //
-        //Debug.Assert(thread != null, $"Game thread not set in {nameof(WgAssert)}");
-        //Debug.Assert(thread == Thread.CurrentThread, "Not on game thread");
+        Debug.Assert(_isGameThread, "Not on the game thread");
     }
 
     [Conditional("DEBUG")]
     public static void DebugIsOnRenderThread()
     {
-        //var thread = Volatile.Read(ref _renderThread);
-        //
-        //Debug.Assert(thread != null, $"Render thread not set in {nameof(WgAssert)}");
-        //Debug.Assert(thread == Thread.CurrentThread, "Not on render thread");
+        Debug.Assert(_isRenderThread, "Not on the render thread");
     }
 }

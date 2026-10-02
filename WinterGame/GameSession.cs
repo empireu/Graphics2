@@ -24,14 +24,7 @@ internal sealed class GameSession : IDisposable
     private readonly App _app;
     private readonly Camera3D _camera = new();
     private readonly WorldLayer _world;
-    private readonly GameSimulation _simulation;
-    private readonly TickInput _tickInput = new();
-    private GameSnapshot _snapshot;
-
-    /// <summary>
-    ///     Real time since the last tick was due, so its fraction of a tick is how far rendering interpolates.
-    /// </summary>
-    private double _timeSinceTick;
+    private readonly GameThread _gameThread;
 
     public GameSession(App app, Vector2D<int> framebufferSize)
     {
@@ -40,8 +33,7 @@ internal sealed class GameSession : IDisposable
         _app = app;
         _world = new WorldLayer(app, _camera);
         _world.OnResize(framebufferSize);
-        _simulation = new GameSimulation(_world.SpawnPosition);
-        _snapshot = _simulation.Extract();
+        _gameThread = new GameThread(_world.SpawnPosition);
     }
 
     /// <summary>
@@ -58,9 +50,11 @@ internal sealed class GameSession : IDisposable
         _world.OnResize(framebufferSize);
     }
 
-    public void Update(Frame frame, double deltaTime, InputSnapshot input, bool hasFocus)
+    public void Update(Frame frame, InputSnapshot input, bool hasFocus)
     {
         WgAssert.DebugIsOnRenderThread();
+
+        _gameThread.ThrowIfFaulted();
 
         if (_camera.FpsMode != hasFocus)
         {
@@ -68,43 +62,17 @@ internal sealed class GameSession : IDisposable
         }
 
         _camera.Update(input, _app.G2Wnd.Window.FramebufferSize);
+        _gameThread.SubmitFrame(input, hasFocus, _camera.Yaw, _camera.Pitch);
 
-        if (hasFocus)
-        {
-            _tickInput.AddFrame(input);
-        }
-        else
-        {
-            _tickInput.ReleaseKeys();
-        }
+        var snapshot = _gameThread.GetSnapshot(out var tickFraction);
 
-        RunDueTick(deltaTime);
-
-        _camera.Position = _snapshot.GetPlayerPosition((float)(_timeSinceTick / GameSimulation.TickSeconds));
+        _camera.Position = snapshot.GetPlayerPosition(tickFraction);
         _world.Update(frame, IsLoaded ? PlayingBuildBudgetMilliseconds : LoadingBuildBudgetMilliseconds);
 
         if (!_world.IsBuilding)
         {
             IsLoaded = true;
         }
-    }
-
-    private void RunDueTick(double deltaTime)
-    {
-        _timeSinceTick += deltaTime;
-
-        if (_timeSinceTick < GameSimulation.TickSeconds)
-        {
-            return;
-        }
-
-        _tickInput.Yaw = _camera.Yaw;
-        _tickInput.Pitch = _camera.Pitch;
-        _simulation.Tick(_tickInput);
-        _tickInput.ClearPresses();
-        _snapshot = _simulation.Extract();
-
-        _timeSinceTick %= GameSimulation.TickSeconds;
     }
 
     public void Render(Frame frame)
@@ -124,6 +92,8 @@ internal sealed class GameSession : IDisposable
     public void Dispose()
     {
         WgAssert.DebugIsOnRenderThread();
+
+        _gameThread.Dispose();
 
         if (_camera.FpsMode)
         {

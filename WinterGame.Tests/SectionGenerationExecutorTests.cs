@@ -1,5 +1,6 @@
 using Graphics2.Data;
 using WinterGame.Jobs;
+using WinterGame.Utilities;
 using WinterGame.World;
 using WinterGame.World.Storage;
 
@@ -17,7 +18,8 @@ public class SectionGenerationExecutorTests
 
         public Harness(int slotCount = SectionGenerationExecutor.DefaultSlotCount)
         {
-            Executor = new SectionGenerationExecutor(Graph, Scheduler.ThreadCount, slotCount);
+            WgAssert.InitGameThread();
+            Executor =new SectionGenerationExecutor(Graph, Scheduler.ThreadCount, slotCount);
             ProviderId = Scheduler.RegisterExecutor(Executor);
         }
 
@@ -208,6 +210,8 @@ public class SectionGenerationExecutorTests
     [Fact]
     public void GenerateNow_IntoAFullArena_ThrowsAndLeavesNoSectionBehind()
     {
+        WgAssert.InitGameThread();
+
         var executor = new SectionGenerationExecutor(Graph, workerCount: 1, slotCount: 1);
         var position = SurfaceSection(0, 0);
         var reference = executor.GenerateNow(position, new SectionArena());

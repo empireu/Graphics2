@@ -1,6 +1,7 @@
 using Graphics2.Data;
 using Graphics2.Mathematics;
 using WinterGame.Jobs;
+using WinterGame.Utilities;
 using WinterGame.World;
 using WinterGame.World.Storage;
 
@@ -20,6 +21,7 @@ public class LevelTests
 
         public Harness(int slotCount = SectionGenerationExecutor.DefaultSlotCount, int unloadsPerUpdate = Level.DefaultUnloadsPerUpdate)
         {
+            WgAssert.InitGameThread();
             Level = new Level(Scheduler, Graph, slotCount, unloadsPerUpdate);
         }
 
@@ -179,6 +181,8 @@ public class LevelTests
     [Fact]
     public void LowestSkySection_GeneratesAsUniformAir()
     {
+        WgAssert.InitGameThread();
+
         var executor = new SectionGenerationExecutor(Graph, workerCount: 1, slotCount: 1);
         var arena = new SectionArena();
         var skyY = LowestSkySectionY();
@@ -673,6 +677,8 @@ public class LevelTests
     [Fact]
     public void RunningScheduler_LoadsTheShapeAndDisposeWaitsForWorkInFlight()
     {
+        WgAssert.InitGameThread();
+
         var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = 2 });
         var level = new Level(scheduler, Graph);
         var center = SurfaceSection(0, 0);
@@ -797,6 +803,8 @@ public class LevelTests
 
     private static Section GenerateReference(SectionPos position)
     {
+        WgAssert.InitGameThread();
+
         var executor = new SectionGenerationExecutor(Graph, workerCount: 1, slotCount: 1);
 
         return executor.GenerateNow(position, new SectionArena());

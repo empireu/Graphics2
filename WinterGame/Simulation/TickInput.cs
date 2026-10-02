@@ -56,6 +56,23 @@ internal sealed class TickInput
         Array.Clear(_keysPressed);
     }
 
+    /// <summary>
+    ///     Overwrites <paramref name="destination"/> with this input, so the game thread can tick from a copy the render thread no longer writes.
+    /// </summary>
+    public void CopyTo(TickInput destination)
+    {
+        if (destination._keysDown.Length != _keysDown.Length)
+        {
+            destination._keysDown = new bool[_keysDown.Length];
+            destination._keysPressed = new bool[_keysPressed.Length];
+        }
+
+        _keysDown.CopyTo(destination._keysDown, 0);
+        _keysPressed.CopyTo(destination._keysPressed, 0);
+        destination.Yaw = Yaw;
+        destination.Pitch = Pitch;
+    }
+
     public bool IsKeyDown(G2Key key)
     {
         var index = (int)key;

@@ -64,8 +64,6 @@ internal sealed class App(ApplicationDescription description) : Application(desc
 
     protected override void BeforeStart()
     {
-        // Temp
-        WgAssert.InitGameThread();
         WgAssert.InitRenderThread();
 
         _imGui = new ImGuiRenderer(Factory);
@@ -98,7 +96,7 @@ internal sealed class App(ApplicationDescription description) : Application(desc
 
         HandleEscape(input);
 
-        session?.Update(frame, deltaTime, input, sessionHasFocus);
+        session?.Update(frame, input, sessionHasFocus);
         Screens.Update(deltaTime);
 
         var visibleSession = Screens.HidesSession ? null : session;
