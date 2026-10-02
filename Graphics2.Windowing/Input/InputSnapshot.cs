@@ -6,6 +6,11 @@ namespace Graphics2.Windowing.Input;
 
 public sealed class InputSnapshot
 {
+    /// <summary>
+    ///     The <see cref="System.Diagnostics.Stopwatch"/> timestamp at which the window's events were pumped, which is the instant this input describes.
+    /// </summary>
+    public required long Timestamp { get; init; }
+
     public required IReadOnlyList<bool> CurrentKeys { get; init; }
     public required IReadOnlyList<bool> PreviousKeys { get; init; }
     

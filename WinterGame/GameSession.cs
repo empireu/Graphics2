@@ -64,7 +64,7 @@ internal sealed class GameSession : IDisposable
         _camera.Update(input, _app.G2Wnd.Window.FramebufferSize);
         _gameThread.SubmitFrame(input, hasFocus, _camera.Yaw, _camera.Pitch);
 
-        var snapshot = _gameThread.GetSnapshot(out var tickFraction);
+        var snapshot = _gameThread.GetSnapshot(input.Timestamp, out var tickFraction);
 
         _camera.Position = snapshot.GetPlayerPosition(tickFraction);
         _world.Update(frame, IsLoaded ? PlayingBuildBudgetMilliseconds : LoadingBuildBudgetMilliseconds);

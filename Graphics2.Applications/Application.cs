@@ -8,6 +8,7 @@ using Silk.NET.Core.Native;
 using Silk.NET.Maths;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.KHR;
+using System.Diagnostics;
 using System.Threading;
 
 namespace Graphics2.Applications;
@@ -33,7 +34,7 @@ public abstract unsafe class Application : IDisposable
     
     private readonly KhrSurface _khrSurface;
     private Vector2D<int> _lastFramebufferSize;
-    private double _lastTime;
+    private long _lastTimestamp;
     private bool _disposed;
 
     protected Application(ApplicationDescription description)
@@ -104,26 +105,28 @@ public abstract unsafe class Application : IDisposable
 
         OnStart();
 
-        _lastTime = G2Wnd.Window.Time;
+        _lastTimestamp = Stopwatch.GetTimestamp();
 
         while (!G2Wnd.Window.IsClosing)
         {
             G2Wnd.Window.DoEvents();
-            PollResize();
 
-            var now = G2Wnd.Window.Time;
+            // One timestamp per frame, taken when the input is read in, gives both the frame's delta time and the instant its input describes:
+            var timestamp = Stopwatch.GetTimestamp();
+
+            PollResize();
 
             if (Context == null || _lastFramebufferSize is not { X: > 0, Y: > 0 })
             {
-                _lastTime = now;
+                _lastTimestamp = timestamp;
                 Thread.Sleep(1);
                 continue;
             }
 
             var frame = Context.BeginFrame();
-            var input = G2Wnd.BuildInputSnapshot();
-            OnFrame(now - _lastTime, frame, input);
-            _lastTime = now;
+            var input = G2Wnd.BuildInputSnapshot(timestamp);
+            OnFrame(Stopwatch.GetElapsedTime(_lastTimestamp, timestamp).TotalSeconds, frame, input);
+            _lastTimestamp = timestamp;
             Context.EndFrame(frame);
         }
     }

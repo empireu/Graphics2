@@ -37,10 +37,12 @@ internal sealed class GameThread : IDisposable
         _snapshot = new GameSnapshot(spawnPosition, spawnPosition);
         _snapshotTimestamp = Stopwatch.GetTimestamp();
 
+        // The thread sleeps for most of each tick, and the priority keeps the scheduler from taking the core during the short spin before a deadline:
         _thread = new Thread(Run)
         {
             Name = "Game",
-            IsBackground = true
+            IsBackground = true,
+            Priority = ThreadPriority.Highest
         };
 
         _thread.Start();
@@ -70,22 +72,24 @@ internal sealed class GameThread : IDisposable
     }
 
     /// <summary>
-    ///     The latest tick's snapshot, and the time since that tick started as a fraction of a tick clamped to [0, 1], which is how far rendering interpolates.
+    ///     The latest tick's snapshot, and how far <paramref name="timestamp"/> is past the start of that tick as a fraction of a tick clamped to [0, 1], which is how far rendering interpolates.
+    ///     Pass the frame's input timestamp, so the position describes the same instant as the rotation.
     /// </summary>
-    public GameSnapshot GetSnapshot(out float tickFraction)
+    public GameSnapshot GetSnapshot(long timestamp, out float tickFraction)
     {
         WgAssert.DebugIsOnRenderThread();
 
         GameSnapshot snapshot;
-        long timestamp;
+        long snapshotTimestamp;
 
         lock (_lock)
         {
             snapshot = _snapshot;
-            timestamp = _snapshotTimestamp;
+            snapshotTimestamp = _snapshotTimestamp;
         }
 
-        tickFraction = (float)Math.Clamp(Stopwatch.GetElapsedTime(timestamp).TotalSeconds / GameSimulation.TickSeconds, 0.0, 1.0);
+        // A tick that started after the timestamp clamps to 0, which is the point the previous tick's interpolation ended on:
+        tickFraction = (float)Math.Clamp(Stopwatch.GetElapsedTime(snapshotTimestamp, timestamp).TotalSeconds / GameSimulation.TickSeconds, 0.0, 1.0);
 
         return snapshot;
     }
@@ -112,6 +116,7 @@ internal sealed class GameThread : IDisposable
 
         try
         {
+            using var waiter = PreciseWaiter.Create();
             var simulation = new GameSimulation(_spawnPosition);
             var input = new TickInput();
             var anchor = Stopwatch.GetTimestamp();
@@ -119,16 +124,11 @@ internal sealed class GameThread : IDisposable
 
             while (!_stopRequested)
             {
-                var deadline = GetDeadline(anchor, ticksSinceAnchor);
+                waiter.WaitUntil(GetDeadline(anchor, ticksSinceAnchor));
 
-                while (Stopwatch.GetTimestamp() < deadline)
+                if (_stopRequested)
                 {
-                    if (_stopRequested)
-                    {
-                        return;
-                    }
-
-                    Thread.SpinWait(1);
+                    return;
                 }
 
                 var tickStart = Stopwatch.GetTimestamp();

@@ -37,7 +37,10 @@ public sealed class G2Window : IDisposable
         set => _input.ClipboardText = value;
     }
 
-    public InputSnapshot BuildInputSnapshot() => _input.BuildSnapshot();
+    /// <summary>
+    ///     Builds the input as of the last event pump, stamped with <paramref name="timestamp"/>, which should be taken right after that pump.
+    /// </summary>
+    public InputSnapshot BuildInputSnapshot(long timestamp) => _input.BuildSnapshot(timestamp);
 
     public static G2Window Create(G2WindowDescription description)
     {

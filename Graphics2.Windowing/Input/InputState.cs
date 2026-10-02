@@ -43,7 +43,7 @@ internal sealed class InputState : IDisposable
         }
     }
 
-    public InputSnapshot BuildSnapshot()
+    public InputSnapshot BuildSnapshot(long timestamp)
     {
         (_currentKeys, _previousKeys) = (_previousKeys, _currentKeys);
 
@@ -93,6 +93,7 @@ internal sealed class InputState : IDisposable
 
         return new InputSnapshot
         {
+            Timestamp = timestamp,
             CurrentKeys = _currentKeys,
             PreviousKeys = _previousKeys,
             MousePosition = mousePosition,
