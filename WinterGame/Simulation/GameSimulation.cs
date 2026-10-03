@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Numerics;
+using Graphics2.Windowing.Input;
 using WinterGame.Jobs;
 using WinterGame.Utilities;
 using WinterGame.World;
@@ -24,6 +25,7 @@ internal sealed class GameSimulation : IDisposable
     private readonly Level _level;
     private readonly LevelTicket _playerTicket;
     private readonly SectionMeshPublisher _meshPublisher;
+    private readonly DebugBrush _brush = new();
     private readonly long _startTimestamp = Stopwatch.GetTimestamp();
 
     private bool _initialFillReported;
@@ -64,6 +66,16 @@ internal sealed class GameSimulation : IDisposable
 
         _level.MoveTicket(_playerTicket, playerSection);
         _level.Update();
+
+        // The edits come before the publisher, so the sections they change are published in this tick:
+        _brush.Tick(
+            _level,
+            _player.Position,
+            Camera3D.GetForward(input.Yaw, input.Pitch),
+            input.WasMousePressed(G2MouseButton.Left),
+            input.WasMousePressed(G2MouseButton.Right)
+        );
+
         _meshPublisher.Update(_level, playerSection);
         _tickCount++;
 
@@ -81,6 +93,7 @@ internal sealed class GameSimulation : IDisposable
             _player.Position,
             _level.GetStats(),
             _meshPublisher.QueuedCount,
+            _brush.Target,
             _tickMilliseconds,
             _worstTickMilliseconds
         );

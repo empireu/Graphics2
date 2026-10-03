@@ -4,12 +4,13 @@ namespace WinterGame.Simulation;
 
 /// <summary>
 ///     The input of every frame since the last tick, combined into what one tick reads.
-///     A key is down when it was down in the latest frame, and pressed when any of those frames pressed it, so a tap between two ticks is not lost.
+///     A key is down when it was down in the latest frame, and a key or mouse button is pressed when any of those frames pressed it, so a tap between two ticks is not lost.
 /// </summary>
 internal sealed class TickInput
 {
     private bool[] _keysDown = [];
     private bool[] _keysPressed = [];
+    private bool[] _mouseButtonsPressed = [];
 
     /// <summary>
     ///     The camera's yaw when the tick was handed its input. The render thread owns the rotation and the tick only reads it.
@@ -38,6 +39,18 @@ internal sealed class TickInput
             _keysDown[key] = isDown;
             _keysPressed[key] |= isDown && !input.PreviousKeys[key];
         }
+
+        var buttonCount = input.CurrentMouseButtons.Count;
+
+        if (_mouseButtonsPressed.Length != buttonCount)
+        {
+            _mouseButtonsPressed = new bool[buttonCount];
+        }
+
+        for (var button = 0; button < buttonCount; button++)
+        {
+            _mouseButtonsPressed[button] |= input.CurrentMouseButtons[button] && !input.PreviousMouseButtons[button];
+        }
     }
 
     /// <summary>
@@ -54,6 +67,7 @@ internal sealed class TickInput
     public void ClearPresses()
     {
         Array.Clear(_keysPressed);
+        Array.Clear(_mouseButtonsPressed);
     }
 
     /// <summary>
@@ -67,8 +81,14 @@ internal sealed class TickInput
             destination._keysPressed = new bool[_keysPressed.Length];
         }
 
+        if (destination._mouseButtonsPressed.Length != _mouseButtonsPressed.Length)
+        {
+            destination._mouseButtonsPressed = new bool[_mouseButtonsPressed.Length];
+        }
+
         _keysDown.CopyTo(destination._keysDown, 0);
         _keysPressed.CopyTo(destination._keysPressed, 0);
+        _mouseButtonsPressed.CopyTo(destination._mouseButtonsPressed, 0);
         destination.Yaw = Yaw;
         destination.Pitch = Pitch;
     }
@@ -83,5 +103,11 @@ internal sealed class TickInput
     {
         var index = (int)key;
         return index >= 0 && index < _keysPressed.Length && _keysPressed[index];
+    }
+
+    public bool WasMousePressed(G2MouseButton button)
+    {
+        var index = (int)button;
+        return index >= 0 && index < _mouseButtonsPressed.Length && _mouseButtonsPressed[index];
     }
 }

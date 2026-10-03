@@ -1,11 +1,13 @@
 using System.Numerics;
 using Graphics2.Core.Render;
 using Graphics2.Core.Resources;
+using Graphics2.Renderer;
 using Graphics2.Renderer.Lines;
 using Graphics2.Renderer.Quads;
 using Graphics2.Renderer.Text;
 using ImGuiNET;
 using Silk.NET.Maths;
+using WinterGame.Simulation;
 using WinterGame.World;
 
 // ReSharper disable ForCanBeConvertedToForeach
@@ -129,11 +131,20 @@ internal sealed class WorldLayer : IDisposable
         }
     }
 
-    public void Render(Frame frame)
+    /// <summary>
+    ///     Draws the level, and a box the size of the debug brush around <paramref name="brushTarget"/> when there is one.
+    /// </summary>
+    public void Render(Frame frame, Vector3? brushTarget)
     {
         _overlayQuadRenderer3D.SetCamera(_camera.ViewProj);
         _textRenderer.SetCamera(_camera.ViewProj);
         _lineRenderer3D.SetCamera(_camera.ViewProj, _camera.Position);
+
+        if (brushTarget != null)
+        {
+            var extent = new Vector3(DebugBrush.Radius);
+            _lineRenderer3D.DrawBoundingBox(brushTarget.Value - extent, brushTarget.Value + extent, new Vector4(1.0f, 0.5f, 0.1f, 1.0f), 0.02f);
+        }
 
         var worldPassDescription = new RenderPassDescription
         {

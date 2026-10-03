@@ -93,7 +93,7 @@ internal sealed class GameSession : IDisposable
     {
         WgAssert.DebugIsOnRenderThread();
 
-        _world.Render(frame);
+        _world.Render(frame, _snapshot.BrushTarget);
     }
 
     public void DrawDebugUi()

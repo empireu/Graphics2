@@ -13,6 +13,7 @@ internal readonly struct GameSnapshot(
     Vector3 playerPosition,
     LevelStats levelStats,
     int meshQueueCount,
+    Vector3? brushTarget,
     double tickMilliseconds,
     double worstTickMilliseconds)
 {
@@ -29,6 +30,11 @@ internal readonly struct GameSnapshot(
     ///     Sections waiting for a mesh job, which does not count the jobs already sent.
     /// </summary>
     public readonly int MeshQueueCount = meshQueueCount;
+
+    /// <summary>
+    ///     Where the debug brush would dig or fill, in metres, or null when the view meets no ground within its reach.
+    /// </summary>
+    public readonly Vector3? BrushTarget = brushTarget;
 
     /// <summary>
     ///     How long the tick took on the game thread.
