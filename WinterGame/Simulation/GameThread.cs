@@ -4,6 +4,7 @@ using System.Runtime.ExceptionServices;
 using Graphics2.Windowing.Input;
 using WinterGame.Jobs;
 using WinterGame.Utilities;
+using WinterGame.World;
 
 namespace WinterGame.Simulation;
 
@@ -13,6 +14,7 @@ internal sealed class GameThread : IDisposable
 
     private readonly Lock _lock = new();
     private readonly Vector3 _spawnPosition;
+    private readonly SectionMeshChannel _meshChannel;
     private readonly Thread _thread;
 
     /// <summary>
@@ -30,11 +32,15 @@ internal sealed class GameThread : IDisposable
     private volatile bool _stopRequested;
     private ExceptionDispatchInfo? _fault;
 
-    public GameThread(Vector3 spawnPosition)
+    /// <summary>
+    ///     Starts the game thread, whose mesh jobs reach the render thread through <paramref name="meshChannel"/>.
+    /// </summary>
+    public GameThread(Vector3 spawnPosition, SectionMeshChannel meshChannel)
     {
         WgAssert.DebugIsOnRenderThread();
 
         _spawnPosition = spawnPosition;
+        _meshChannel = meshChannel;
 
         // The player stands at the spawn until the first tick publishes:
         _snapshot = new GameSnapshot(spawnPosition, spawnPosition, default, 0.0, 0.0);
@@ -126,8 +132,8 @@ internal sealed class GameThread : IDisposable
                 ThreadCount = WorkerCount
             });
 
-            // The level registers its executor before the workers start, and the simulation is disposed before the scheduler so the level can still wait for its jobs:
-            using var simulation = new GameSimulation(_spawnPosition, scheduler);
+            // The level and the mesh publisher register their executors before the workers start, and the simulation is disposed before the scheduler so the level can still wait for its jobs:
+            using var simulation = new GameSimulation(_spawnPosition, scheduler, _meshChannel);
             scheduler.Start();
 
             var input = new TickInput();

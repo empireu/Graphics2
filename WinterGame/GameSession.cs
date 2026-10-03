@@ -4,6 +4,7 @@ using ImGuiNET;
 using Silk.NET.Maths;
 using WinterGame.Simulation;
 using WinterGame.Utilities;
+using WinterGame.World;
 
 namespace WinterGame;
 
@@ -22,9 +23,25 @@ internal sealed class GameSession : IDisposable
     /// </summary>
     private const double PlayingBuildBudgetMilliseconds = 4.0;
 
+    /// <summary>
+    ///     Takes the level's finished meshes and draws nothing, which frees their slots for the game thread until a renderer uploads them.
+    /// </summary>
+    private sealed class DiscardingMeshSink : ISectionMeshSink
+    {
+        public void SetMesh(SectionMeshResult mesh)
+        {
+        }
+
+        public void RemoveMesh(SectionPos position)
+        {
+        }
+    }
+
     private readonly App _app;
     private readonly Camera3D _camera = new();
     private readonly WorldLayer _world;
+    private readonly SectionMeshReceiver _meshReceiver;
+    private readonly DiscardingMeshSink _meshSink = new();
     private readonly GameThread _gameThread;
     private GameSnapshot _snapshot;
 
@@ -32,10 +49,13 @@ internal sealed class GameSession : IDisposable
     {
         WgAssert.DebugIsOnRenderThread();
 
+        var meshChannel = new SectionMeshChannel();
+
         _app = app;
         _world = new WorldLayer(app, _camera);
         _world.OnResize(framebufferSize);
-        _gameThread = new GameThread(_world.SpawnPosition);
+        _meshReceiver = new SectionMeshReceiver(meshChannel);
+        _gameThread = new GameThread(_world.SpawnPosition, meshChannel);
     }
 
     /// <summary>
@@ -57,6 +77,7 @@ internal sealed class GameSession : IDisposable
         WgAssert.DebugIsOnRenderThread();
 
         _gameThread.ThrowIfFaulted();
+        _meshReceiver.Update(_meshSink);
 
         if (_camera.FpsMode != hasFocus)
         {
@@ -98,6 +119,7 @@ internal sealed class GameSession : IDisposable
             ImGui.Text($"Generating: {stats.GeneratingSections}");
             ImGui.Text($"Pending: {stats.PendingSections}");
             ImGui.Text($"Unload queue: {stats.UnloadQueueCount}");
+            ImGui.Text($"Meshes: {_meshReceiver.MeshCount} received, {_meshReceiver.InFlightCount} in flight");
             ImGui.Text($"Tick: {_snapshot.TickMilliseconds:F2} ms, worst of the last second {_snapshot.WorstTickMilliseconds:F2} ms");
         }
 

@@ -9,7 +9,7 @@ namespace WinterGame.Tests;
 
 public class LevelTests
 {
-    private static readonly TerrainGraph Graph = TerrainGraph.Build(11, new TerrainConfig());
+    internal static readonly TerrainGraph Graph = TerrainGraph.Build(11, new TerrainConfig());
 
     /// <summary>
     ///     A level over a scheduler that is never started, so a tick runs its work on the test thread.
@@ -846,6 +846,95 @@ public class LevelTests
         }
     }
 
+    [Fact]
+    public void ReportMeshAgain_WithTheNeighborhoodReady_ReportsTheSectionOnTheNextUpdate()
+    {
+        using var harness = new Harness();
+        var center = SurfaceSection(0, 0);
+        var changes = new List<SectionMeshChange>();
+
+        harness.Level.AddTicket(center, horizontalRadius: 1, verticalRadius: 1);
+        harness.TickUntilSettled();
+        LoadDiagonalNeighbors(harness.Level, center);
+        harness.Level.Update();
+        harness.Level.TakeMeshChanges(changes);
+
+        AssertOnlyMesh(center, changes);
+
+        // A section that was never reported is left alone:
+        harness.Level.ReportMeshAgain(center with { X = center.X + 1 });
+        harness.Level.ReportMeshAgain(center);
+        harness.Level.Update();
+        harness.Level.TakeMeshChanges(changes);
+
+        AssertOnlyMesh(center, changes);
+    }
+
+    [Fact]
+    public void ReportMeshAgain_WithANeighborUnloaded_ReportsTheSectionOnceTheNeighborIsBack()
+    {
+        using var harness = new Harness();
+        var center = SurfaceSection(0, 0);
+        var changes = new List<SectionMeshChange>();
+
+        var ticket = harness.Level.AddTicket(center, horizontalRadius: 1, verticalRadius: 1);
+        harness.TickUntilSettled();
+        LoadDiagonalNeighbors(harness.Level, center);
+        harness.Level.Update();
+        harness.Level.TakeMeshChanges(changes);
+
+        AssertOnlyMesh(center, changes);
+
+        // One section along -X takes the +X diagonal neighbors out of the keep shape, and the center stays in the load shape:
+        harness.Level.MoveTicket(ticket, center with { X = center.X - 1 });
+        harness.TickUntilSettled();
+
+        Assert.Equal(SectionStatus.None, harness.Level.GetStatus(new SectionPos(center.X + 1, center.Y, center.Z + 1)));
+        Assert.Equal(SectionStatus.Ready, harness.Level.GetStatus(center));
+
+        harness.Level.ReportMeshAgain(center);
+        harness.Level.Update();
+        harness.Level.TakeMeshChanges(changes);
+
+        Assert.Empty(changes);
+
+        // Back at the center, the diagonal neighbors are claimed by the keep margin again and load synchronously:
+        harness.Level.MoveTicket(ticket, center);
+        harness.TickUntilSettled();
+        LoadDiagonalNeighbors(harness.Level, center);
+        harness.Level.Update();
+        harness.Level.TakeMeshChanges(changes);
+
+        AssertOnlyMesh(center, changes);
+    }
+
+    /// <summary>
+    ///     Loads the sections diagonal to <paramref name="center"/> in X and Z on its three layers, which a ticket of radius 1 claims in its keep margin but never loads, so the center's neighborhood is complete.
+    /// </summary>
+    private static void LoadDiagonalNeighbors(Level level, SectionPos center)
+    {
+        for (var y = center.Y - 1; y <= center.Y + 1; y++)
+        {
+            foreach (var (offsetX, offsetZ) in new[] { (-1, -1), (-1, 1), (1, -1), (1, 1) })
+            {
+                level.GetOrLoadSection(new SectionPos(center.X + offsetX, y, center.Z + offsetZ));
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Checks that the changes are one Mesh of <paramref name="position"/>, and clears them.
+    /// </summary>
+    private static void AssertOnlyMesh(SectionPos position, List<SectionMeshChange> changes)
+    {
+        var change = Assert.Single(changes);
+
+        Assert.Equal(SectionMeshChangeKind.Mesh, change.Kind);
+        Assert.Equal(position, change.Position);
+
+        changes.Clear();
+    }
+
     /// <summary>
     ///     The sections reported for meshing, checked after every update against the level's statuses and a brute-force scan of each section's edges.
     /// </summary>
@@ -1029,7 +1118,7 @@ public class LevelTests
     /// <summary>
     ///     The section holding the surface in the middle of the given section column.
     /// </summary>
-    private static SectionPos SurfaceSection(int sectionX, int sectionZ)
+    internal static SectionPos SurfaceSection(int sectionX, int sectionZ)
     {
         var x = SectionPos.SectionToVoxelCoord(sectionX) + SectionPos.SectionSize / 2;
         var z = SectionPos.SectionToVoxelCoord(sectionZ) + SectionPos.SectionSize / 2;
@@ -1041,14 +1130,14 @@ public class LevelTests
     /// <summary>
     ///     The lowest section whose first sample is one sample above the highest surface.
     /// </summary>
-    private static int LowestSkySectionY()
+    internal static int LowestSkySectionY()
     {
         var sectionHeight = SectionPos.SectionSize * WorldConstants.VoxelSize;
 
         return (int)MathF.Ceiling((Graph.MaxSurfaceY + WorldConstants.VoxelSize) / sectionHeight);
     }
 
-    private static IEnumerable<SectionPos> Box(SectionPos center, int horizontalRadius, int verticalRadius)
+    internal static IEnumerable<SectionPos> Box(SectionPos center, int horizontalRadius, int verticalRadius)
     {
         for (var z = center.Z - horizontalRadius; z <= center.Z + horizontalRadius; z++)
         {

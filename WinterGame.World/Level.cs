@@ -380,6 +380,32 @@ public sealed class Level : IDisposable
         _meshChanges.Clear();
     }
 
+    /// <summary>
+    ///     Reports a section to mesh again once it and its 26 neighbors are ready, for a consumer that took its Mesh change but found a neighbor unloaded before it could read the window.
+    ///     The next <see cref="Update"/> reports it if its neighborhood is complete again by then, and otherwise the update that completes it does.
+    ///     A section that is not ready, or not reported, is left alone.
+    /// </summary>
+    public void ReportMeshAgain(SectionPos position)
+    {
+        WgAssert.DebugIsOnGameThread();
+
+        var index = SectionBlockPos.GetLocalIndex(position);
+
+        if (!TryGetBlock(position, out var blockKey, out var view) || !view.IsReady(index) || !view.IsMeshReported(index))
+        {
+            return;
+        }
+
+        if (view.GetMask(SectionBlockView.NewlyReadyMask) == 0)
+        {
+            _newlyReadyBlocks.Add(blockKey);
+        }
+
+        // Newly ready again, so the next check looks at it, and its neighbors' return reaches it if that check finds it incomplete:
+        view.ClearMeshReported(index);
+        view.SetNewlyReady(index);
+    }
+
     public LevelStats GetStats()
     {
         WgAssert.DebugIsOnGameThread();

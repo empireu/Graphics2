@@ -72,9 +72,9 @@ public sealed class JobPool
 
 #if DEBUG
         /// <summary>
-        ///     The managed thread that created the job, the only one allowed to wait on it or release it.
+        ///     The managed thread that owns the job, the only one allowed to wait on it or release it. The creator owns it until another thread adopts it.
         /// </summary>
-        public int CreatorThreadId;
+        public int OwnerThreadId;
 #endif
     }
 
@@ -131,10 +131,23 @@ public sealed class JobPool
         entry.Remaining = count;
 
 #if DEBUG
-        entry.CreatorThreadId = Environment.CurrentManagedThreadId;
+        entry.OwnerThreadId = Environment.CurrentManagedThreadId;
 #endif
 
         return new Job(this, Job.Pack(slot, entry.Generation));
+    }
+
+    /// <summary>
+    ///     Makes the calling thread the job's owner, the only thread allowed to wait on it or release it.
+    ///     The previous owner hands the job over through something that synchronizes, such as a lock, and stops waiting on it and releasing it.
+    ///     Ownership is only checked in Debug, so this does nothing in Release.
+    /// </summary>
+    [Conditional("DEBUG")]
+    public void Adopt(Job job)
+    {
+#if DEBUG
+        GetEntry(job).OwnerThreadId = Environment.CurrentManagedThreadId;
+#endif
     }
 
     /// <summary>
@@ -169,7 +182,7 @@ public sealed class JobPool
 
     /// <summary>
     ///     Blocks until <see cref="TryComplete"/> would be true.
-    ///     Only the thread that created the job may wait on it, and never a pool worker, which would deadlock once every worker is waiting for work only it could run.
+    ///     Only the thread that owns the job may wait on it, and never a pool worker, which would deadlock once every worker is waiting for work only it could run.
     ///     Only one thread may wait, because <see cref="Release"/> clears the fence for the next occupant.
     ///     Throws <see cref="ObjectDisposedException"/> if the scheduler was disposed first, because the work it abandoned will never retire the job, and rethrows the pool's fault like <see cref="TryComplete"/>.
     /// </summary>
@@ -183,7 +196,7 @@ public sealed class JobPool
         var fence = entry.Fence;
 
 #if DEBUG
-        Debug.Assert(entry.CreatorThreadId == Environment.CurrentManagedThreadId, $"{nameof(Complete)} was called from a thread that did not create the job");
+        Debug.Assert(entry.OwnerThreadId == Environment.CurrentManagedThreadId, $"{nameof(Complete)} was called from a thread that does not own the job");
 #endif
 
         while (Volatile.Read(ref entry.Retired) == 0)
@@ -232,14 +245,14 @@ public sealed class JobPool
 
     /// <summary>
     ///     Returns the counter to the pool and invalidates the handle.
-    ///     Only legal once the last unit has retired, and only from the thread that created the job.
+    ///     Only legal once the last unit has retired, and only from the thread that owns the job.
     /// </summary>
     public void Release(Job job)
     {
         ref var entry = ref GetEntry(job);
 
 #if DEBUG
-        Debug.Assert(entry.CreatorThreadId == Environment.CurrentManagedThreadId, $"{nameof(Release)} was called from a thread that did not create the job");
+        Debug.Assert(entry.OwnerThreadId == Environment.CurrentManagedThreadId, $"{nameof(Release)} was called from a thread that does not own the job");
 #endif
 
         if (Volatile.Read(ref entry.Retired) == 0)

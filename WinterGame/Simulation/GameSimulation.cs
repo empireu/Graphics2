@@ -18,7 +18,7 @@ internal sealed class GameSimulation : IDisposable
     private readonly Player _player;
     private readonly Level _level;
     private readonly LevelTicket _playerTicket;
-    private readonly List<SectionMeshChange> _meshChanges = [];
+    private readonly SectionMeshPublisher _meshPublisher;
     private readonly long _startTimestamp = Stopwatch.GetTimestamp();
 
     private bool _initialFillReported;
@@ -28,15 +28,17 @@ internal sealed class GameSimulation : IDisposable
     private int _windowTicks;
 
     /// <summary>
-    ///     Creates the level, which registers its executor, so <paramref name="scheduler"/> must not have started yet.
+    ///     Creates the level and the mesh publisher, which register their executors, so <paramref name="scheduler"/> must not have started yet.
+    ///     The publisher sends its mesh jobs to the render thread through <paramref name="meshChannel"/>.
     /// </summary>
-    public GameSimulation(Vector3 spawnPosition, JobScheduler scheduler)
+    public GameSimulation(Vector3 spawnPosition, JobScheduler scheduler, SectionMeshChannel meshChannel)
     {
         WgAssert.DebugIsOnGameThread();
 
         _player = new Player(spawnPosition);
         _level = new Level(scheduler, TerrainGraph.Build(Seed, new TerrainConfig()));
         _playerTicket = _level.AddTicket(GetSection(spawnPosition), TicketHorizontalRadius, TicketVerticalRadius);
+        _meshPublisher = new SectionMeshPublisher(scheduler, new SectionMeshingDescription(), meshChannel);
     }
 
     public void Tick(TickInput input)
@@ -46,11 +48,12 @@ internal sealed class GameSimulation : IDisposable
         var start = Stopwatch.GetTimestamp();
 
         _player.Tick(input);
-        _level.MoveTicket(_playerTicket, GetSection(_player.Position));
-        _level.Update();
 
-        _level.TakeMeshChanges(_meshChanges);
-        _meshChanges.Clear();
+        var playerSection = GetSection(_player.Position);
+
+        _level.MoveTicket(_playerTicket, playerSection);
+        _level.Update();
+        _meshPublisher.Update(_level, playerSection);
 
         RecordTickTime(Stopwatch.GetElapsedTime(start).TotalMilliseconds);
         ReportInitialFill();

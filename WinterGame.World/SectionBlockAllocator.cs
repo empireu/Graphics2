@@ -208,6 +208,12 @@ internal readonly ref struct SectionBlockView(Span<int> ticketCounts, Span<Secti
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void SetNewlyReady(int localIndex)
+    {
+        _masks[NewlyReadyMask] |= GetBit(localIndex);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void ClearNewlyReady()
     {
         _masks[NewlyReadyMask] = 0;
