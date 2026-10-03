@@ -67,7 +67,17 @@ internal readonly ref struct SectionBlockView(Span<int> ticketCounts, Span<Secti
     /// </summary>
     public const int UnloadQueuedMask = 3;
 
-    public const int MaskCount = 4;
+    /// <summary>
+    ///     The sections that became ready since the level last looked for completed neighborhoods. A section destroyed since keeps its bit, so a reader masks it with the ready sections.
+    /// </summary>
+    public const int NewlyReadyMask = 4;
+
+    /// <summary>
+    ///     The ready sections reported for meshing, until they are destroyed.
+    /// </summary>
+    public const int MeshReportedMask = 5;
+
+    public const int MaskCount = 6;
 
     /// <summary>
     ///     The tickets whose keep shape covers each section.
@@ -129,6 +139,12 @@ internal readonly ref struct SectionBlockView(Span<int> ticketCounts, Span<Secti
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsMeshReported(int localIndex)
+    {
+        return (_masks[MeshReportedMask] & GetBit(localIndex)) != 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void SetClaimed(int localIndex)
     {
         _masks[ClaimedMask] |= GetBit(localIndex);
@@ -169,7 +185,7 @@ internal readonly ref struct SectionBlockView(Span<int> ticketCounts, Span<Secti
     }
 
     /// <summary>
-    ///     Marks the section ready in <paramref name="arenaSlot"/>, replacing a generation in flight if there is one.
+    ///     Marks the section ready in <paramref name="arenaSlot"/>, replacing a generation in flight if there is one, and newly ready.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void SetReady(int localIndex, int arenaSlot, SectionContentSides contentSides)
@@ -179,6 +195,7 @@ internal readonly ref struct SectionBlockView(Span<int> ticketCounts, Span<Secti
         Slots[localIndex] = new SectionSlot(arenaSlot, contentSides);
         _masks[GeneratingMask] &= ~bit;
         _masks[ReadyMask] |= bit;
+        _masks[NewlyReadyMask] |= bit;
     }
 
     /// <summary>
@@ -188,6 +205,24 @@ internal readonly ref struct SectionBlockView(Span<int> ticketCounts, Span<Secti
     public void ClearReady(int localIndex)
     {
         _masks[ReadyMask] &= ~GetBit(localIndex);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void ClearNewlyReady()
+    {
+        _masks[NewlyReadyMask] = 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void SetMeshReported(int localIndex)
+    {
+        _masks[MeshReportedMask] |= GetBit(localIndex);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void ClearMeshReported(int localIndex)
+    {
+        _masks[MeshReportedMask] &= ~GetBit(localIndex);
     }
 }
 
@@ -242,8 +277,14 @@ internal sealed class SectionBlockAllocator
         Debug.Assert(_inUse.Remove(block.Index), $"Block {block.Index} was freed while not in use.");
 
         var view = Get(block);
+        var masks = 0UL;
 
-        Debug.Assert(view.Occupied == 0 && view.GetMask(SectionBlockView.UnloadQueuedMask) == 0 && !view.TicketCounts.ContainsAnyExcept(0), $"Block {block.Index} was freed while not empty.");
+        for (var mask = 0; mask < SectionBlockView.MaskCount; mask++)
+        {
+            masks |= view.GetMask(mask);
+        }
+
+        Debug.Assert(masks == 0 && !view.TicketCounts.ContainsAnyExcept(0), $"Block {block.Index} was freed while not empty.");
 #endif
 
         _freeBlocks.Push(block.Index);

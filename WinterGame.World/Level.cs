@@ -7,6 +7,8 @@ using WinterGame.Jobs;
 using WinterGame.Utilities;
 using WinterGame.World.Storage;
 // ReSharper disable ForeachCanBePartlyConvertedToQueryUsingAnotherGetEnumerator
+// ReSharper disable ForCanBeConvertedToForeach
+// ReSharper disable ForeachCanBeConvertedToQueryUsingAnotherGetEnumerator
 
 namespace WinterGame.World;
 
@@ -146,6 +148,21 @@ public sealed class Level : IDisposable
     /// </summary>
     private readonly List<ulong> _unticketedLoads = [];
 
+    /// <summary>
+    ///     The blocks with a newly ready section, each added when its first section became ready since the last <see cref="ReportMeshChanges"/>.
+    /// </summary>
+    private readonly List<ulong> _newlyReadyBlocks = [];
+
+    /// <summary>
+    ///     The blocks <see cref="ReportMeshChanges"/> looks for completed neighborhoods in, which are the newly ready blocks and the neighbors their newly ready sections touch.
+    /// </summary>
+    private readonly HashSet<ulong> _blocksToCheck = [];
+
+    /// <summary>
+    ///     The mesh changes since the last <see cref="TakeMeshChanges"/>, in the order they happened.
+    /// </summary>
+    private readonly List<SectionMeshChange> _meshChanges = [];
+
     private readonly List<LevelTicket> _tickets = [];
 
     private bool _loadQueueDirty;
@@ -206,6 +223,21 @@ public sealed class Level : IDisposable
     }
 
     internal int BlockVersion => _blockVersion;
+
+    internal int NewlyReadyCount
+    {
+        get
+        {
+            var count = 0;
+
+            foreach (var block in _blocks.Values)
+            {
+                count += BitOperations.PopCount(_blockStorage.GetMask(block, SectionBlockView.NewlyReadyMask));
+            }
+
+            return count;
+        }
+    }
 
     internal int GetTicketCount(SectionPos position)
     {
@@ -307,7 +339,7 @@ public sealed class Level : IDisposable
     }
 
     /// <summary>
-    ///     Unloads the previous tick's unticketed loads and up to the budget of released sections, copies finished generations into the level, and publishes the nearest wanted sections into the free executor slots.
+    ///     Unloads the previous tick's unticketed loads and up to the budget of released sections, copies finished generations into the level, publishes the nearest wanted sections into the free executor slots, and reports the mesh changes.
     /// </summary>
     public void Update()
     {
@@ -320,17 +352,32 @@ public sealed class Level : IDisposable
         UnloadReleasedSections();
         HarvestGenerations();
 
-        if (!RepublishRefusedGenerations())
+        // A publish refused again holds back new ones, but what the harvest loaded is still reported:
+        if (RepublishRefusedGenerations())
         {
-            return;
+            if (_loadQueueDirty)
+            {
+                RebuildLoadQueue();
+            }
+
+            PublishGenerations();
         }
 
-        if (_loadQueueDirty)
-        {
-            RebuildLoadQueue();
-        }
+        ReportMeshChanges();
+    }
 
-        PublishGenerations();
+    /// <summary>
+    ///     Moves the mesh changes since the last call into <see cref="destination"/>, in the order they happened, so a consumer can take them at any rate.
+    ///     A section is reported to mesh once it and its 26 neighbors are ready and it holds a surface, and its mesh is reported to retire when it is destroyed.
+    ///     A neighbor unloading retires nothing, and the section is not reported again when the neighbor is back.
+    /// </summary>
+    public void TakeMeshChanges(List<SectionMeshChange> destination)
+    {
+        WgAssert.DebugIsOnGameThread();
+        ArgumentNullException.ThrowIfNull(destination);
+
+        destination.AddRange(_meshChanges);
+        _meshChanges.Clear();
     }
 
     public LevelStats GetStats()
@@ -377,12 +424,13 @@ public sealed class Level : IDisposable
 
         var key = position.GetKey();
         var generated = IsSky(position) ? WriteSky(position) : _executor.GenerateNow(position, _terrain);
-        var view = GetOrAddBlock(SectionBlockPos.FromSection(position).GetKey());
+        var blockKey = SectionBlockPos.FromSection(position).GetKey();
+        var view = GetOrAddBlock(blockKey);
         var index = SectionBlockPos.GetLocalIndex(position);
 
         _pending.Remove(key);
 
-        view.SetReady(index, generated.Section.SlotIndex, generated.ContentSides);
+        SetReady(blockKey, view, index, generated.Section.SlotIndex, generated.ContentSides);
 
         if (view.TicketCounts[index] == 0)
         {
@@ -951,7 +999,7 @@ public sealed class Level : IDisposable
                     {
                         var generated = _executor.GetResult(inFlight.Slot);
 
-                        view.SetReady(localIndex, _terrain.CreateCopy(generated.Section).SlotIndex, generated.ContentSides);
+                        SetReady(blockKey, view, localIndex, _terrain.CreateCopy(generated.Section).SlotIndex, generated.ContentSides);
                     }
                     else
                     {
@@ -1055,7 +1103,7 @@ public sealed class Level : IDisposable
         {
             var position = new SectionPos(key);
 
-            if (!TryGetBlock(position, out _, out var view))
+            if (!TryGetBlock(position, out var blockKey, out var view))
             {
                 continue;
             }
@@ -1074,7 +1122,7 @@ public sealed class Level : IDisposable
             {
                 var sky = WriteSky(position);
 
-                view.SetReady(index, sky.Section.SlotIndex, sky.ContentSides);
+                SetReady(blockKey, view, index, sky.Section.SlotIndex, sky.ContentSides);
                 continue;
             }
 
@@ -1099,6 +1147,160 @@ public sealed class Level : IDisposable
                 return;
             }
         }
+    }
+
+    /// <summary>
+    ///     Reports every section whose neighborhood became ready since the last call and that holds a surface, and clears the newly ready masks.
+    ///     A section only completes a neighborhood within one section of it, so the blocks to check are the newly ready blocks and the neighbors their newly ready sections touch.
+    /// </summary>
+    private void ReportMeshChanges()
+    {
+        if (_newlyReadyBlocks.Count == 0)
+        {
+            return;
+        }
+
+        for (var index = 0; index < _newlyReadyBlocks.Count; index++)
+        {
+            var blockKey = _newlyReadyBlocks[index];
+            
+            if (_blocks.TryGetValue(blockKey, out var block))
+            {
+                AddBlocksToCheck(blockKey,
+                    _blockStorage.GetMask(block, SectionBlockView.NewlyReadyMask) &
+                    _blockStorage.GetMask(block, SectionBlockView.ReadyMask)
+                );
+            }
+        }
+
+        foreach (var blockKey in _blocksToCheck)
+        {
+            ReportCompletedNeighborhoods(blockKey);
+        }
+
+        // Cleared only now, since every check reads the newly ready masks of its neighbors:
+        for (var index = 0; index < _newlyReadyBlocks.Count; index++)
+        {
+            var blockKey = _newlyReadyBlocks[index];
+            
+            if (_blocks.TryGetValue(blockKey, out var block))
+            {
+                _blockStorage.Get(block).ClearNewlyReady();
+            }
+        }
+
+        _newlyReadyBlocks.Clear();
+        _blocksToCheck.Clear();
+    }
+
+    private void AddBlocksToCheck(ulong blockKey, ulong newlyReady)
+    {
+        var position = new SectionBlockPos(blockKey);
+
+        for (var offsetZ = -1; offsetZ <= 1; offsetZ++)
+        {
+            for (var offsetY = -1; offsetY <= 1; offsetY++)
+            {
+                for (var offsetX = -1; offsetX <= 1; offsetX++)
+                {
+                    if ((newlyReady & SectionBlockNeighborhood.GetBorder(offsetX, offsetY, offsetZ)) != 0)
+                    {
+                        _blocksToCheck.Add(SectionBlockPos.Pack(position.X + offsetX, position.Y + offsetY, position.Z + offsetZ));
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Reports the sections of one block whose 26 neighbors and themselves are ready, with one of them newly ready, and that hold a surface.
+    /// </summary>
+    private void ReportCompletedNeighborhoods(ulong blockKey)
+    {
+        if (!_blocks.TryGetValue(blockKey, out var center))
+        {
+            return;
+        }
+
+        var view = _blockStorage.Get(center);
+        var reported = view.GetMask(SectionBlockView.MeshReportedMask);
+
+        if ((view.GetMask(SectionBlockView.ReadyMask) & ~reported) == 0)
+        {
+            return;
+        }
+
+        var position = new SectionBlockPos(blockKey);
+        Span<SectionBlock> neighbors = stackalloc SectionBlock[SectionBlockNeighborhood.Count];
+        Span<ulong> ready = stackalloc ulong[SectionBlockNeighborhood.Count];
+        Span<ulong> newlyReady = stackalloc ulong[SectionBlockNeighborhood.Count];
+
+        for (var offsetZ = -1; offsetZ <= 1; offsetZ++)
+        {
+            for (var offsetY = -1; offsetY <= 1; offsetY++)
+            {
+                for (var offsetX = -1; offsetX <= 1; offsetX++)
+                {
+                    var index = SectionBlockNeighborhood.GetIndex(offsetX, offsetY, offsetZ);
+
+                    // A block that is not there has no ready section:
+                    if (!_blocks.TryGetValue(SectionBlockPos.Pack(position.X + offsetX, position.Y + offsetY, position.Z + offsetZ), out var neighbor))
+                    {
+                        ready[index] = 0;
+                        newlyReady[index] = 0;
+                        continue;
+                    }
+
+                    neighbors[index] = neighbor;
+                    ready[index] = _blockStorage.GetMask(neighbor, SectionBlockView.ReadyMask);
+                    newlyReady[index] = _blockStorage.GetMask(neighbor, SectionBlockView.NewlyReadyMask);
+                }
+            }
+        }
+
+        var candidates = SectionBlockNeighborhood.Erode(ready) & SectionBlockNeighborhood.Dilate(newlyReady) & ~reported;
+
+        while (candidates != 0)
+        {
+            var localIndex = BitOperations.TrailingZeroCount(candidates);
+
+            candidates &= candidates - 1;
+
+            if (!HasSurface(neighbors, localIndex))
+            {
+                continue;
+            }
+
+            view.SetMeshReported(localIndex);
+            _meshChanges.Add(new SectionMeshChange(position.GetSection(localIndex), SectionMeshChangeKind.Mesh));
+        }
+    }
+
+    /// <summary>
+    ///     Whether a section of the center block holds a surface, from its content sides and those of its positive neighbors, which have to be ready.
+    /// </summary>
+    private bool HasSurface(ReadOnlySpan<SectionBlock> neighbors, int localIndex)
+    {
+        var x = localIndex & SectionBlockPos.BlockMask;
+        var y = (localIndex >> SectionBlockPos.Log) & SectionBlockPos.BlockMask;
+        var z = localIndex >> (2 * SectionBlockPos.Log);
+
+        return SectionContentSides.HasSurface(
+            GetNeighborContentSides(neighbors, x, y, z),
+            GetNeighborContentSides(neighbors, x + 1, y, z),
+            GetNeighborContentSides(neighbors, x, y + 1, z),
+            GetNeighborContentSides(neighbors, x, y, z + 1)
+        );
+    }
+
+    /// <summary>
+    ///     The content sides of a ready section given relative to the center block's first section, from 0 to <see cref="SectionBlockPos.BlockSize"/> on each axis.
+    /// </summary>
+    private SectionContentSides GetNeighborContentSides(ReadOnlySpan<SectionBlock> neighbors, int x, int y, int z)
+    {
+        var block = neighbors[SectionBlockNeighborhood.GetIndex(x >> SectionBlockPos.Log, y >> SectionBlockPos.Log, z >> SectionBlockPos.Log)];
+
+        return _blockStorage.GetSlot(block, SectionBlockPos.GetLocalIndex(x, y, z)).ContentSides;
     }
 
     private bool IsSky(SectionPos position)
@@ -1153,17 +1355,40 @@ public sealed class Level : IDisposable
             return;
         }
 
+        // A section destroyed since it became ready leaves its newly ready bit, and the next owner of the block has to start from zero:
+        view.ClearNewlyReady();
+
         _blocks.Remove(blockKey, out var block);
         _blockStorage.Free(block);
         _blockVersion++;
     }
 
     /// <summary>
-    ///     Destroys a loaded section that no ticket holds, and frees its block when nothing else in it has an entry.
+    ///     Marks the section ready, and lists its block for the next <see cref="ReportMeshChanges"/> when it is the block's first newly ready section.
+    /// </summary>
+    private void SetReady(ulong blockKey, SectionBlockView view, int localIndex, int arenaSlot, SectionContentSides contentSides)
+    {
+        if (view.GetMask(SectionBlockView.NewlyReadyMask) == 0)
+        {
+            _newlyReadyBlocks.Add(blockKey);
+        }
+
+        view.SetReady(localIndex, arenaSlot, contentSides);
+    }
+
+    /// <summary>
+    ///     Destroys a loaded section that no ticket holds, retires its mesh if it was reported, and frees its block when nothing else in it has an entry.
     /// </summary>
     private void DestroySection(SectionPos position, ulong blockKey, SectionBlockView view, int localIndex)
     {
         _terrain.Destroy(position);
+
+        if (view.IsMeshReported(localIndex))
+        {
+            view.ClearMeshReported(localIndex);
+            _meshChanges.Add(new SectionMeshChange(position, SectionMeshChangeKind.Retire));
+        }
+
         view.ClearReady(localIndex);
         FreeBlockIfEmpty(blockKey, view);
     }

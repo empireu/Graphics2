@@ -18,6 +18,7 @@ internal sealed class GameSimulation : IDisposable
     private readonly Player _player;
     private readonly Level _level;
     private readonly LevelTicket _playerTicket;
+    private readonly List<SectionMeshChange> _meshChanges = [];
     private readonly long _startTimestamp = Stopwatch.GetTimestamp();
 
     private bool _initialFillReported;
@@ -47,6 +48,9 @@ internal sealed class GameSimulation : IDisposable
         _player.Tick(input);
         _level.MoveTicket(_playerTicket, GetSection(_player.Position));
         _level.Update();
+
+        _level.TakeMeshChanges(_meshChanges);
+        _meshChanges.Clear();
 
         RecordTickTime(Stopwatch.GetElapsedTime(start).TotalMilliseconds);
         ReportInitialFill();

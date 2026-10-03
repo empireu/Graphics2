@@ -468,6 +468,7 @@ public class LevelTests
         var random = new Random(4321);
         var tickets = new List<LevelTicket>();
         var readySlots = new Dictionary<SectionPos, int>();
+        var meshChanges = new List<SectionMeshChange>();
 
         // Every load shape stays above the highest surface, where a section loads in the update that wants it, with no job:
         var minimumY = LowestSkySectionY() + 2;
@@ -485,6 +486,11 @@ public class LevelTests
             harness.Level.Update();
 
             AssertResidencyMatchesModel(harness.Level, tickets, readySlots, step);
+
+            // The sky holds no surface, so nothing is reported, and the update looked at every newly ready section:
+            harness.Level.TakeMeshChanges(meshChanges);
+            Assert.Empty(meshChanges);
+            Assert.Equal(0, harness.Level.NewlyReadyCount);
 
             // A synchronous load now and then, which the next update unloads unless a ticket claims it first:
             if (random.Next(4) == 0)
@@ -783,6 +789,241 @@ public class LevelTests
         scheduler.Dispose();
 
         Assert.Equal(0, level.InFlightCount);
+    }
+
+    [Fact]
+    public void MeshChanges_MatchABruteForceModelOverMovesOnTheSurface()
+    {
+        WgAssert.InitGameThread();
+
+        // Real generation on the surface, so the work runs on every core:
+        var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = Math.Max(2, Environment.ProcessorCount - 1) });
+        var level = new Level(scheduler, Graph, slotCount: 32, unloadsPerUpdate: 8);
+        var model = new MeshChangeModel(level);
+
+        scheduler.Start();
+
+        try
+        {
+            const int horizontalRadius = 3;
+            const int verticalRadius = 1;
+
+            var center = SurfaceSection(0, 0);
+            var ticket = level.AddTicket(center, horizontalRadius, verticalRadius);
+
+            model.AddRegion(center, horizontalRadius, verticalRadius);
+            UpdateUntilSettled(level, model, "Add");
+
+            // Short steps that come back over loaded and unloaded sections, then a jump the shapes cannot overlap across and the jump back:
+            var columns = new[] { (1, 0), (2, 0), (2, 1), (1, 1), (0, 0), (-2, -1), (20, 0), (0, 0), (1, -2) };
+
+            foreach (var (columnX, columnZ) in columns)
+            {
+                center = SurfaceSection(columnX, columnZ);
+                level.MoveTicket(ticket, center);
+                model.AddRegion(center, horizontalRadius, verticalRadius);
+                UpdateUntilSettled(level, model, $"Move to ({columnX}, {columnZ})");
+
+                // A keep margin section is claimed, so a synchronous load of it stays and can complete the neighborhoods beside it.
+                // One past the keep shape is unloaded by the next update, before anything looks at it:
+                level.GetOrLoadSection(new SectionPos(center.X + horizontalRadius + Level.KeepMargin, center.Y, center.Z));
+                level.GetOrLoadSection(new SectionPos(center.X, center.Y, center.Z - horizontalRadius - Level.KeepMargin - 2));
+                UpdateUntilSettled(level, model, $"Synchronous loads at ({columnX}, {columnZ})");
+            }
+
+            level.RemoveTicket(ticket);
+            UpdateUntilSettled(level, model, "Remove");
+
+            Assert.Equal(0, model.ReportedCount);
+            Assert.True(model.RetireCount > 0, "Nothing was retired.");
+
+            // The jump back reloads sections that were reported before, which have to be reported again:
+            Assert.True(model.MeshCount > model.DistinctMeshCount, "No section was reported again after it was loaded again.");        }
+        finally
+        {
+            level.Dispose();
+            scheduler.Dispose();
+        }
+    }
+
+    /// <summary>
+    ///     The sections reported for meshing, checked after every update against the level's statuses and a brute-force scan of each section's edges.
+    /// </summary>
+    private sealed class MeshChangeModel(Level level)
+    {
+        private const int OwnedSampleSize = SectionPos.SectionSize + 1;
+
+        private readonly HashSet<SectionPos> _reported = [];
+        private readonly HashSet<SectionPos> _everReported = [];
+        private readonly HashSet<SectionPos> _region = [];
+        private readonly Dictionary<SectionPos, bool> _surfaces = [];
+        private readonly List<SectionMeshChange> _changes = [];
+        private readonly Memory3D<byte> _content = Memory3D<byte>.Allocate(OwnedSampleSize, OwnedSampleSize, OwnedSampleSize);
+        private readonly Memory3D<byte> _material = Memory3D<byte>.Allocate(OwnedSampleSize, OwnedSampleSize, OwnedSampleSize);
+
+        public int MeshCount { get; private set; }
+        public int RetireCount { get; private set; }
+        public int ReportedCount => _reported.Count;
+        public int DistinctMeshCount => _everReported.Count;
+
+        /// <summary>
+        ///     Adds the sections a ticket's placement can load or complete to the ones every check scans.
+        /// </summary>
+        public void AddRegion(SectionPos center, int horizontalRadius, int verticalRadius)
+        {
+            foreach (var position in Box(center, horizontalRadius + Level.KeepMargin + 1, verticalRadius + Level.KeepMargin + 1))
+            {
+                _region.Add(position);
+            }
+        }
+
+        public void Check(string context)
+        {
+            _changes.Clear();
+            level.TakeMeshChanges(_changes);
+
+            foreach (var change in _changes)
+            {
+                var position = change.Position;
+                var name = $"{context}: section ({position.X}, {position.Y}, {position.Z})";
+
+                if (change.Kind == SectionMeshChangeKind.Retire)
+                {
+                    if (!_reported.Remove(position))
+                    {
+                        Assert.Fail($"{name} was retired without being reported.");
+                    }
+
+                    if (level.GetStatus(position) == SectionStatus.Ready)
+                    {
+                        Assert.Fail($"{name} was retired but is still ready.");
+                    }
+
+                    RetireCount++;
+                    continue;
+                }
+
+                if (!_reported.Add(position))
+                {
+                    Assert.Fail($"{name} was reported again without being retired.");
+                }
+
+                if (!IsNeighborhoodReady(position))
+                {
+                    Assert.Fail($"{name} was reported before it and its 26 neighbors were ready.");
+                }
+
+                if (!HasSurface(position))
+                {
+                    Assert.Fail($"{name} was reported, but none of the edges its cells own crosses the iso level.");
+                }
+
+                _everReported.Add(position);
+                MeshCount++;
+            }
+
+            foreach (var position in _reported)
+            {
+                var status = level.GetStatus(position);
+
+                if (status != SectionStatus.Ready)
+                {
+                    Assert.Fail($"{context}: section ({position.X}, {position.Y}, {position.Z}) is {status}, and its mesh was not retired.");
+                }
+            }
+
+            foreach (var position in _region)
+            {
+                if (!_reported.Contains(position) && level.GetStatus(position) == SectionStatus.Ready && IsNeighborhoodReady(position) && HasSurface(position))
+                {
+                    Assert.Fail($"{context}: section ({position.X}, {position.Y}, {position.Z}) and its neighbors are ready and it holds a surface, but it was not reported.");
+                }
+            }
+        }
+
+        private bool IsNeighborhoodReady(SectionPos position)
+        {
+            foreach (var neighbor in Box(position, 1, 1))
+            {
+                if (level.GetStatus(neighbor) != SectionStatus.Ready)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        ///     Whether an edge some cell of the section owns crosses the iso level, read from the level, so the section and its neighbors have to be ready.
+        ///     The content never changes, so each section is scanned once.
+        /// </summary>
+        private bool HasSurface(SectionPos position)
+        {
+            if (_surfaces.TryGetValue(position, out var cached))
+            {
+                return cached;
+            }
+
+            // The edges run from each cell's low corner to the next sample on each axis, so they reach one sample into the positive neighbors:
+            var min = position.GetOrigin();
+
+            Assert.True(level.ReadRange(min, min + SectionPos.SectionSize, _content.Span, _material.Span));
+
+            var hasSurface = HasCrossingOwnedEdge(_content.Span);
+
+            _surfaces[position] = hasSurface;
+
+            return hasSurface;
+        }
+
+        private static bool HasCrossingOwnedEdge(Span3D<byte> content)
+        {
+            for (var z = 0; z < SectionPos.SectionSize; z++)
+            {
+                for (var y = 0; y < SectionPos.SectionSize; y++)
+                {
+                    for (var x = 0; x < SectionPos.SectionSize; x++)
+                    {
+                        var solid = IsSolid(content[x, y, z]);
+
+                        if (IsSolid(content[x + 1, y, z]) != solid || IsSolid(content[x, y + 1, z]) != solid || IsSolid(content[x, y, z + 1]) != solid)
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsSolid(byte content)
+        {
+            return content > WorldConstants.ContentIsoLevel;
+        }
+    }
+
+    /// <summary>
+    ///     Updates a level on a running scheduler, checking the model after every update, until nothing is pending, generating or waiting to unload.
+    /// </summary>
+    private static void UpdateUntilSettled(Level level, MeshChangeModel model, string context)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+
+        for (var update = 0;; update++)
+        {
+            level.Update();
+            model.Check($"{context}, update {update}");
+
+            if (level.PendingCount == 0 && level.InFlightCount == 0 && level.UnloadQueueCount == 0)
+            {
+                return;
+            }
+
+            Assert.True(DateTime.UtcNow < deadline, $"{context}: the level did not settle in time.");
+            Thread.Sleep(1);
+        }
     }
 
     /// <summary>
