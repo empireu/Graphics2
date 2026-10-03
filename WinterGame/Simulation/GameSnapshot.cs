@@ -8,15 +8,27 @@ namespace WinterGame.Simulation;
 ///     The render thread reads this and never the simulation itself.
 /// </summary>
 internal readonly struct GameSnapshot(
+    long tickCount,
     Vector3 previousPlayerPosition,
     Vector3 playerPosition,
     LevelStats levelStats,
+    int meshQueueCount,
     double tickMilliseconds,
     double worstTickMilliseconds)
 {
+    /// <summary>
+    ///     The ticks run so far, which is 0 for the snapshot a session starts with.
+    /// </summary>
+    public readonly long TickCount = tickCount;
+
     public readonly Vector3 PreviousPlayerPosition = previousPlayerPosition;
     public readonly Vector3 PlayerPosition = playerPosition;
     public readonly LevelStats LevelStats = levelStats;
+
+    /// <summary>
+    ///     Sections waiting for a mesh job, which does not count the jobs already sent.
+    /// </summary>
+    public readonly int MeshQueueCount = meshQueueCount;
 
     /// <summary>
     ///     How long the tick took on the game thread.

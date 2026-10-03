@@ -15,6 +15,11 @@ internal sealed class GameSimulation : IDisposable
     private const int TicketHorizontalRadius = 8;
     private const int TicketVerticalRadius = 4;
 
+    /// <summary>
+    ///     How far above the surface the player starts, in metres.
+    /// </summary>
+    private const float SpawnHeight = 2.0f;
+
     private readonly Player _player;
     private readonly Level _level;
     private readonly LevelTicket _playerTicket;
@@ -22,6 +27,7 @@ internal sealed class GameSimulation : IDisposable
     private readonly long _startTimestamp = Stopwatch.GetTimestamp();
 
     private bool _initialFillReported;
+    private long _tickCount;
     private double _tickMilliseconds;
     private double _worstTickMilliseconds;
     private double _windowWorstTickMilliseconds;
@@ -29,14 +35,18 @@ internal sealed class GameSimulation : IDisposable
 
     /// <summary>
     ///     Creates the level and the mesh publisher, which register their executors, so <paramref name="scheduler"/> must not have started yet.
+    ///     The player starts <see cref="SpawnHeight"/> above the surface at the origin column.
     ///     The publisher sends its mesh jobs to the render thread through <paramref name="meshChannel"/>.
     /// </summary>
-    public GameSimulation(Vector3 spawnPosition, JobScheduler scheduler, SectionMeshChannel meshChannel)
+    public GameSimulation(JobScheduler scheduler, SectionMeshChannel meshChannel)
     {
         WgAssert.DebugIsOnGameThread();
 
+        var graph = TerrainGraph.Build(Seed, new TerrainConfig());
+        var spawnPosition = new Vector3(0.0f, new TerrainGraphSource(graph).Elevation(0, 0) + SpawnHeight, 0.0f);
+
         _player = new Player(spawnPosition);
-        _level = new Level(scheduler, TerrainGraph.Build(Seed, new TerrainConfig()));
+        _level = new Level(scheduler, graph);
         _playerTicket = _level.AddTicket(GetSection(spawnPosition), TicketHorizontalRadius, TicketVerticalRadius);
         _meshPublisher = new SectionMeshPublisher(scheduler, new SectionMeshingDescription(), meshChannel);
     }
@@ -54,6 +64,7 @@ internal sealed class GameSimulation : IDisposable
         _level.MoveTicket(_playerTicket, playerSection);
         _level.Update();
         _meshPublisher.Update(_level, playerSection);
+        _tickCount++;
 
         RecordTickTime(Stopwatch.GetElapsedTime(start).TotalMilliseconds);
         ReportInitialFill();
@@ -64,9 +75,11 @@ internal sealed class GameSimulation : IDisposable
         WgAssert.DebugIsOnGameThread();
 
         return new GameSnapshot(
+            _tickCount,
             _player.PreviousPosition,
             _player.Position,
             _level.GetStats(),
+            _meshPublisher.QueuedCount,
             _tickMilliseconds,
             _worstTickMilliseconds
         );

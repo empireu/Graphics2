@@ -13,35 +13,10 @@ namespace WinterGame;
 /// </summary>
 internal sealed class GameSession : IDisposable
 {
-    /// <summary>
-    ///     Build time per frame while the loading screen hides the world, which only has to keep that screen responsive.
-    /// </summary>
-    private const double LoadingBuildBudgetMilliseconds = 25.0;
-
-    /// <summary>
-    ///     Build time per frame for a rebuild while the world is on screen.
-    /// </summary>
-    private const double PlayingBuildBudgetMilliseconds = 4.0;
-
-    /// <summary>
-    ///     Takes the level's finished meshes and draws nothing, which frees their slots for the game thread until a renderer uploads them.
-    /// </summary>
-    private sealed class DiscardingMeshSink : ISectionMeshSink
-    {
-        public void SetMesh(SectionMeshResult mesh)
-        {
-        }
-
-        public void RemoveMesh(SectionPos position)
-        {
-        }
-    }
-
     private readonly App _app;
     private readonly Camera3D _camera = new();
     private readonly WorldLayer _world;
     private readonly SectionMeshReceiver _meshReceiver;
-    private readonly DiscardingMeshSink _meshSink = new();
     private readonly GameThread _gameThread;
     private GameSnapshot _snapshot;
 
@@ -55,15 +30,27 @@ internal sealed class GameSession : IDisposable
         _world = new WorldLayer(app, _camera);
         _world.OnResize(framebufferSize);
         _meshReceiver = new SectionMeshReceiver(meshChannel);
-        _gameThread = new GameThread(_world.SpawnPosition, meshChannel);
+        _gameThread = new GameThread(meshChannel);
     }
 
     /// <summary>
-    ///     Whether the first build has finished. It stays set through later rebuilds.
+    ///     Whether the level around the player has been generated and meshed for the first time. It stays set afterwards.
     /// </summary>
     public bool IsLoaded { get; private set; }
 
-    public float LoadProgress => _world.BuildProgress;
+    /// <summary>
+    ///     The fraction of the level's wanted sections that are loaded, from the latest snapshot.
+    /// </summary>
+    public float LoadProgress
+    {
+        get
+        {
+            var stats = _snapshot.LevelStats;
+            var wanted = stats.LoadedSections + stats.GeneratingSections + stats.PendingSections;
+
+            return wanted > 0 ? (float)stats.LoadedSections / wanted : 0.0f;
+        }
+    }
 
     public void OnResize(Vector2D<int> framebufferSize)
     {
@@ -77,7 +64,6 @@ internal sealed class GameSession : IDisposable
         WgAssert.DebugIsOnRenderThread();
 
         _gameThread.ThrowIfFaulted();
-        _meshReceiver.Update(_meshSink);
 
         if (_camera.FpsMode != hasFocus)
         {
@@ -90,9 +76,14 @@ internal sealed class GameSession : IDisposable
         _snapshot = _gameThread.GetSnapshot(input.Timestamp, out var tickFraction);
 
         _camera.Position = _snapshot.GetPlayerPosition(tickFraction);
-        _world.Update(frame, IsLoaded ? PlayingBuildBudgetMilliseconds : LoadingBuildBudgetMilliseconds);
 
-        if (!_world.IsBuilding)
+        // The snapshot is read before the meshes are taken, so every job its tick sent is already in the channel when the receiver counts what is in flight:
+        _world.Update(frame, _meshReceiver);
+
+        var stats = _snapshot.LevelStats;
+
+        if (_snapshot.TickCount > 0 && stats.PendingSections == 0 && stats.GeneratingSections == 0 &&
+            _snapshot.MeshQueueCount == 0 && _meshReceiver.InFlightCount == 0)
         {
             IsLoaded = true;
         }
