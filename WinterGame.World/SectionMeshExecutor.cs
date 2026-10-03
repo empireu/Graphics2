@@ -49,9 +49,7 @@ public sealed class SectionMeshExecutor : IWorkExecutor
 
         _fairing = description.Fairing;
 
-        // Each relaxation iteration reaches one cell further, so the window carries that many cells around the section:
-        var halo = new Vector3i(_fairing.Iterations);
-        var window = SurfaceNetsMesher.GetSampleRange(-halo, CellCount + halo + halo);
+        var window = description.GetWindow();
 
         // A section is reported once it and its 26 neighbors are ready, so the window has to stay inside them:
         if (window.Min.X < -SectionPos.SectionSize || window.Max.X >= 2 * SectionPos.SectionSize)

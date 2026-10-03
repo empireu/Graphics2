@@ -110,6 +110,11 @@ public sealed class Level : IDisposable
 
     private readonly int _unloadsPerUpdate;
 
+    /// <summary>
+    ///     The samples a section's mesh reads, relative to its origin, which decide the sections a write has to mesh again.
+    /// </summary>
+    private readonly BoundingBox3i _meshWindow;
+
     private readonly SectionArena _terrain = new();
 
     /// <summary>
@@ -175,12 +180,14 @@ public sealed class Level : IDisposable
 
     /// <summary>
     ///     Creates a level and registers its generation executor.
+    ///     <paramref name="meshing"/> has to be the description the sections are meshed with, since its window decides which sections a write meshes again, and is the default one when null.
     /// </summary>
     public Level(
         JobScheduler scheduler,
         TerrainGraph graph,
         int slotCount = SectionGenerationExecutor.DefaultSlotCount,
-        int unloadsPerUpdate = DefaultUnloadsPerUpdate)
+        int unloadsPerUpdate = DefaultUnloadsPerUpdate,
+        SectionMeshingDescription? meshing = null)
     {
         ArgumentNullException.ThrowIfNull(scheduler);
         ArgumentNullException.ThrowIfNull(graph);
@@ -196,7 +203,13 @@ public sealed class Level : IDisposable
         _providerId = scheduler.RegisterExecutor(_executor);
         _skyMinimumY = graph.MaxSurfaceY + WorldConstants.VoxelSize;
         _unloadsPerUpdate = unloadsPerUpdate;
+        _meshWindow = (meshing ?? new SectionMeshingDescription()).GetWindow();
     }
+
+    /// <summary>
+    ///     The inclusive box of samples a section's mesh reads, relative to its origin, as the level was told at construction.
+    /// </summary>
+    public BoundingBox3i MeshWindow => _meshWindow;
 
     internal int PendingCount => _pending.Count;
 
@@ -517,6 +530,74 @@ public sealed class Level : IDisposable
     }
 
     /// <summary>
+    ///     Writes both channels of the inclusive box into the loaded sections, the reverse of <see cref="ReadRange"/>, so an edit reads a box, changes it and writes it back.
+    ///     Nothing is written and the result is false when the box touches a section that is not ready.
+    ///     A brick left holding one value is stored uniform, and a uniform brick written with its own value is left alone, so a write that changes nothing keeps a shared section shared.
+    ///     Every ready section whose mesh window holds a changed brick is reported as an <see cref="SectionMeshChangeKind.Edit"/> when it has a mesh, or when its neighborhood is ready and it now holds a surface.
+    ///     Both sources are sized <c>maxInclusive - min + 1</c> on every axis.
+    /// </summary>
+    public bool WriteRange(Vector3i min, Vector3i maxInclusive, Span3D<byte> content, Span3D<byte> material)
+    {
+        WgAssert.DebugIsOnGameThread();
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ValidateRange(min, maxInclusive, content, material);
+
+        var accessor = new FastSectionAccessor(this);
+        var sectionMin = min >> SectionPos.Log;
+        var sectionMax = maxInclusive >> SectionPos.Log;
+
+        // Every section is checked first, so a write is all or nothing:
+        for (var sectionZ = sectionMin.Z; sectionZ <= sectionMax.Z; sectionZ++)
+        {
+            for (var sectionY = sectionMin.Y; sectionY <= sectionMax.Y; sectionY++)
+            {
+                for (var sectionX = sectionMin.X; sectionX <= sectionMax.X; sectionX++)
+                {
+                    if (!accessor.TryGetSection(new SectionPos(sectionX, sectionY, sectionZ), out _))
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        var changedMin = new Vector3i(int.MaxValue);
+        var changedMax = new Vector3i(int.MinValue);
+
+        for (var sectionZ = sectionMin.Z; sectionZ <= sectionMax.Z; sectionZ++)
+        {
+            for (var sectionY = sectionMin.Y; sectionY <= sectionMax.Y; sectionY++)
+            {
+                for (var sectionX = sectionMin.X; sectionX <= sectionMax.X; sectionX++)
+                {
+                    var position = new SectionPos(sectionX, sectionY, sectionZ);
+                    var origin = position.GetOrigin();
+                    var clipMin = Vector3i.Max(min, origin);
+                    var clipMax = Vector3i.Min(maxInclusive, origin + SectionPos.SectionMask);
+
+                    accessor.TryGetSection(position, out var section);
+
+                    if (WriteSection(section, clipMin - origin, clipMax - origin, origin - min, content, material, ref changedMin, ref changedMax))
+                    {
+                        var found = TryGetBlock(position, out _, out var view);
+
+                        Debug.Assert(found, "A section the write found ready has a block.");
+
+                        view.SetContentSides(SectionBlockPos.GetLocalIndex(position), SectionContentSides.FromSection(section));
+                    }
+                }
+            }
+        }
+
+        if (changedMin.X <= changedMax.X)
+        {
+            ReportEditedSections(changedMin, changedMax);
+        }
+
+        return true;
+    }
+
+    /// <summary>
     ///     Waits for every generation in flight and returns its slot and job.
     ///     The scheduler has to still be running, or drained when it was never started, since the waits would otherwise not return.
     /// </summary>
@@ -663,6 +744,155 @@ public sealed class Level : IDisposable
         return section.GetBrickType(channel, brickIndex) == BrickType.Uniform
             ? section.GetUniformValue(channel, brickIndex)
             : section.GetDense(channel, brickIndex).Span[voxelIndex];
+    }
+
+
+
+    /// <summary>
+    ///     Writes a box of one section, given in its local voxel coordinates, from sources that hold the section's local origin at <paramref name="sourceOffset"/>.
+    ///     Grows the changed box by the written part of every brick whose values changed, in world samples, and returns whether any did.
+    /// </summary>
+    private static bool WriteSection(
+        Section section,
+        Vector3i localMin,
+        Vector3i localMax,
+        Vector3i sourceOffset,
+        Span3D<byte> content,
+        Span3D<byte> material,
+        ref Vector3i changedMin,
+        ref Vector3i changedMax)
+    {
+        var origin = section.Position.GetOrigin();
+        var brickMin = localMin >> Section.BrickLog;
+        var brickMax = localMax >> Section.BrickLog;
+        var changed = false;
+
+        for (var brickZ = brickMin.Z; brickZ <= brickMax.Z; brickZ++)
+        {
+            for (var brickY = brickMin.Y; brickY <= brickMax.Y; brickY++)
+            {
+                for (var brickX = brickMin.X; brickX <= brickMax.X; brickX++)
+                {
+                    var brickOrigin = new Vector3i(brickX, brickY, brickZ) << Section.BrickLog;
+                    var clipMin = Vector3i.Max(localMin, brickOrigin);
+                    var clipMax = Vector3i.Min(localMax, brickOrigin + (Section.BrickSize - 1));
+                    var brickIndex = Section.GetBrickIndex(brickX, brickY, brickZ);
+
+                    // Both channels are written whatever the first one did:
+                    var contentChanged = WriteBrick(section, VoxelChannel.Content, brickIndex, brickOrigin, clipMin, clipMax, sourceOffset, content);
+                    var materialChanged = WriteBrick(section, VoxelChannel.Material, brickIndex, brickOrigin, clipMin, clipMax, sourceOffset, material);
+
+                    if (!contentChanged && !materialChanged)
+                    {
+                        continue;
+                    }
+
+                    changed = true;
+                    changedMin = Vector3i.Min(changedMin, origin + clipMin);
+                    changedMax = Vector3i.Max(changedMax, origin + clipMax);
+                }
+            }
+        }
+
+        return changed;
+    }
+
+    /// <summary>
+    ///     Writes the clipped part of one brick and returns whether any value changed.
+    ///     A uniform brick written with its own value is left alone, a brick the box covers with one value becomes uniform, and a dense brick left holding one value becomes uniform, which frees its array.
+    /// </summary>
+    private static bool WriteBrick(
+        Section section,
+        VoxelChannel channel,
+        int brickIndex,
+        Vector3i brickOrigin,
+        Vector3i clipMin,
+        Vector3i clipMax,
+        Vector3i sourceOffset,
+        Span3D<byte> source)
+    {
+        var rowLength = clipMax.X - clipMin.X + 1;
+        var data = source.Data;
+        var first = data[FlatIndex(source, clipMin.X + sourceOffset.X, clipMin.Y + sourceOffset.Y, clipMin.Z + sourceOffset.Z)];
+        var oneValue = IsOneValue(source, clipMin + sourceOffset, clipMax + sourceOffset, first);
+        var wholeBrick = clipMin == brickOrigin && clipMax == brickOrigin + (Section.BrickSize - 1);
+
+        if (section.GetBrickType(channel, brickIndex) == BrickType.Uniform)
+        {
+            var value = section.GetUniformValue(channel, brickIndex);
+
+            if (oneValue && first == value)
+            {
+                return false;
+            }
+
+            if (oneValue && wholeBrick)
+            {
+                section.SetUniform(channel, brickIndex, first);
+                return true;
+            }
+
+            section.SetDense(channel, brickIndex);
+            section.GetDense(channel, brickIndex).Span.Fill(value);
+        }
+        else if (oneValue && wholeBrick)
+        {
+            var replaced = section.GetDense(channel, brickIndex).Span.ContainsAnyExcept(first);
+
+            section.SetUniform(channel, brickIndex, first);
+            return replaced;
+        }
+
+        var voxels = section.GetDense(channel, brickIndex).Span;
+        var changed = false;
+
+        for (var z = clipMin.Z; z <= clipMax.Z; z++)
+        {
+            for (var y = clipMin.Y; y <= clipMax.Y; y++)
+            {
+                var target = voxels.Slice(Section.GetBrickVoxelIndex(clipMin.X - brickOrigin.X, y - brickOrigin.Y, z - brickOrigin.Z), rowLength);
+                var row = data.Slice(FlatIndex(source, clipMin.X + sourceOffset.X, y + sourceOffset.Y, z + sourceOffset.Z), rowLength);
+
+                if (row.SequenceEqual(target))
+                {
+                    continue;
+                }
+
+                row.CopyTo(target);
+                changed = true;
+            }
+        }
+
+        var firstVoxel = voxels[0];
+
+        if (!voxels.ContainsAnyExcept(firstVoxel))
+        {
+            section.SetUniform(channel, brickIndex, firstVoxel);
+        }
+
+        return changed;
+    }
+
+    /// <summary>
+    ///     Whether every sample of the inclusive box of <paramref name="source"/> is <paramref name="value"/>.
+    /// </summary>
+    private static bool IsOneValue(Span3D<byte> source, Vector3i min, Vector3i maxInclusive, byte value)
+    {
+        var rowLength = maxInclusive.X - min.X + 1;
+        var data = source.Data;
+
+        for (var z = min.Z; z <= maxInclusive.Z; z++)
+        {
+            for (var y = min.Y; y <= maxInclusive.Y; y++)
+            {
+                if (data.Slice(FlatIndex(source, min.X, y, z), rowLength).ContainsAnyExcept(value))
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     private static void FillBox(Span3D<byte> destination, Vector3i min, Vector3i maxInclusive, byte value)
@@ -1261,28 +1491,7 @@ public sealed class Level : IDisposable
         Span<ulong> ready = stackalloc ulong[SectionBlockNeighborhood.Count];
         Span<ulong> newlyReady = stackalloc ulong[SectionBlockNeighborhood.Count];
 
-        for (var offsetZ = -1; offsetZ <= 1; offsetZ++)
-        {
-            for (var offsetY = -1; offsetY <= 1; offsetY++)
-            {
-                for (var offsetX = -1; offsetX <= 1; offsetX++)
-                {
-                    var index = SectionBlockNeighborhood.GetIndex(offsetX, offsetY, offsetZ);
-
-                    // A block that is not there has no ready section:
-                    if (!_blocks.TryGetValue(SectionBlockPos.Pack(position.X + offsetX, position.Y + offsetY, position.Z + offsetZ), out var neighbor))
-                    {
-                        ready[index] = 0;
-                        newlyReady[index] = 0;
-                        continue;
-                    }
-
-                    neighbors[index] = neighbor;
-                    ready[index] = _blockStorage.GetMask(neighbor, SectionBlockView.ReadyMask);
-                    newlyReady[index] = _blockStorage.GetMask(neighbor, SectionBlockView.NewlyReadyMask);
-                }
-            }
-        }
+        GetNeighborhood(position, neighbors, ready, newlyReady);
 
         var candidates = SectionBlockNeighborhood.Erode(ready) & SectionBlockNeighborhood.Dilate(newlyReady) & ~reported;
 
@@ -1299,6 +1508,123 @@ public sealed class Level : IDisposable
 
             view.SetMeshReported(localIndex);
             _meshChanges.Add(new SectionMeshChange(position.GetSection(localIndex), SectionMeshChangeKind.Mesh));
+        }
+    }
+
+    /// <summary>
+    ///     Reports every ready section whose mesh window overlaps the changed box, grouped by block.
+    /// </summary>
+    private void ReportEditedSections(Vector3i changedMin, Vector3i changedMax)
+    {
+        // A window overlaps the box when the section's origin lies in the box grown by the window on the opposite side:
+        var sectionMin = (changedMin - _meshWindow.Max + SectionPos.SectionMask) >> SectionPos.Log;
+        var sectionMax = (changedMax - _meshWindow.Min) >> SectionPos.Log;
+        var blockMin = sectionMin >> SectionBlockPos.Log;
+        var blockMax = sectionMax >> SectionBlockPos.Log;
+
+        for (var blockZ = blockMin.Z; blockZ <= blockMax.Z; blockZ++)
+        {
+            for (var blockY = blockMin.Y; blockY <= blockMax.Y; blockY++)
+            {
+                for (var blockX = blockMin.X; blockX <= blockMax.X; blockX++)
+                {
+                    var blockOrigin = new Vector3i(blockX, blockY, blockZ) << SectionBlockPos.Log;
+                    var clipMin = Vector3i.Max(sectionMin, blockOrigin);
+                    var clipMax = Vector3i.Min(sectionMax, blockOrigin + SectionBlockPos.BlockMask);
+                    var dirty = 0UL;
+
+                    for (var z = clipMin.Z; z <= clipMax.Z; z++)
+                    {
+                        for (var y = clipMin.Y; y <= clipMax.Y; y++)
+                        {
+                            for (var x = clipMin.X; x <= clipMax.X; x++)
+                            {
+                                dirty |= SectionBlockView.GetBit(SectionBlockPos.GetLocalIndex(x, y, z));
+                            }
+                        }
+                    }
+
+                    ReportEditedSections(SectionBlockPos.Pack(blockX, blockY, blockZ), dirty);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Reports the ready sections of <paramref name="dirty"/> in one block. A section with a mesh is meshed again even when it lost its surface, so the empty mesh replaces the old one, and a section without one is meshed once its neighborhood is ready and it holds a surface.
+    /// </summary>
+    private void ReportEditedSections(ulong blockKey, ulong dirty)
+    {
+        if (!_blocks.TryGetValue(blockKey, out var center))
+        {
+            return;
+        }
+
+        var view = _blockStorage.Get(center);
+
+        dirty &= view.GetMask(SectionBlockView.ReadyMask);
+
+        if (dirty == 0)
+        {
+            return;
+        }
+
+        var position = new SectionBlockPos(blockKey);
+        Span<SectionBlock> neighbors = stackalloc SectionBlock[SectionBlockNeighborhood.Count];
+        Span<ulong> ready = stackalloc ulong[SectionBlockNeighborhood.Count];
+        Span<ulong> newlyReady = stackalloc ulong[SectionBlockNeighborhood.Count];
+
+        GetNeighborhood(position, neighbors, ready, newlyReady);
+
+        var reported = view.GetMask(SectionBlockView.MeshReportedMask);
+        var complete = SectionBlockNeighborhood.Erode(ready);
+
+        while (dirty != 0)
+        {
+            var localIndex = BitOperations.TrailingZeroCount(dirty);
+            var bit = SectionBlockView.GetBit(localIndex);
+
+            dirty &= dirty - 1;
+
+            if ((reported & bit) == 0)
+            {
+                if ((complete & bit) == 0 || !HasSurface(neighbors, localIndex))
+                {
+                    continue;
+                }
+
+                view.SetMeshReported(localIndex);
+            }
+
+            _meshChanges.Add(new SectionMeshChange(position.GetSection(localIndex), SectionMeshChangeKind.Edit));
+        }
+    }
+
+    /// <summary>
+    ///     Looks up a block and its 26 neighbors with their ready and newly ready masks. A block that is not there has no ready section, so its masks are zero.
+    /// </summary>
+    private void GetNeighborhood(SectionBlockPos position, Span<SectionBlock> neighbors, Span<ulong> ready, Span<ulong> newlyReady)
+    {
+        for (var offsetZ = -1; offsetZ <= 1; offsetZ++)
+        {
+            for (var offsetY = -1; offsetY <= 1; offsetY++)
+            {
+                for (var offsetX = -1; offsetX <= 1; offsetX++)
+                {
+                    var index = SectionBlockNeighborhood.GetIndex(offsetX, offsetY, offsetZ);
+
+                    if (!_blocks.TryGetValue(SectionBlockPos.Pack(position.X + offsetX, position.Y + offsetY, position.Z + offsetZ), out var neighbor))
+                    {
+                        ready[index] = 0;
+                        newlyReady[index] = 0;
+                        continue;
+                    }
+
+                    neighbors[index] = neighbor;
+                    ready[index] = _blockStorage.GetMask(neighbor, SectionBlockView.ReadyMask);
+                    newlyReady[index] = _blockStorage.GetMask(neighbor, SectionBlockView.NewlyReadyMask);
+                }
+            }
         }
     }
 

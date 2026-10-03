@@ -317,11 +317,163 @@ public class SectionMeshingTests
         Assert.True(due.SetEquals(sink.Meshed), $"Meshed {sink.Meshed.Count} section(s), but {due.Count} were due a mesh.");
     }
 
+    [Fact]
+    public void Edits_LeaveEverySectionMeshedFromWhatItsWindowHoldsNow()
+    {
+        WgAssert.InitGameThread();
+        WgAssert.InitRenderThread();
+
+        var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = Math.Max(2, Environment.ProcessorCount - 1) });
+        var level = new Level(scheduler, LevelTests.Graph, slotCount: 32);
+        var channel = new SectionMeshChannel();
+        var publisher = new SectionMeshPublisher(scheduler, Description, channel);
+        var receiver = new SectionMeshReceiver(channel);
+        var sink = new LatestMeshSink();
+        var region = new HashSet<SectionPos>();
+        var random = new Random(5);
+
+        scheduler.Start();
+
+        try
+        {
+            var center = LevelTests.SurfaceSection(0, 0);
+
+            level.AddTicket(center, HorizontalRadius, VerticalRadius);
+            AddRegion(region, center);
+            UpdateUntilSettled(scheduler, level, publisher, receiver, sink, center);
+            AssertMeshesMatchWindows(level, sink, region, "Before any edit");
+
+            for (var edit = 0; edit < 12; edit++)
+            {
+                // A box dug out or filled around the surface section, often across a section boundary:
+                var size = new Vector3i(random.Next(2, 20), random.Next(2, 20), random.Next(2, 20));
+                var min = center.GetOrigin() + new Vector3i(random.Next(-24, 40), random.Next(-8, 32), random.Next(-24, 40));
+                var content = Memory3D<byte>.Allocate(size.X, size.Y, size.Z);
+                var material = Memory3D<byte>.Allocate(size.X, size.Y, size.Z);
+                var dig = random.Next(2) == 0;
+
+                content.Span.Data.Fill(dig ? (byte)0 : (byte)255);
+                material.Span.Data.Fill(dig ? SurfaceMaterial.Null : SurfaceMaterial.Basalt);
+
+                Assert.True(level.WriteRange(min, min + size - 1, content.Span, material.Span));
+                UpdateUntilSettled(scheduler, level, publisher, receiver, sink, center);
+                AssertMeshesMatchWindows(level, sink, region, $"After edit {edit}");
+            }
+        }
+        finally
+        {
+            level.Dispose();
+            scheduler.Dispose();
+        }
+    }
+
+    [Fact]
+    public void Edit_IsPublishedBeforeTheSectionsStreamingWants()
+    {
+        WgAssert.InitGameThread();
+
+        var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = Math.Max(2, Environment.ProcessorCount - 1) });
+        var level = new Level(scheduler, LevelTests.Graph, slotCount: 32);
+        var channel = new SectionMeshChannel();
+        var publisher = new SectionMeshPublisher(scheduler, Description, channel);
+        var region = new HashSet<SectionPos>();
+        var messages = new List<SectionMeshMessage>();
+
+        scheduler.Start();
+
+        try
+        {
+            var center = LevelTests.SurfaceSection(0, 0);
+
+            level.AddTicket(center, HorizontalRadius, VerticalRadius);
+
+            // The level runs alone, so every Mesh change waits for the publisher:
+            UpdateLevelUntilSettled(scheduler, level);
+            AddRegion(region, center);
+
+            var due = GetSectionsDueAMesh(level, region);
+
+            Assert.True(due.Count > Description.SlotCount, $"Only {due.Count} section(s) are due a mesh, so the nearest first order alone would publish all of them.");
+
+            // The section the nearest first order would publish last:
+            var farthest = due.MaxBy(position => GetDistanceSquared(position, center));
+
+            FlipVoxel(level, farthest.GetOrigin() + SectionPos.SectionSize / 2);
+            publisher.Update(level, center);
+            channel.Take(messages);
+
+            Assert.Equal(Description.SlotCount, messages.Count);
+            Assert.Equal(SectionMeshMessageKind.Started, messages[0].Kind);
+            Assert.Equal(farthest, messages[0].Position);
+        }
+        finally
+        {
+            level.Dispose();
+            scheduler.Dispose();
+        }
+    }
+
+    [Fact]
+    public void NewerEdit_WhileTheOlderJobIsInFlight_IsTheOnlyMeshThatLands()
+    {
+        WgAssert.InitGameThread();
+        WgAssert.InitRenderThread();
+
+        // Never started, so a job runs only when the test drains the scheduler:
+        var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = 2 });
+        var level = new Level(scheduler, LevelTests.Graph, slotCount: 32);
+        var channel = new SectionMeshChannel();
+        var publisher = new SectionMeshPublisher(scheduler, Description, channel);
+        var receiver = new SectionMeshReceiver(channel);
+        var sink = new LatestMeshSink();
+
+        try
+        {
+            var center = LevelTests.SurfaceSection(0, 0);
+
+            level.AddTicket(center, 2, 1);
+            UpdateUntilSettled(scheduler, level, publisher, receiver, sink, center);
+
+            Assert.True(sink.Meshes.ContainsKey(center), "The surface section has no mesh to edit.");
+
+            var setsBefore = sink.SetCounts[center];
+            var voxel = center.GetOrigin() + SectionPos.SectionSize / 2;
+
+            // The first edit's job is adopted and stays in flight:
+            FlipVoxel(level, voxel);
+            publisher.Update(level, center);
+            receiver.Update(sink);
+
+            Assert.Equal(1, receiver.InFlightCount);
+
+            FlipVoxel(level, voxel + new Vector3i(1, 0, 0));
+            publisher.Update(level, center);
+            receiver.Update(sink);
+
+            Assert.Equal(2, receiver.InFlightCount);
+
+            // Both jobs complete in the same update, and only the newer one's mesh may land:
+            scheduler.Drain();
+            receiver.Update(sink);
+
+            Assert.Equal(0, receiver.InFlightCount);
+            Assert.Equal(setsBefore + 1, sink.SetCounts[center]);
+            AssertSameMesh(new ReferenceMesher(level).Get(center), sink.Meshes[center], "The surface section");
+            Assert.Equal(Description.SlotCount, publisher.FreeSlotCount);
+        }
+        finally
+        {
+            scheduler.Drain();
+            level.Dispose();
+            scheduler.Dispose();
+        }
+    }
+
     /// <summary>
     ///     Updates both sides on this thread until the level has nothing pending, generating, unloading or newly ready, and every mesh change has been meshed or dropped.
     ///     A scheduler that never started is drained between updates.
     /// </summary>
-    private static void UpdateUntilSettled(JobScheduler scheduler, Level level, SectionMeshPublisher publisher, SectionMeshReceiver receiver, RecordingSink sink, SectionPos focus)
+    private static void UpdateUntilSettled(JobScheduler scheduler, Level level, SectionMeshPublisher publisher, SectionMeshReceiver receiver, ISectionMeshSink sink, SectionPos focus)
     {
         var deadline = DateTime.UtcNow.AddSeconds(60);
 
@@ -400,6 +552,65 @@ public class SectionMeshingTests
     }
 
     /// <summary>
+    ///     Checks that every section of the region whose neighborhood is ready has the mesh its window holds now, where an empty mesh counts as none, and that no section that is not ready has a mesh.
+    ///     A section keeps its mesh while a neighbor is away, so a section whose neighborhood is incomplete may have one.
+    /// </summary>
+    private static void AssertMeshesMatchWindows(Level level, LatestMeshSink sink, HashSet<SectionPos> region, string context)
+    {
+        var references = new ReferenceMesher(level);
+
+        foreach (var position in region)
+        {
+            var name = $"{context}: section ({position.X}, {position.Y}, {position.Z})";
+            var hasMesh = sink.Meshes.TryGetValue(position, out var actual) && actual.Indices.Length > 0;
+
+            if (level.GetStatus(position) != SectionStatus.Ready)
+            {
+                Assert.False(hasMesh, $"{name} has a mesh but is not ready.");
+                continue;
+            }
+
+            if (!IsNeighborhoodReady(level, position))
+            {
+                continue;
+            }
+
+            var expected = references.Get(position);
+
+            if (expected.Indices.Length == 0)
+            {
+                Assert.False(hasMesh, $"{name} has a mesh, but its window holds no surface.");
+                continue;
+            }
+
+            Assert.True(hasMesh, $"{name} has no mesh, but its window holds a surface.");
+            AssertSameMesh(expected, actual!, name);
+        }
+    }
+
+    private static void FlipVoxel(Level level, Vector3i voxel)
+    {
+        var content = Memory3D<byte>.Allocate(1, 1, 1);
+        var material = Memory3D<byte>.Allocate(1, 1, 1);
+
+        Assert.True(level.ReadRange(voxel, voxel, content.Span, material.Span));
+
+        // The high bit moves the sample across the iso level:
+        content.Span[0, 0, 0] ^= 0x80;
+
+        Assert.True(level.WriteRange(voxel, voxel, content.Span, material.Span));
+    }
+
+    private static long GetDistanceSquared(SectionPos position, SectionPos center)
+    {
+        long deltaX = position.X - center.X;
+        long deltaY = position.Y - center.Y;
+        long deltaZ = position.Z - center.Z;
+
+        return deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
+    }
+
+    /// <summary>
     ///     The sections of the region that are ready with their 26 neighbors and hold a surface by their content sides.
     /// </summary>
     private static HashSet<SectionPos> GetSectionsDueAMesh(Level level, HashSet<SectionPos> region)
@@ -455,18 +666,26 @@ public class SectionMeshingTests
 
     private static void AssertSameMesh(ReferenceMesh expected, SectionMeshResult actual)
     {
-        var name = $"Section ({actual.Position.X}, {actual.Position.Y}, {actual.Position.Z})";
+        AssertSameMesh(expected, actual.Origin, actual.Vertices, actual.Indices, $"Section ({actual.Position.X}, {actual.Position.Y}, {actual.Position.Z})");
+    }
 
-        Assert.Equal(expected.Origin, actual.Origin);
+    private static void AssertSameMesh(ReferenceMesh expected, ReferenceMesh actual, string name)
+    {
+        AssertSameMesh(expected, actual.Origin, actual.Vertices, actual.Indices, name);
+    }
 
-        if (!MemoryMarshal.AsBytes(expected.Vertices.AsSpan()).SequenceEqual(MemoryMarshal.AsBytes(actual.Vertices)))
+    private static void AssertSameMesh(ReferenceMesh expected, Vector3i origin, ReadOnlySpan<VoxelVertex> vertices, ReadOnlySpan<int> indices, string name)
+    {
+        Assert.Equal(expected.Origin, origin);
+
+        if (!MemoryMarshal.AsBytes(expected.Vertices.AsSpan()).SequenceEqual(MemoryMarshal.AsBytes(vertices)))
         {
-            Assert.Fail($"{name} has {actual.Vertices.Length} vertices that differ from the {expected.Vertices.Length} meshed from the generator.");
+            Assert.Fail($"{name} has {vertices.Length} vertices that differ from the {expected.Vertices.Length} of the reference.");
         }
 
-        if (!expected.Indices.AsSpan().SequenceEqual(actual.Indices))
+        if (!expected.Indices.AsSpan().SequenceEqual(indices))
         {
-            Assert.Fail($"{name} has {actual.Indices.Length} indices that differ from the {expected.Indices.Length} meshed from the generator.");
+            Assert.Fail($"{name} has {indices.Length} indices that differ from the {expected.Indices.Length} of the reference.");
         }
     }
 
@@ -478,9 +697,10 @@ public class SectionMeshingTests
     }
 
     /// <summary>
-    ///     Meshes sections straight from the generator, with the window worked out here rather than by the executor. The content never changes, so each section is meshed once.
+    ///     Meshes sections straight from the generator, or from what a level holds now when one is given, with the window worked out here rather than by the executor.
+    ///     The generator's content never changes, so each of its sections is meshed once.
     /// </summary>
-    private sealed class ReferenceMesher
+    private sealed class ReferenceMesher(Level? level = null)
     {
         private static readonly Vector3i CellCount = new(SectionPos.SectionSize);
 
@@ -490,7 +710,7 @@ public class SectionMeshingTests
 
         public ReferenceMesh Get(SectionPos position)
         {
-            if (_meshes.TryGetValue(position, out var cached))
+            if (level == null && _meshes.TryGetValue(position, out var cached))
             {
                 return cached;
             }
@@ -504,7 +724,14 @@ public class SectionMeshingTests
             var vertices = new List<VoxelVertex>();
             var indices = new List<int>();
 
-            _source.Generate(box.Min, box.Max, content.Span, material.Span);
+            if (level == null)
+            {
+                _source.Generate(box.Min, box.Max, content.Span, material.Span);
+            }
+            else
+            {
+                Assert.True(level.ReadRange(box.Min, box.Max, content.Span, material.Span), $"The window of section ({position.X}, {position.Y}, {position.Z}) is not loaded.");
+            }
 
             MultiLabelSurfaceNets.Mesh(_state, new MultiLabelSurfaceNetsDescription
             {
@@ -520,9 +747,35 @@ public class SectionMeshingTests
 
             var mesh = new ReferenceMesh(box.Min, vertices.ToArray(), indices.ToArray());
 
-            _meshes[position] = mesh;
+            if (level == null)
+            {
+                _meshes[position] = mesh;
+            }
 
             return mesh;
+        }
+    }
+
+    /// <summary>
+    ///     Keeps a copy of the latest mesh each section was given, and counts the meshes each was given.
+    /// </summary>
+    private sealed class LatestMeshSink : ISectionMeshSink
+    {
+        public readonly Dictionary<SectionPos, ReferenceMesh> Meshes = [];
+        public readonly Dictionary<SectionPos, int> SetCounts = [];
+
+        public void SetMesh(SectionMeshResult mesh)
+        {
+            Meshes[mesh.Position] = new ReferenceMesh(mesh.Origin, mesh.Vertices.ToArray(), mesh.Indices.ToArray());
+            SetCounts[mesh.Position] = SetCounts.GetValueOrDefault(mesh.Position) + 1;
+        }
+
+        public void RemoveMesh(SectionPos position)
+        {
+            if (!Meshes.Remove(position))
+            {
+                Assert.Fail($"Section ({position.X}, {position.Y}, {position.Z}) lost a mesh it never had.");
+            }
         }
     }
 

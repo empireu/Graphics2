@@ -4,7 +4,7 @@ using WinterGame.Utilities;
 namespace WinterGame.World;
 
 /// <summary>
-///     The game thread's side of meshing. It takes the level's mesh changes, keeps the sections that want a mesh nearest the focus first, and for each free slot reads the section's window out of the level, publishes its job and sends the job to the render thread through a <see cref="SectionMeshChannel"/>.
+///     The game thread's side of meshing. It takes the level's mesh changes, keeps the sections that want a mesh nearest the focus first behind the ones an edit wants in the order of the edits, and for each free slot reads the section's window out of the level, publishes its job and sends the job to the render thread through a <see cref="SectionMeshChannel"/>.
 ///     A slot comes back only once the render thread has taken its result, so a render thread that falls behind stops the publishing instead of piling results up.
 ///     Game thread only, and created before the scheduler starts, since it registers its executor.
 /// </summary>
@@ -29,6 +29,11 @@ public sealed class SectionMeshPublisher
     private readonly HashSet<ulong> _wanted = [];
 
     private readonly PriorityQueue<ulong, long> _queue = new();
+
+    /// <summary>
+    ///     Sections an edit wants meshed, published before <see cref="_queue"/>. A section may sit in both, and whichever is taken first publishes it.
+    /// </summary>
+    private readonly Queue<ulong> _edits = new();
 
     /// <summary>
     ///     Sections a job was sent for since their last retire, the only ones the render thread has to be told to retire.
@@ -81,6 +86,12 @@ public sealed class SectionMeshPublisher
         WgAssert.DebugIsOnGameThread();
         ArgumentNullException.ThrowIfNull(level);
 
+        // The level picks the sections an edit meshes again by its own window, so it has to be the window read here:
+        if (level.MeshWindow.Min != _executor.WindowOffset || level.MeshWindow.Max != _executor.WindowOffset + _executor.WindowSize - 1)
+        {
+            throw new InvalidOperationException("The level was built with another meshing description than the publisher, so an edit would not mesh again every section whose window it changed.");
+        }
+
         TakeChanges(level, focus);
 
         // A publish refused again holds back new ones, but the retires still go out:
@@ -116,6 +127,13 @@ public sealed class SectionMeshPublisher
                     _queue.Enqueue(key, GetPriority(change.Position));
                 }
 
+                continue;
+            }
+
+            if (change.Kind == SectionMeshChangeKind.Edit)
+            {
+                _wanted.Add(key);
+                _edits.Enqueue(key);
                 continue;
             }
 
@@ -162,9 +180,12 @@ public sealed class SectionMeshPublisher
         return true;
     }
 
+    /// <summary>
+    ///     Publishes what the edits want, then the wanted sections nearest the focus, until the slots run out.
+    /// </summary>
     private void PublishNearest(Level level)
     {
-        while (_executor.FreeSlotCount > 0 && _queue.TryDequeue(out var key, out _))
+        while (_executor.FreeSlotCount > 0 && (_edits.TryDequeue(out var key) || _queue.TryDequeue(out key, out _)))
         {
             // A section retired since it was queued, or queued twice, went stale:
             if (!_wanted.Remove(key))

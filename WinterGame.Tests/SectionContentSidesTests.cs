@@ -102,6 +102,64 @@ public class SectionContentSidesTests
     }
 
     [Fact]
+    public void FromSection_MatchesABruteForceScanOverRandomPlanesStoredInBricks()
+    {
+        var random = new Random(4321);
+        var arena = new SectionArena();
+
+        for (var plane = 0; plane < 300; plane++)
+        {
+            var position = new SectionPos(plane, 0, 0);
+            var content = FillSection(new SectionPos(0, 0, 0), RandomPlane(random));
+
+            // Every other section stores its bricks of one value dense, which the generator never does but the scan must still read:
+            var section = StoreSection(arena, position, content.Span, allDense: plane % 2 == 1);
+
+            Assert.Equal(BruteForce(content.Span), SectionContentSides.FromSection(section));
+
+            arena.Destroy(position);
+        }
+    }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData((int)WorldConstants.ContentIsoLevel, false)]
+    [InlineData((int)WorldConstants.ContentIsoLevel, true)]
+    [InlineData(WorldConstants.ContentIsoLevel + 1, false)]
+    [InlineData(WorldConstants.ContentIsoLevel + 1, true)]
+    [InlineData(255, true)]
+    public void FromSection_OfOneValue_PutsTheIsoLevelItselfOnTheAirSide(int value, bool allDense)
+    {
+        var content = FillSection(new SectionPos(0, 0, 0), (_, _, _) => (byte)value);
+        var section = StoreSection(new SectionArena(), new SectionPos(0, 0, 0), content.Span, allDense);
+
+        Assert.Equal(SectionContentSides.FromContent(content.Span), SectionContentSides.FromSection(section));
+    }
+
+    [Fact]
+    public void FromSection_ReadsEachLowFaceOnItsOwn()
+    {
+        var arena = new SectionArena();
+        var fields = new Func<int, int, int, byte>[]
+        {
+            (_, y, _) => y < 10 ? byte.MaxValue : (byte)0,
+            (x, _, _) => x == 0 ? byte.MaxValue : (byte)0,
+            (_, _, z) => z == 0 ? byte.MaxValue : (byte)0,
+            (x, y, z) => x == Size - 1 && y == Size - 1 && z == Size - 1 ? byte.MaxValue : (byte)0,
+            (x, y, z) => x == 0 && y == 0 && z == 0 ? byte.MaxValue : (byte)0
+        };
+
+        for (var index = 0; index < fields.Length; index++)
+        {
+            var position = new SectionPos(index, 0, 0);
+            var content = FillSection(new SectionPos(0, 0, 0), fields[index]);
+            var section = StoreSection(arena, position, content.Span, allDense: false);
+
+            Assert.Equal(BruteForce(content.Span), SectionContentSides.FromSection(section));
+        }
+    }
+
+    [Fact]
     public void HasSurface_IsFalseOnlyWhenTheSectionAndTheFacesTowardItAreOnOneSide()
     {
         var air = SectionContentSides.FromOneSide(ContentSide.Air);
@@ -312,6 +370,51 @@ public class SectionContentSidesTests
                 Assert.True(predicted == expectSurface, $"{name} was predicted {(predicted ? "to have" : "to have no")} surface.");
             }
         }
+    }
+
+    /// <summary>
+    ///     Stores a section's content in bricks the way generation does, a brick of one value uniform, unless <paramref name="allDense"/> stores every brick dense.
+    /// </summary>
+    private static Section StoreSection(SectionArena arena, SectionPos position, Span3D<byte> content, bool allDense)
+    {
+        var section = arena.Create(position);
+        Span<byte> brick = stackalloc byte[Section.VoxelsPerBrick];
+
+        for (var brickZ = 0; brickZ < Section.BricksPerAxis; brickZ++)
+        {
+            for (var brickY = 0; brickY < Section.BricksPerAxis; brickY++)
+            {
+                for (var brickX = 0; brickX < Section.BricksPerAxis; brickX++)
+                {
+                    for (var z = 0; z < Section.BrickSize; z++)
+                    {
+                        for (var y = 0; y < Section.BrickSize; y++)
+                        {
+                            for (var x = 0; x < Section.BrickSize; x++)
+                            {
+                                brick[Section.GetBrickVoxelIndex(x, y, z)] = content[brickX * Section.BrickSize + x, brickY * Section.BrickSize + y, brickZ * Section.BrickSize + z];
+                            }
+                        }
+                    }
+
+                    var brickIndex = Section.GetBrickIndex(brickX, brickY, brickZ);
+
+                    if (!allDense && !brick.ContainsAnyExcept(brick[0]))
+                    {
+                        section.SetUniform(VoxelChannel.Content, brickIndex, brick[0]);
+                    }
+                    else
+                    {
+                        section.SetDense(VoxelChannel.Content, brickIndex);
+                        brick.CopyTo(section.GetDense(VoxelChannel.Content, brickIndex).Span);
+                    }
+
+                    section.SetUniform(VoxelChannel.Material, brickIndex, SurfaceMaterial.Null);
+                }
+            }
+        }
+
+        return section;
     }
 
     private static SectionContentSides Sides(Func<int, int, int, byte> field, SectionPos position)

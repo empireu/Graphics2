@@ -43,12 +43,13 @@ internal sealed class GameSimulation : IDisposable
         WgAssert.DebugIsOnGameThread();
 
         var graph = TerrainGraph.Build(Seed, new TerrainConfig());
+        var meshing = new SectionMeshingDescription();
         var spawnPosition = new Vector3(0.0f, new TerrainGraphSource(graph).Elevation(0, 0) + SpawnHeight, 0.0f);
 
         _player = new Player(spawnPosition);
-        _level = new Level(scheduler, graph);
+        _level = new Level(scheduler, graph, meshing: meshing);
         _playerTicket = _level.AddTicket(GetSection(spawnPosition), TicketHorizontalRadius, TicketVerticalRadius);
-        _meshPublisher = new SectionMeshPublisher(scheduler, new SectionMeshingDescription(), meshChannel);
+        _meshPublisher = new SectionMeshPublisher(scheduler, meshing, meshChannel);
     }
 
     public void Tick(TickInput input)

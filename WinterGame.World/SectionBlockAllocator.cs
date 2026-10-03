@@ -199,6 +199,15 @@ internal readonly ref struct SectionBlockView(Span<int> ticketCounts, Span<Secti
     }
 
     /// <summary>
+    ///     Replaces a ready section's content sides, after a write changed its content.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void SetContentSides(int localIndex, SectionContentSides contentSides)
+    {
+        Slots[localIndex] = new SectionSlot(Slots[localIndex].Index, contentSides);
+    }
+
+    /// <summary>
     ///     Marks the section no longer ready. Its slot keeps its old value, which nothing reads until the section is generating or ready again.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

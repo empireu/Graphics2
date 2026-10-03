@@ -1,3 +1,4 @@
+using Graphics2.Mathematics;
 using WinterGame.World.Render;
 
 namespace WinterGame.World;
@@ -21,4 +22,15 @@ public sealed class SectionMeshingDescription
     ///     Meshes in flight or waiting for the render thread at once. A slot holds its window and its result until the render thread has taken the result, so this also bounds the meshes waiting there.
     /// </summary>
     public int SlotCount { get; init; } = 8;
+
+    /// <summary>
+    ///     The inclusive box of samples one section's mesh reads, relative to the section's origin.
+    ///     Each relaxation iteration reaches one cell further, so the window carries that many cells around the section.
+    /// </summary>
+    public BoundingBox3i GetWindow()
+    {
+        var halo = new Vector3i(Fairing.Iterations);
+
+        return SurfaceNetsMesher.GetSampleRange(-halo, new Vector3i(SectionPos.SectionSize) + halo + halo);
+    }
 }
