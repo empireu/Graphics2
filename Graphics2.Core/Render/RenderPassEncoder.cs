@@ -51,9 +51,14 @@ public sealed unsafe class RenderPassEncoder : IDisposable
     private void ValidateDescription()
     {
         var colors = _description.ColorAttachments;
-        if (colors == null || colors.Length == 0)
+        if (colors == null)
         {
-            throw new ArgumentException("RenderPassDescriptor requires at least one color attachment for now", nameof(_description));
+            throw new ArgumentException("RenderPassDescriptor.ColorAttachments must not be null. A depth-only pass passes an empty array.", nameof(_description));
+        }
+
+        if (colors.Length == 0 && _description.DepthAttachment == null)
+        {
+            throw new ArgumentException("RenderPassDescriptor requires a color attachment or a depth attachment.", nameof(_description));
         }
 
         // A pass is requested here even though nothing is recorded yet, because a copy recorded between this call and the first draw would need a barrier that dynamic rendering forbids:
@@ -1238,7 +1243,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
                 Image = texture.Image,
                 SubresourceRange = new ImageSubresourceRange
                 {
-                    AspectMask = ImageAspectFlags.ColorBit,
+                    AspectMask = texture.Aspect,
                     BaseMipLevel = 0,
                     LevelCount = 1,
                     BaseArrayLayer = 0,

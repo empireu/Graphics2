@@ -81,6 +81,17 @@ public sealed class PipelineDescription
     public FrontFace FrontFace { get; init; } = FrontFace.CounterClockwise;
     public bool Wireframe { get; init; }
 
+    /// <summary>
+    ///     A depth offset added to every fragment, in units of the smallest resolvable depth difference.
+    ///     Bias is on when this or <see cref="DepthBiasSlope"/> is not zero.
+    /// </summary>
+    public float DepthBiasConstant { get; init; }
+
+    /// <summary>
+    ///     A depth offset scaled by the fragment's depth slope.
+    /// </summary>
+    public float DepthBiasSlope { get; init; }
+
     public BlendState[]? Blends { get; init; }
 
     public VertexLayout? VertexLayout { get; init; }

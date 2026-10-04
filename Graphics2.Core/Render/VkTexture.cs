@@ -55,13 +55,19 @@ public class VkTexture
     /// </summary>
     public readonly TextureType Type;
 
+    /// <summary>
+    ///     The aspects a barrier on the whole image has to name, which follow from its format.
+    /// </summary>
+    internal readonly ImageAspectFlags Aspect;
+
     internal ImageLayout CurrentLayout;
 
-    internal VkTexture(Image image, ImageView view, TextureType type, ImageLayout initialLayout)
+    internal VkTexture(Image image, ImageView view, TextureType type, ImageAspectFlags aspect, ImageLayout initialLayout)
     {
         Image = image;
         View = view;
         Type = type;
+        Aspect = aspect;
         CurrentLayout = initialLayout;
     }
 }
@@ -90,8 +96,9 @@ public sealed unsafe class Texture : VkTexture, IDeviceResource
         uint depth,
         TextureFormat format,
         TextureUsage usage,
-        TextureType type)
-        : base(image, view, type, ImageLayout.Undefined)
+        TextureType type,
+        ImageAspectFlags aspect)
+        : base(image, view, type, aspect, ImageLayout.Undefined)
     {
         _device = device;
         _allocator = allocator;

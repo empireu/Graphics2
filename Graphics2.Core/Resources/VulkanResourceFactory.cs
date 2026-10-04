@@ -281,7 +281,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
             throw new VkAllocationException("Failed to create image view.");
         }
 
-        return new Texture(_device, _gpuOnly, imageHandle, viewHandle, allocation, description.Width, description.Height, description.Depth, description.Format, description.Usage, description.Type);
+        return new Texture(_device, _gpuOnly, imageHandle, viewHandle, allocation, description.Width, description.Height, description.Depth, description.Format, description.Usage, description.Type, FormatToAspectMask(format));
     }
 
     public VkSampler CreateSampler(SamplerDescription description)
@@ -995,7 +995,10 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
                 PolygonMode = description.Wireframe ? PolygonMode.Line : PolygonMode.Fill,
                 CullMode = CullModeToVk(description.CullMode),
                 FrontFace = FrontFaceToVk(description.FrontFace),
-                DepthBiasEnable = false,
+                DepthBiasEnable = description.DepthBiasConstant != 0.0f || description.DepthBiasSlope != 0.0f,
+                DepthBiasConstantFactor = description.DepthBiasConstant,
+                DepthBiasSlopeFactor = description.DepthBiasSlope,
+                DepthBiasClamp = 0.0f,
                 LineWidth = lineWidth
             };
 
