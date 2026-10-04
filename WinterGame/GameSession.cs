@@ -102,7 +102,7 @@ internal sealed class GameSession : IDisposable
     {
         WgAssert.DebugIsOnRenderThread();
 
-        _world.Render(frame, _snapshot.BrushTarget);
+        _world.Render(frame, _snapshot.BrushTarget, _snapshot.GetTimeOfDay(_tickFraction));
     }
 
     public void DrawDebugUi()

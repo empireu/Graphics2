@@ -1,4 +1,6 @@
 using System.Numerics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using Graphics2.Core.Render;
 using Graphics2.Core.Resources;
 using Graphics2.Renderer;
@@ -7,6 +9,7 @@ using Graphics2.Renderer.Quads;
 using Graphics2.Renderer.Text;
 using ImGuiNET;
 using Silk.NET.Maths;
+using WinterGame.Core;
 using WinterGame.Simulation;
 using WinterGame.World;
 
@@ -31,7 +34,14 @@ internal sealed class WorldLayer : IDisposable
 
     private readonly Camera3D _camera;
 
+    private readonly SectionGeometry _geometry;
     private readonly SectionRenderer _sections;
+    private readonly SunShadow _sunShadow;
+
+    /// <summary>
+    ///     The light the last <see cref="Render"/> used, for the panel.
+    /// </summary>
+    private Daylight _daylight;
 
     public WorldLayer(App app, Camera3D camera)
     {
@@ -89,7 +99,11 @@ internal sealed class WorldLayer : IDisposable
             Blends = [new BlendState(true, BlendFactor.One, BlendFactor.One)]
         });
 
-        _sections = new SectionRenderer(factory, (int)_app.Context!.FramesInFlight);
+        var framesInFlight = (int)_app.Context!.FramesInFlight;
+
+        _geometry = new SectionGeometry(factory, framesInFlight);
+        _sections = new SectionRenderer(factory);
+        _sunShadow = new SunShadow(factory, framesInFlight);
     }
 
     public void OnResize(Vector2D<int> framebufferSize)
@@ -122,7 +136,7 @@ internal sealed class WorldLayer : IDisposable
     /// </summary>
     public void Update(Frame frame, SectionMeshReceiver meshReceiver)
     {
-        _sections.TakeMeshes(frame, meshReceiver);
+        _geometry.TakeMeshes(frame, meshReceiver);
 
         if (!_textInitialized)
         {
@@ -132,10 +146,35 @@ internal sealed class WorldLayer : IDisposable
     }
 
     /// <summary>
-    ///     Draws the level, and a box the size of the debug brush around <paramref name="brushTarget"/> when there is one.
+    ///     Draws the level lit at <paramref name="timeOfDay"/>, the fraction of a day since midnight, and a box the size of the debug brush around <paramref name="brushTarget"/> when there is one.
+    ///     The sun shadow pass comes first, and the world pass samples what it rendered.
     /// </summary>
-    public void Render(Frame frame, Vector3? brushTarget)
+    public void Render(Frame frame, Vector3? brushTarget, double timeOfDay)
     {
+        _daylight = Daylight.At(timeOfDay);
+
+        var frameLighting = new FrameLighting
+        {
+            ViewProj = _camera.ViewProj,
+            LightDirection = new Vector4(_daylight.SunDirection, 0.0f),
+            LightRadiance = new Vector4(_daylight.SunRadiance, 0.0f),
+            SkyZenith = new Vector4(_daylight.SkyZenith, 0.0f),
+            SkyHorizon = new Vector4(_daylight.SkyHorizon, 0.0f)
+        };
+
+        for (var cascade = 0; cascade < SunShadow.CascadeCount; cascade++)
+        {
+            frameLighting.ShadowCascades[cascade] = SunShadow.GetCascade(_camera.Position, _daylight.SunDirection, cascade);
+        }
+
+        var lighting = frame.AllocateUniform(Unsafe.SizeOf<FrameLighting>());
+        MemoryMarshal.Write(lighting.Data, frameLighting);
+
+        _geometry.Prepare(frame);
+
+        // At night the sun lights nothing, so its map is only cleared:
+        _sunShadow.Render(frame, _daylight.SunIsUp ? _geometry : null, frameLighting.ShadowCascades);
+
         _overlayQuadRenderer3D.SetCamera(_camera.ViewProj);
         _textRenderer.SetCamera(_camera.ViewProj);
         _lineRenderer3D.SetCamera(_camera.ViewProj, _camera.Position);
@@ -155,7 +194,7 @@ internal sealed class WorldLayer : IDisposable
                     Target = frame.SwapchainColorTarget,
                     LoadOp = LoadOp.Clear,
                     StoreOp = StoreOp.Store,
-                    ClearValue = new Vector4(0.1f, 0.1f, 0.1f, 1f),
+                    ClearValue = new Vector4(_daylight.SkyHorizon, 1.0f),
                     FinalLayout = TextureLayout.ColorAttachment
                 }
             ],
@@ -174,7 +213,7 @@ internal sealed class WorldLayer : IDisposable
             _lineRenderer3D.Submit(frame, worldPass);
             _overlayQuadRenderer3D.Submit(frame, worldPass);
             _textRenderer.Submit(frame, worldPass);
-            _sections.Draw(frame, worldPass, _camera.ViewProj);
+            _sections.Draw(frame, worldPass, _geometry, lighting, _sunShadow.GetMap(frame), _sunShadow.Sampler);
         }
     }
 
@@ -183,11 +222,20 @@ internal sealed class WorldLayer : IDisposable
         if (ImGui.Begin("World"))
         {
             ImGui.Text("Sections:");
-            ImGui.Text($"Drawn: {_sections.SectionCount}");
-            ImGui.Text($"Vertices: {_sections.VertexCount}");
-            ImGui.Text($"Indices: {_sections.IndexCount}");
-            ImGui.Text($"Draws: {_sections.RunCount} run(s) over {_sections.BufferPairCount} buffer pair(s)");
+            ImGui.Text($"Drawn: {_geometry.SectionCount}");
+            ImGui.Text($"Vertices: {_geometry.VertexCount}");
+            ImGui.Text($"Indices: {_geometry.IndexCount}");
+            ImGui.Text($"Draws: {_geometry.RunCount} run(s) over {_geometry.BufferPairCount} buffer pair(s), per pass");
             ImGui.Text($"Voxel size: {WorldConstants.VoxelSize} m");
+
+            ImGui.Separator();
+            ImGui.Text("Light:");
+            ImGui.Text($"Sun elevation: {MathF.Asin(_daylight.SunDirection.Y) * 180.0f / MathF.PI:F0} deg");
+
+            for (var cascade = 0; cascade < SunShadow.CascadeCount; cascade++)
+            {
+                ImGui.Text($"Shadow cascade {cascade}: {SunShadow.CascadeSize} px over {2.0f * SunShadow.GetRadius(cascade):F0} m, {SunShadow.GetTexelSize(cascade) * 100.0f:F1} cm per texel");
+            }
 
             ImGui.Separator();
             ImGui.Text("Camera:");
@@ -202,7 +250,7 @@ internal sealed class WorldLayer : IDisposable
             ImGui.Text($"Facing: {facing}");
             ImGui.Text($"Yaw: {_camera.Yaw * 180.0f / MathF.PI:F0} deg, Pitch: {_camera.Pitch * 180.0f / MathF.PI:F0} deg");
 
-            var arenaStats = _sections.GetArenaStats();
+            var arenaStats = _geometry.GetArenaStats();
 
             ImGui.Separator();
             ImGui.Text("Arena:");
@@ -248,6 +296,8 @@ internal sealed class WorldLayer : IDisposable
         _quadRenderer2D.Dispose();
         _overlayQuadRenderer3D.Dispose();
         _lineRenderer3D.Dispose();
+        _sunShadow.Dispose();
         _sections.Dispose();
+        _geometry.Dispose();
     }
 }
