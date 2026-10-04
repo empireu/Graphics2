@@ -746,8 +746,6 @@ public sealed class Level : IDisposable
             : section.GetDense(channel, brickIndex).Span[voxelIndex];
     }
 
-
-
     /// <summary>
     ///     Writes a box of one section, given in its local voxel coordinates, from sources that hold the section's local origin at <paramref name="sourceOffset"/>.
     ///     Grows the changed box by the written part of every brick whose values changed, in world samples, and returns whether any did.
