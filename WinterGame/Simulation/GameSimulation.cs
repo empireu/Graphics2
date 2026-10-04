@@ -21,7 +21,18 @@ internal sealed class GameSimulation : IDisposable
     /// </summary>
     private const float SpawnHeight = 2.0f;
 
+    /// <summary>
+    ///     The world starts at 09:00 of the first day.
+    /// </summary>
+    private const long StartClockTicks = WorldClock.TicksPerDay * 9 / 24;
+
+    /// <summary>
+    ///     How many clock ticks a tick advances while T is held, which runs a day in 20 seconds. Temporary, for trying out the lighting.
+    /// </summary>
+    private const long FastForwardClockTicks = 60;
+
     private readonly Player _player;
+    private readonly WorldClock _clock = new(StartClockTicks);
     private readonly Level _level;
     private readonly LevelTicket _playerTicket;
     private readonly SectionMeshPublisher _meshPublisher;
@@ -60,6 +71,7 @@ internal sealed class GameSimulation : IDisposable
 
         var start = Stopwatch.GetTimestamp();
 
+        _clock.Tick(input.IsKeyDown(G2Key.T) ? FastForwardClockTicks : 1);
         _player.Tick(input);
 
         var playerSection = GetSection(_player.Position);
@@ -91,6 +103,8 @@ internal sealed class GameSimulation : IDisposable
             _tickCount,
             _player.PreviousPosition,
             _player.Position,
+            _clock.PreviousTicks,
+            _clock.Ticks,
             _level.GetStats(),
             _meshPublisher.QueuedCount,
             _brush.Target,

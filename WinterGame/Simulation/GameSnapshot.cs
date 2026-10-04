@@ -11,6 +11,8 @@ internal readonly struct GameSnapshot(
     long tickCount,
     Vector3 previousPlayerPosition,
     Vector3 playerPosition,
+    long previousClockTicks,
+    long clockTicks,
     LevelStats levelStats,
     int meshQueueCount,
     Vector3? brushTarget,
@@ -24,6 +26,14 @@ internal readonly struct GameSnapshot(
 
     public readonly Vector3 PreviousPlayerPosition = previousPlayerPosition;
     public readonly Vector3 PlayerPosition = playerPosition;
+
+    /// <summary>
+    ///     The world clock before this tick, which can be more than one tick behind <see cref="ClockTicks"/> while the time is fast-forwarded.
+    /// </summary>
+    public readonly long PreviousClockTicks = previousClockTicks;
+
+    public readonly long ClockTicks = clockTicks;
+
     public readonly LevelStats LevelStats = levelStats;
 
     /// <summary>
@@ -52,5 +62,16 @@ internal readonly struct GameSnapshot(
     public Vector3 GetPlayerPosition(float tickFraction)
     {
         return Vector3.Lerp(PreviousPlayerPosition, PlayerPosition, tickFraction);
+    }
+
+    /// <summary>
+    ///     The time of day <paramref name="tickFraction"/> of the way from the previous tick to this one, as the fraction of a day since midnight.
+    /// </summary>
+    public double GetTimeOfDay(float tickFraction)
+    {
+        var ticks = PreviousClockTicks + (ClockTicks - PreviousClockTicks) * (double)tickFraction;
+        var days = ticks / WorldClock.TicksPerDay;
+
+        return days - Math.Floor(days);
     }
 }

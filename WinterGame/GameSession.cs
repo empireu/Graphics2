@@ -20,6 +20,11 @@ internal sealed class GameSession : IDisposable
     private readonly GameThread _gameThread;
     private GameSnapshot _snapshot;
 
+    /// <summary>
+    ///     How far this frame's input is past the snapshot's tick, which the clock is interpolated with too.
+    /// </summary>
+    private float _tickFraction;
+
     public GameSession(App app, Vector2D<int> framebufferSize)
     {
         WgAssert.DebugIsOnRenderThread();
@@ -77,9 +82,9 @@ internal sealed class GameSession : IDisposable
         _camera.Update(input, _app.G2Wnd.Window.FramebufferSize);
         _gameThread.SubmitFrame(input, hasFocus, _camera.Yaw, _camera.Pitch);
 
-        _snapshot = _gameThread.GetSnapshot(input.Timestamp, out var tickFraction);
+        _snapshot = _gameThread.GetSnapshot(input.Timestamp, out _tickFraction);
 
-        _camera.Position = _snapshot.GetPlayerPosition(tickFraction);
+        _camera.Position = _snapshot.GetPlayerPosition(_tickFraction);
 
         // The snapshot is read before the meshes are taken, so every job its tick sent is already in the channel when the receiver counts what is in flight:
         _world.Update(frame, _meshReceiver);
@@ -109,7 +114,10 @@ internal sealed class GameSession : IDisposable
         if (ImGui.Begin("Level"))
         {
             var stats = _snapshot.LevelStats;
+            var minuteOfDay = (int)(_snapshot.GetTimeOfDay(_tickFraction) * 24 * 60);
+            var day = _snapshot.ClockTicks / WorldClock.TicksPerDay + 1;
 
+            ImGui.Text($"Time: day {day}, {minuteOfDay / 60:D2}:{minuteOfDay % 60:D2} (hold T to fast-forward)");
             ImGui.Text($"Loaded: {stats.LoadedSections} section(s)");
             ImGui.Text($"Generating: {stats.GeneratingSections}");
             ImGui.Text($"Pending: {stats.PendingSections}");
