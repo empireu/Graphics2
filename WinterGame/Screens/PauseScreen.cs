@@ -4,6 +4,8 @@ namespace WinterGame.Screens;
 
 internal sealed class PauseScreen(App app) : Screen
 {
+    public override bool PausesSession => true;
+
     public override bool ClosesOnEscape => true;
 
     public override void Draw()

@@ -17,6 +17,11 @@ internal abstract class Screen
     public virtual bool HidesSession => false;
 
     /// <summary>
+    ///     Whether the session under the screen stops ticking, so the world and its clock stand still.
+    /// </summary>
+    public virtual bool PausesSession => false;
+
+    /// <summary>
     ///     Whether Escape closes the screen.
     /// </summary>
     public virtual bool ClosesOnEscape => false;

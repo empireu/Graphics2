@@ -28,6 +28,7 @@ internal sealed class GameThread : IDisposable
     private long _snapshotTimestamp;
 
     private volatile bool _stopRequested;
+    private volatile bool _paused;
     private ExceptionDispatchInfo? _fault;
 
     /// <summary>
@@ -75,6 +76,16 @@ internal sealed class GameThread : IDisposable
             _pendingInput.Yaw = yaw;
             _pendingInput.Pitch = pitch;
         }
+    }
+
+    /// <summary>
+    ///     While set, the thread skips its ticks, so the simulation stands still and the snapshot stays the last one. The schedule keeps running, so resuming ticks on time.
+    /// </summary>
+    public void SetPaused(bool paused)
+    {
+        WgAssert.DebugIsOnRenderThread();
+
+        _paused = paused;
     }
 
     /// <summary>
@@ -144,6 +155,18 @@ internal sealed class GameThread : IDisposable
                 if (_stopRequested)
                 {
                     return;
+                }
+
+                // A press made just before the pause would otherwise act when the game resumes:
+                if (_paused)
+                {
+                    lock (_lock)
+                    {
+                        _pendingInput.ClearPresses();
+                    }
+
+                    ticksSinceAnchor++;
+                    continue;
                 }
 
                 var tickStart = Stopwatch.GetTimestamp();

@@ -96,7 +96,7 @@ internal sealed class App(ApplicationDescription description) : Application(desc
 
         HandleEscape(input);
 
-        session?.Update(frame, input, sessionHasFocus);
+        session?.Update(frame, input, sessionHasFocus, Screens.PausesSession);
         Screens.Update(deltaTime);
 
         var visibleSession = Screens.HidesSession ? null : session;

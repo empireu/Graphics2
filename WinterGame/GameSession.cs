@@ -59,11 +59,15 @@ internal sealed class GameSession : IDisposable
         _world.OnResize(framebufferSize);
     }
 
-    public void Update(Frame frame, InputSnapshot input, bool hasFocus)
+    /// <summary>
+    ///     While <paramref name="paused"/>, the game thread skips its ticks, so the snapshot and everything drawn from it stand still.
+    /// </summary>
+    public void Update(Frame frame, InputSnapshot input, bool hasFocus, bool paused)
     {
         WgAssert.DebugIsOnRenderThread();
 
         _gameThread.ThrowIfFaulted();
+        _gameThread.SetPaused(paused);
 
         if (_camera.FpsMode != hasFocus)
         {

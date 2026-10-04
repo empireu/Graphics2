@@ -41,6 +41,25 @@ internal sealed class ScreenStack
         }
     }
 
+    /// <summary>
+    ///     Whether any open screen pauses the session.
+    /// </summary>
+    public bool PausesSession
+    {
+        get
+        {
+            foreach (var screen in _screens)
+            {
+                if (screen.PausesSession)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+
     public void Push(Screen screen)
     {
         WgAssert.DebugIsOnRenderThread();
