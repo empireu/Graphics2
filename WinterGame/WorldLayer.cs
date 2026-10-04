@@ -43,6 +43,27 @@ internal sealed class WorldLayer : IDisposable
     /// </summary>
     private Daylight _daylight;
 
+    /// <summary>
+    ///     How far the sun's marker is drawn from the camera, inside the far plane, and its width, both in metres.
+    /// </summary>
+    private const float SunMarkerDistance = 90.0f;
+
+    private const float SunMarkerSize = 5.0f;
+
+    private static readonly string[] DebugViewNames = ["None", "Shadow cascades", "Light angle"];
+
+    /// <summary>
+    ///     The index into <see cref="DebugViewNames"/> the world shader shows.
+    /// </summary>
+    private int _debugView;
+
+    private bool _freezeShadowDirection;
+
+    /// <summary>
+    ///     The light direction the shadow cascades are rendered for, which follows the sun unless <see cref="_freezeShadowDirection"/> holds it.
+    /// </summary>
+    private Vector3 _shadowDirection;
+
     public WorldLayer(App app, Camera3D camera)
     {
         _app = app;
@@ -159,12 +180,18 @@ internal sealed class WorldLayer : IDisposable
             LightDirection = new Vector4(_daylight.SunDirection, 0.0f),
             LightRadiance = new Vector4(_daylight.SunRadiance, 0.0f),
             SkyZenith = new Vector4(_daylight.SkyZenith, 0.0f),
-            SkyHorizon = new Vector4(_daylight.SkyHorizon, 0.0f)
+            SkyHorizon = new Vector4(_daylight.SkyHorizon, 0.0f),
+            DebugOptions = new Vector4(_debugView, 0.0f, 0.0f, 0.0f)
         };
+
+        if (!_freezeShadowDirection)
+        {
+            _shadowDirection = _daylight.SunDirection;
+        }
 
         for (var cascade = 0; cascade < SunShadow.CascadeCount; cascade++)
         {
-            frameLighting.ShadowCascades[cascade] = SunShadow.GetCascade(_camera.Position, _daylight.SunDirection, cascade);
+            frameLighting.ShadowCascades[cascade] = SunShadow.GetCascade(_camera.Position, _shadowDirection, cascade);
         }
 
         var lighting = frame.AllocateUniform(Unsafe.SizeOf<FrameLighting>());
@@ -178,6 +205,12 @@ internal sealed class WorldLayer : IDisposable
         _overlayQuadRenderer3D.SetCamera(_camera.ViewProj);
         _textRenderer.SetCamera(_camera.ViewProj);
         _lineRenderer3D.SetCamera(_camera.ViewProj, _camera.Position);
+
+        // There is no sky yet, so a marker stands in for the sun. The level draws after it, so the terrain covers it:
+        if (_daylight.SunIsUp)
+        {
+            _overlayQuadRenderer3D.DrawBillboard3D(_camera.Position + _daylight.SunDirection * SunMarkerDistance, _daylight.SunDirection, new Vector2(SunMarkerSize), new Vector4(1.0f, 0.9f, 0.6f, 1.0f));
+        }
 
         if (brushTarget != null)
         {
@@ -231,6 +264,13 @@ internal sealed class WorldLayer : IDisposable
             ImGui.Separator();
             ImGui.Text("Light:");
             ImGui.Text($"Sun elevation: {MathF.Asin(_daylight.SunDirection.Y) * 180.0f / MathF.PI:F0} deg");
+
+            // The sun's bearing against the view's own, so the panel says where to look for it:
+            var sunBearing = MathF.Atan2(Vector3.Dot(_daylight.SunDirection, _camera.Right), Vector3.Dot(_daylight.SunDirection, Camera3D.GetForward(_camera.Yaw, 0.0f))) * 180.0f / MathF.PI;
+            ImGui.Text($"Sun bearing: {MathF.Abs(sunBearing):F0} deg {(sunBearing >= 0.0f ? "right" : "left")} of the view");
+
+            ImGui.Combo("Debug view", ref _debugView, DebugViewNames, DebugViewNames.Length);
+            ImGui.Checkbox("Freeze shadow direction", ref _freezeShadowDirection);
 
             for (var cascade = 0; cascade < SunShadow.CascadeCount; cascade++)
             {

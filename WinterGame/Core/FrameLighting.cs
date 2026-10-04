@@ -23,6 +23,11 @@ internal struct FrameLighting
     public Vector4 SkyHorizon;
 
     public ShadowCascades ShadowCascades;
+
+    /// <summary>
+    ///     The debug view in x: 0 is none, 1 tints every sunlit pixel by the shadow cascade it read, and 2 by the angle between its surface and the light.
+    /// </summary>
+    public Vector4 DebugOptions;
 }
 
 /// <summary>

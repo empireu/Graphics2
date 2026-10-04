@@ -22,6 +22,7 @@ struct FrameLighting {
     float4 skyZenith;
     float4 skyHorizon;
     ShadowCascade shadowCascades[ShadowCascadeCount];
+    float4 debugOptions;
 };
 
 [[vk::binding(1, 0)]] ConstantBuffer<FrameLighting> lighting;
@@ -40,6 +41,21 @@ static const float3 MaterialAlbedo[MaterialCount] = {
     float3(0.47, 0.46, 0.42),   // limestone
     float3(0.10, 0.10, 0.12),   // basalt
     float3(0.22, 0.20, 0.21)    // gneiss
+};
+
+// The debug view's colour for each shadow cascade, red, green and blue from the smallest:
+static const float3 ShadowCascadeTints[ShadowCascadeCount] = {
+    float3(1.0, 0.45, 0.45),
+    float3(0.45, 1.0, 0.45),
+    float3(0.45, 0.45, 1.0)
+};
+
+// The debug view's colour for how far a shadow texel stretches across a surface at its angle to the light, green, yellow, orange and red for under 2, 2 to 4, 4 to 11 and over 11 times:
+static const float3 LightAngleTints[4] = {
+    float3(0.45, 1.0, 0.45),
+    float3(1.0, 1.0, 0.35),
+    float3(1.0, 0.65, 0.3),
+    float3(1.0, 0.3, 0.3)
 };
 
 struct VertexInput {
@@ -120,8 +136,8 @@ float FilteredShadow(uint cascade, float2 tileTexel, float depth, float2 mapSize
     return sum / 144.0;
 }
 
-// The fraction of the directional light that reaches a point, from the smallest cascade that holds it.
-float SunShadow(float3 worldPosition, float3 normal, float normalDotLight) {
+// The fraction of the directional light that reaches a point, from the smallest cascade that holds it, which is ShadowCascadeCount when none does.
+float SunShadow(float3 worldPosition, float3 normal, float normalDotLight, out uint cascadeUsed) {
     uint mapWidth;
     uint cascadeSize;
     shadowMap.GetDimensions(mapWidth, cascadeSize);
@@ -140,10 +156,12 @@ float SunShadow(float3 worldPosition, float3 normal, float normalDotLight) {
         float4 clip = mul(float4(lookupPosition, 1.0), shadowCascade.viewProj);
 
         if (all(abs(clip.xy) < inside) && clip.z <= 1.0) {
+            cascadeUsed = cascade;
             return FilteredShadow(cascade, (clip.xy * 0.5 + 0.5) * cascadeSize, clip.z, float2(mapWidth, cascadeSize));
         }
     }
 
+    cascadeUsed = ShadowCascadeCount;
     return 1.0;
 }
 
@@ -156,10 +174,23 @@ float4 fsMain(VertexOutput input) : SV_TARGET {
     float3 albedo = MaterialAlbedo[material];
 
     float normalDotLight = saturate(dot(normal, lighting.lightDirection.xyz));
-    float shadow = normalDotLight > 0.0 ? SunShadow(input.worldPosition, normal, normalDotLight) : 0.0;
+    uint shadowCascade = ShadowCascadeCount;
+    float shadow = normalDotLight > 0.0 ? SunShadow(input.worldPosition, normal, normalDotLight, shadowCascade) : 0.0;
 
     float3 sky = lerp(lighting.skyHorizon.rgb, lighting.skyZenith.rgb, saturate(normal.y));
     float3 direct = lighting.lightRadiance.rgb * normalDotLight * shadow;
+    float3 color = albedo * (sky + direct);
 
-    return float4(albedo * (sky + direct), 1.0);
+    uint debugView = uint(lighting.debugOptions.x);
+
+    if (debugView == 1 && shadowCascade < ShadowCascadeCount) {
+        color *= ShadowCascadeTints[shadowCascade];
+    }
+    else if (debugView == 2 && normalDotLight > 0.0) {
+        // A texel stretches by one over the cosine of the angle between the normal and the light, 2 at 0.5, 4 at 0.25 and 11 at 0.09:
+        uint band = normalDotLight >= 0.5 ? 0 : normalDotLight >= 0.25 ? 1 : normalDotLight >= 0.09 ? 2 : 3;
+        color *= LightAngleTints[band];
+    }
+
+    return float4(color, 1.0);
 }
