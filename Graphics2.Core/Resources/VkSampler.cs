@@ -26,6 +26,11 @@ public sealed class SamplerDescription
     public SamplerAddressMode AddressModeW { get; init; } = SamplerAddressMode.Repeat;
     public bool AnisotropyEnabled { get; init; } = true;
     public float MaxAnisotropy { get; init; } = 16.0f;
+
+    /// <summary>
+    ///     When set, the sampler compares a reference value against each texel with this operation and filters the results, which is what a shadow map lookup needs. The shader declares it as a <c>SamplerComparisonState</c>.
+    /// </summary>
+    public CompareOp? Compare { get; init; }
 }
 
 public sealed unsafe class VkSampler : IDeviceResource
@@ -57,8 +62,10 @@ public sealed unsafe class VkSampler : IDeviceResource
             MaxAnisotropy = description.MaxAnisotropy,
             BorderColor = BorderColor.IntOpaqueBlack,
             UnnormalizedCoordinates = false,
-            CompareEnable = false,
-            CompareOp = Silk.NET.Vulkan.CompareOp.Never,
+            CompareEnable = description.Compare != null,
+            CompareOp = description.Compare != null
+                ? VulkanResourceFactory.CompareOpToVk(description.Compare.Value)
+                : Silk.NET.Vulkan.CompareOp.Never,
             MipmapMode = SamplerMipmapMode.Linear
         };
 

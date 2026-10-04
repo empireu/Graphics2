@@ -1305,7 +1305,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         _ => throw new ArgumentOutOfRangeException(nameof(factor))
     };
 
-    private static Silk.NET.Vulkan.CompareOp CompareOpToVk(CompareOp op) => op switch
+    internal static Silk.NET.Vulkan.CompareOp CompareOpToVk(CompareOp op) => op switch
     {
         CompareOp.Never => Silk.NET.Vulkan.CompareOp.Never,
         CompareOp.Less => Silk.NET.Vulkan.CompareOp.Less,
