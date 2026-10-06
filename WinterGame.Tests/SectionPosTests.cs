@@ -1,4 +1,5 @@
 using WinterGame.World;
+using WinterGame.World.Storage;
 
 namespace WinterGame.Tests;
 

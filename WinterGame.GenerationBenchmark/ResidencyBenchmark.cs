@@ -5,6 +5,10 @@ using System.Runtime.InteropServices;
 using Graphics2.Mathematics;
 using WinterGame.Jobs;
 using WinterGame.World;
+using WinterGame.World.Generation;
+using WinterGame.World.Level;
+using WinterGame.World.Level.Residency;
+using WinterGame.World.Storage;
 
 namespace WinterGame.GenerationBenchmark;
 
@@ -29,7 +33,7 @@ internal static class ResidencyBenchmark
         var graph = TerrainGraph.Build(options.Seed, new TerrainConfig());
         var center = SkyCenter(graph, options.VerticalRadius);
         var loadShape = Benchmark.GetLoadShape(center, options.Radius, options.VerticalRadius, out _);
-        var keepSections = Benchmark.GetLoadShape(center, options.Radius + Level.KeepMargin, options.VerticalRadius + Level.KeepMargin, out _).Length;
+        var keepSections = Benchmark.GetLoadShape(center, options.Radius + WorldLevel.KeepMargin, options.VerticalRadius + WorldLevel.KeepMargin, out _).Length;
         var tieredCompilation = Environment.GetEnvironmentVariable("DOTNET_TieredCompilation") == "0" ? "off" : "on";
 
         Console.WriteLine("Level residency benchmark");
@@ -40,7 +44,7 @@ internal static class ResidencyBenchmark
 
         // The level is declared last so it is disposed first:
         using var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = 1 });
-        using var level = new Level(scheduler, graph, unloadsPerUpdate: options.UnloadsPerUpdate);
+        using var level = new WorldLevel(scheduler, graph, unloadsPerUpdate: options.UnloadsPerUpdate);
 
         // One section loaded and unloaded first, so the arena's shared descriptor page is not counted as residency memory:
         level.GetOrLoadSection(new SectionPos(center.X - 10_000, center.Y, center.Z));
@@ -89,7 +93,7 @@ internal static class ResidencyBenchmark
     /// <summary>
     ///     Walks out and back along X, diagonally and up, and teleports away and back, so every path of a move and an update has run often enough to be promoted.
     /// </summary>
-    private static void Warmup(Level level, LevelTicket ticket)
+    private static void Warmup(WorldLevel level, LevelTicket ticket)
     {
         var home = ticket.Center;
 
@@ -114,7 +118,7 @@ internal static class ResidencyBenchmark
         }
     }
 
-    private static void StepTo(Level level, LevelTicket ticket, SectionPos center)
+    private static void StepTo(WorldLevel level, LevelTicket ticket, SectionPos center)
     {
         level.MoveTicket(ticket, center);
         level.Update();
@@ -123,7 +127,7 @@ internal static class ResidencyBenchmark
     /// <summary>
     ///     Random section lookups and random voxel reads over the load shape, and voxel reads along lines through it, which is how a raycast reads.
     /// </summary>
-    private static void MeasureReads(Level level, SectionPos[] loadShape, int seed)
+    private static void MeasureReads(WorldLevel level, SectionPos[] loadShape, int seed)
     {
         var random = new Random(seed);
         var sections = new SectionPos[ReadCount];
@@ -185,13 +189,13 @@ internal static class ResidencyBenchmark
         Console.WriteLine($"  TryGetSection at random sections:   {Nanoseconds(bestSections):F1} ns");
         Console.WriteLine($"  ReadPoint at random voxels:         {Nanoseconds(bestVoxels):F1} ns");
         Console.WriteLine($"  ReadPoint along lines of {LineLength} voxels: {Nanoseconds(bestLines):F1} ns");
-        Console.WriteLine($"  The same through one FastSectionAccessor per line: {Nanoseconds(bestAccessorLines):F1} ns");
+        Console.WriteLine($"  The same through one FastLevelAccessor per line: {Nanoseconds(bestAccessorLines):F1} ns");
         Console.WriteLine();
     }
 
     // The read loops are compiled fully optimized up front, since each runs only once per round and would otherwise be timed as on-stack replacement code:
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static long ReadSections(Level level, SectionPos[] sections)
+    private static long ReadSections(WorldLevel level, SectionPos[] sections)
     {
         var checksum = 0L;
 
@@ -207,7 +211,7 @@ internal static class ResidencyBenchmark
     }
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static long ReadVoxels(Level level, Vector3i[] voxels)
+    private static long ReadVoxels(WorldLevel level, Vector3i[] voxels)
     {
         var checksum = 0L;
 
@@ -221,7 +225,7 @@ internal static class ResidencyBenchmark
     }
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static long ReadLines(Level level, Vector3i[] lineStarts)
+    private static long ReadLines(WorldLevel level, Vector3i[] lineStarts)
     {
         var checksum = 0L;
 
@@ -238,13 +242,13 @@ internal static class ResidencyBenchmark
     }
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static long ReadLinesWithAccessor(Level level, Vector3i[] lineStarts)
+    private static long ReadLinesWithAccessor(WorldLevel level, Vector3i[] lineStarts)
     {
         var checksum = 0L;
 
         foreach (var lineStart in lineStarts)
         {
-            var accessor = new FastSectionAccessor(level);
+            var accessor = new FastLevelAccessor(level);
 
             for (var offset = 0; offset < LineLength; offset++)
             {
@@ -259,7 +263,7 @@ internal static class ResidencyBenchmark
     /// <summary>
     ///     Steps the ticket away from where it stands, timing each move and the update after it, then puts it back and drains the unloads, untimed.
     /// </summary>
-    private static (double[] Moves, double[] Updates) MeasureSteps(Level level, LevelTicket ticket, int count, Func<SectionPos, int, SectionPos> target)
+    private static (double[] Moves, double[] Updates) MeasureSteps(WorldLevel level, LevelTicket ticket, int count, Func<SectionPos, int, SectionPos> target)
     {
         var start = ticket.Center;
         var moveMilliseconds = new double[count];
@@ -287,7 +291,7 @@ internal static class ResidencyBenchmark
     /// <summary>
     ///     Jumps far away, loads the new shape, then removes the ticket and times the updates that drain the backlog.
     /// </summary>
-    private static void MeasureTeleport(Level level, LevelTicket ticket, SectionPos center, BenchmarkOptions options)
+    private static void MeasureTeleport(WorldLevel level, LevelTicket ticket, SectionPos center, BenchmarkOptions options)
     {
         var moveStart = Stopwatch.GetTimestamp();
 
@@ -325,7 +329,7 @@ internal static class ResidencyBenchmark
         Console.WriteLine();
     }
 
-    private static void Drain(Level level)
+    private static void Drain(WorldLevel level)
     {
         while (level.UnloadQueueCount > 0)
         {
@@ -333,7 +337,7 @@ internal static class ResidencyBenchmark
         }
     }
 
-    private static void RequireLoaded(Level level, SectionPos[] shape)
+    private static void RequireLoaded(WorldLevel level, SectionPos[] shape)
     {
         foreach (var position in shape)
         {

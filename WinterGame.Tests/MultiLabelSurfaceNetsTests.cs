@@ -2,7 +2,7 @@ using System.Numerics;
 using Graphics2.Data;
 using Graphics2.Mathematics;
 using WinterGame.World;
-using WinterGame.World.Render;
+using WinterGame.World.Mesher;
 
 namespace WinterGame.Tests;
 

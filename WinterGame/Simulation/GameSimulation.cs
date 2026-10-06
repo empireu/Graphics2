@@ -4,6 +4,11 @@ using Graphics2.Windowing.Input;
 using WinterGame.Jobs;
 using WinterGame.Utilities;
 using WinterGame.World;
+using WinterGame.World.Generation;
+using WinterGame.World.Level;
+using WinterGame.World.Level.Meshing;
+using WinterGame.World.Level.Residency;
+using WinterGame.World.Storage;
 
 namespace WinterGame.Simulation;
 
@@ -33,7 +38,7 @@ internal sealed class GameSimulation : IDisposable
 
     private readonly Player _player;
     private readonly WorldClock _clock = new(StartClockTicks);
-    private readonly Level _level;
+    private readonly WorldLevel _level;
     private readonly LevelTicket _playerTicket;
     private readonly SectionMeshPublisher _meshPublisher;
     private readonly DebugBrush _brush = new();
@@ -60,7 +65,7 @@ internal sealed class GameSimulation : IDisposable
         var spawnPosition = new Vector3(0.0f, new TerrainGraphSource(graph).Elevation(0, 0) + SpawnHeight, 0.0f);
 
         _player = new Player(spawnPosition);
-        _level = new Level(scheduler, graph, meshing: meshing);
+        _level = new WorldLevel(scheduler, graph, meshing: meshing);
         _playerTicket = _level.AddTicket(GetSection(spawnPosition), TicketHorizontalRadius, TicketVerticalRadius);
         _meshPublisher = new SectionMeshPublisher(scheduler, meshing, meshChannel);
     }

@@ -3,6 +3,11 @@ using Graphics2.Mathematics;
 using WinterGame.Jobs;
 using WinterGame.Utilities;
 using WinterGame.World;
+using WinterGame.World.Generation;
+using WinterGame.World.Level;
+using WinterGame.World.Level.Loading;
+using WinterGame.World.Level.Meshing;
+using WinterGame.World.Level.Residency;
 using WinterGame.World.Storage;
 
 namespace WinterGame.Tests;
@@ -17,12 +22,12 @@ public class LevelTests
     private sealed class Harness : IDisposable
     {
         public readonly JobScheduler Scheduler = new(new JobSchedulerDescription { ThreadCount = 2 });
-        public readonly Level Level;
+        public readonly WorldLevel Level;
 
-        public Harness(int slotCount = SectionGenerationExecutor.DefaultSlotCount, int unloadsPerUpdate = Level.DefaultUnloadsPerUpdate)
+        public Harness(int slotCount = SectionGenerationExecutor.DefaultSlotCount, int unloadsPerUpdate = WorldLevel.DefaultUnloadsPerUpdate)
         {
             WgAssert.InitGameThread();
-            Level = new Level(Scheduler, Graph, slotCount, unloadsPerUpdate);
+            Level = new WorldLevel(Scheduler, Graph, slotCount, unloadsPerUpdate);
         }
 
         /// <summary>
@@ -60,7 +65,7 @@ public class LevelTests
 
         scheduler.Start();
 
-        Assert.Throws<InvalidOperationException>(() => new Level(scheduler, Graph));
+        Assert.Throws<InvalidOperationException>(() => new WorldLevel(scheduler, Graph));
     }
 
     [Fact]
@@ -856,7 +861,7 @@ public class LevelTests
         WgAssert.InitGameThread();
 
         var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = 2 });
-        var level = new Level(scheduler, Graph);
+        var level = new WorldLevel(scheduler, Graph);
         var center = SurfaceSection(0, 0);
 
         scheduler.Start();
@@ -891,7 +896,7 @@ public class LevelTests
 
         // Real generation on the surface, so the work runs on every core:
         var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = Math.Max(2, Environment.ProcessorCount - 1) });
-        var level = new Level(scheduler, Graph, slotCount: 32, unloadsPerUpdate: 8);
+        var level = new WorldLevel(scheduler, Graph, slotCount: 32, unloadsPerUpdate: 8);
         var model = new MeshChangeModel(level);
 
         scheduler.Start();
@@ -919,8 +924,8 @@ public class LevelTests
 
                 // A keep margin section is claimed, so a synchronous load of it stays and can complete the neighborhoods beside it.
                 // One past the keep shape is unloaded by the next update, before anything looks at it:
-                level.GetOrLoadSection(new SectionPos(center.X + horizontalRadius + Level.KeepMargin, center.Y, center.Z));
-                level.GetOrLoadSection(new SectionPos(center.X, center.Y, center.Z - horizontalRadius - Level.KeepMargin - 2));
+                level.GetOrLoadSection(new SectionPos(center.X + horizontalRadius + WorldLevel.KeepMargin, center.Y, center.Z));
+                level.GetOrLoadSection(new SectionPos(center.X, center.Y, center.Z - horizontalRadius - WorldLevel.KeepMargin - 2));
                 UpdateUntilSettled(level, model, $"Synchronous loads at ({columnX}, {columnZ})");
             }
 
@@ -1004,7 +1009,7 @@ public class LevelTests
     /// <summary>
     ///     Loads the sections diagonal to <paramref name="center"/> in X and Z on its three layers, which a ticket of radius 1 claims in its keep margin but never loads, so the center's neighborhood is complete.
     /// </summary>
-    private static void LoadDiagonalNeighbors(Level level, SectionPos center)
+    private static void LoadDiagonalNeighbors(WorldLevel level, SectionPos center)
     {
         for (var y = center.Y - 1; y <= center.Y + 1; y++)
         {
@@ -1031,7 +1036,7 @@ public class LevelTests
     /// <summary>
     ///     The sections reported for meshing, checked after every update against the level's statuses and a brute-force scan of each section's edges.
     /// </summary>
-    private sealed class MeshChangeModel(Level level)
+    private sealed class MeshChangeModel(WorldLevel level)
     {
         private const int OwnedSampleSize = SectionPos.SectionSize + 1;
 
@@ -1053,7 +1058,7 @@ public class LevelTests
         /// </summary>
         public void AddRegion(SectionPos center, int horizontalRadius, int verticalRadius)
         {
-            foreach (var position in Box(center, horizontalRadius + Level.KeepMargin + 1, verticalRadius + Level.KeepMargin + 1))
+            foreach (var position in Box(center, horizontalRadius + WorldLevel.KeepMargin + 1, verticalRadius + WorldLevel.KeepMargin + 1))
             {
                 _region.Add(position);
             }
@@ -1189,7 +1194,7 @@ public class LevelTests
     /// <summary>
     ///     Updates a level on a running scheduler, checking the model after every update, until nothing is pending, generating or waiting to unload.
     /// </summary>
-    private static void UpdateUntilSettled(Level level, MeshChangeModel model, string context)
+    private static void UpdateUntilSettled(WorldLevel level, MeshChangeModel model, string context)
     {
         var deadline = DateTime.UtcNow.AddSeconds(60);
 
@@ -1248,14 +1253,14 @@ public class LevelTests
     ///     Counts each section's keep shapes by testing every section of every ticket's box, and checks the level's counts and its entries against that.
     ///     The level is never updated here, so every section is unloaded and has an entry exactly when some keep shape holds it.
     /// </summary>
-    private static void AssertTicketCountsMatchBruteForce(Level level, List<LevelTicket> tickets, int step)
+    private static void AssertTicketCountsMatchBruteForce(WorldLevel level, List<LevelTicket> tickets, int step)
     {
         var expectedCounts = new Dictionary<SectionPos, int>();
 
         foreach (var ticket in tickets)
         {
-            var keepHorizontal = ticket.HorizontalRadius + Level.KeepMargin;
-            var keepVertical = ticket.VerticalRadius + Level.KeepMargin;
+            var keepHorizontal = ticket.HorizontalRadius + WorldLevel.KeepMargin;
+            var keepVertical = ticket.VerticalRadius + WorldLevel.KeepMargin;
 
             foreach (var position in Box(ticket.Center, keepHorizontal, keepVertical))
             {
@@ -1283,7 +1288,7 @@ public class LevelTests
     ///     Checks right after an update that every section inside some load shape that is neither generating nor loaded is queued, whichever tickets are satisfied, and that nothing outside every load shape is.
     ///     A queued section may be generating or loaded when two load shapes queued it and one of its entries was taken.
     /// </summary>
-    private static void AssertLoadQueueHoldsTheUnloadedWantedSections(Level level, List<LevelTicket> tickets, int step)
+    private static void AssertLoadQueueHoldsTheUnloadedWantedSections(WorldLevel level, List<LevelTicket> tickets, int step)
     {
         var wanted = new HashSet<SectionPos>();
 
@@ -1320,7 +1325,7 @@ public class LevelTests
     /// <summary>
     ///     Adds, removes or moves a ticket the way the brute-force count test does, keeping every center's Y in [<paramref name="minimumY"/>, <paramref name="maximumY"/>].
     /// </summary>
-    private static void ApplyRandomTicketChange(Level level, List<LevelTicket> tickets, Random random, int minimumY, int maximumY)
+    private static void ApplyRandomTicketChange(WorldLevel level, List<LevelTicket> tickets, Random random, int minimumY, int maximumY)
     {
         var choice = random.Next(10);
 
@@ -1355,15 +1360,15 @@ public class LevelTests
     ///     With every shape above the surface, an update loads every section a load shape holds, and a loaded section no ticket holds waits in the unload queue.
     ///     A section that stayed loaded since the previous check has to be the same section, never one destroyed and loaded again.
     /// </summary>
-    private static void AssertResidencyMatchesModel(Level level, List<LevelTicket> tickets, Dictionary<SectionPos, int> readySlots, int step)
+    private static void AssertResidencyMatchesModel(WorldLevel level, List<LevelTicket> tickets, Dictionary<SectionPos, int> readySlots, int step)
     {
         var expectedCounts = new Dictionary<SectionPos, int>();
         var wanted = new HashSet<SectionPos>();
 
         foreach (var ticket in tickets)
         {
-            var keepHorizontal = ticket.HorizontalRadius + Level.KeepMargin;
-            var keepVertical = ticket.VerticalRadius + Level.KeepMargin;
+            var keepHorizontal = ticket.HorizontalRadius + WorldLevel.KeepMargin;
+            var keepVertical = ticket.VerticalRadius + WorldLevel.KeepMargin;
 
             foreach (var position in Box(ticket.Center, keepHorizontal, keepVertical))
             {

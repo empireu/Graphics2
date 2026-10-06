@@ -3,6 +3,10 @@ using System.Runtime;
 using System.Runtime.InteropServices;
 using WinterGame.Jobs;
 using WinterGame.World;
+using WinterGame.World.Generation;
+using WinterGame.World.Level;
+using WinterGame.World.Level.Residency;
+using WinterGame.World.Storage;
 
 namespace WinterGame.GenerationBenchmark;
 
@@ -96,7 +100,7 @@ internal static class LoadQueueBenchmark
     private static void RunScenario(TerrainGraph graph, BenchmarkOptions options, Scenario scenario, bool report)
     {
         var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = 1 });
-        var level = new Level(scheduler, graph, unloadsPerUpdate: options.UnloadsPerUpdate);
+        var level = new WorldLevel(scheduler, graph, unloadsPerUpdate: options.UnloadsPerUpdate);
 
         try
         {
@@ -108,7 +112,7 @@ internal static class LoadQueueBenchmark
             for (var index = 0; index < scenario.Walkers; index++)
             {
                 // Far enough apart that no two keep shapes overlap:
-                var offsetZ = index * (2 * (options.Radius + Level.KeepMargin) + 1);
+                var offsetZ = index * (2 * (options.Radius + WorldLevel.KeepMargin) + 1);
 
                 walkers.Add(level.AddTicket(new SectionPos(walkerStart.X, walkerStart.Y, walkerStart.Z + offsetZ), options.Radius, options.VerticalRadius));
             }
@@ -168,7 +172,7 @@ internal static class LoadQueueBenchmark
     /// <summary>
     ///     Adds the machines on a square grid around the origin column and loads each one's load shape synchronously, which is how a machine is meant to be added.
     /// </summary>
-    private static void AddMachines(Level level, BenchmarkOptions options, int count, int centerY, List<LevelTicket> machines, out double addMilliseconds, out double loadMilliseconds)
+    private static void AddMachines(WorldLevel level, BenchmarkOptions options, int count, int centerY, List<LevelTicket> machines, out double addMilliseconds, out double loadMilliseconds)
     {
         var side = (int)Math.Ceiling(Math.Sqrt(count));
 
@@ -197,7 +201,7 @@ internal static class LoadQueueBenchmark
     /// <summary>
     ///     Steps the moving tickets out and back along X, so every path of a step and an update has run often enough to be promoted, then drains the unloads.
     /// </summary>
-    private static void Warmup(Level level, LevelTicket[] moving)
+    private static void Warmup(WorldLevel level, LevelTicket[] moving)
     {
         for (var round = 0; round < WarmupRounds; round++)
         {
@@ -223,7 +227,7 @@ internal static class LoadQueueBenchmark
         }
     }
 
-    private static StepTimes MeasureSteps(Level level, LevelTicket[] moving, int count, int deltaX, int deltaZ)
+    private static StepTimes MeasureSteps(WorldLevel level, LevelTicket[] moving, int count, int deltaX, int deltaZ)
     {
         var times = new StepTimes(count);
         var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
@@ -266,7 +270,7 @@ internal static class LoadQueueBenchmark
         return times;
     }
 
-    private static void Step(Level level, LevelTicket[] moving, int deltaX, int deltaZ)
+    private static void Step(WorldLevel level, LevelTicket[] moving, int deltaX, int deltaZ)
     {
         foreach (var ticket in moving)
         {

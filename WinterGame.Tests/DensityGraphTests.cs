@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using WinterGame.World.Generation;
+using WinterGame.World.Generation.GraphProgram;
 
 namespace WinterGame.Tests;
 

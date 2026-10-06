@@ -3,6 +3,8 @@ using Graphics2.Data;
 using Graphics2.Mathematics;
 using WinterGame.World;
 using WinterGame.World.Generation;
+using WinterGame.World.Generation.GraphProgram;
+using WinterGame.World.Level;
 
 namespace WinterGame.Simulation;
 
@@ -49,7 +51,7 @@ internal sealed class DebugBrush
     /// <summary>
     ///     Digs and then fills when asked, each aimed along <paramref name="direction"/> from <paramref name="eye"/> in metres, then aims again for <see cref="Target"/>.
     /// </summary>
-    public void Tick(Level level, Vector3 eye, Vector3 direction, bool dig, bool fill)
+    public void Tick(WorldLevel level, Vector3 eye, Vector3 direction, bool dig, bool fill)
     {
         if (dig && TryPick(level, eye, direction, out var digCenter))
         {
@@ -68,7 +70,7 @@ internal sealed class DebugBrush
     ///     Walks the samples along the ray and returns where it enters the first solid one, in metres.
     ///     The walk gives up past the reach and at a section that is not loaded, which would read as air.
     /// </summary>
-    private static bool TryPick(Level level, Vector3 eye, Vector3 direction, out Vector3 hit)
+    private static bool TryPick(WorldLevel level, Vector3 eye, Vector3 direction, out Vector3 hit)
     {
         hit = default;
 
@@ -90,7 +92,7 @@ internal sealed class DebugBrush
 
         var reach = Reach / WorldConstants.VoxelSize;
         var distance = 0.0f;
-        var accessor = new FastSectionAccessor(level);
+        var accessor = new FastLevelAccessor(level);
 
         while (distance <= reach)
         {
@@ -150,7 +152,7 @@ internal sealed class DebugBrush
     ///     Digs or fills the sphere around <paramref name="center"/>, in metres, with the generator's ramp at its surface.
     ///     A dig leaves the null material wherever a sample turns to air, and a fill writes its material only where a sample turns solid, so the ground keeps its own.
     /// </summary>
-    private void Apply(Level level, Vector3 center, bool fill)
+    private void Apply(WorldLevel level, Vector3 center, bool fill)
     {
         var centerInSamples = center / WorldConstants.VoxelSize;
         var centerSample = new Vector3i((int)MathF.Floor(centerInSamples.X), (int)MathF.Floor(centerInSamples.Y), (int)MathF.Floor(centerInSamples.Z));

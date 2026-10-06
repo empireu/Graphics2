@@ -2,6 +2,7 @@ using Graphics2.Data;
 using Graphics2.Mathematics;
 using WinterGame.World;
 using WinterGame.World.Generation;
+using WinterGame.World.Generation.GraphProgram;
 
 namespace WinterGame.Tests;
 

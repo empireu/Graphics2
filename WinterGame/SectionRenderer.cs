@@ -3,7 +3,7 @@ using Graphics2.Core.Render;
 using Graphics2.Core.Resources;
 using WinterGame.Core;
 using WinterGame.Utilities;
-using WinterGame.World.Render;
+using WinterGame.World.Mesher;
 
 namespace WinterGame;
 

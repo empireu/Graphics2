@@ -7,7 +7,7 @@ using Graphics2.Core.Resources;
 using Silk.NET.Maths;
 using WinterGame.Core;
 using WinterGame.Utilities;
-using WinterGame.World.Render;
+using WinterGame.World.Mesher;
 
 namespace WinterGame;
 

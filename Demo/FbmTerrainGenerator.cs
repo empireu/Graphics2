@@ -5,7 +5,7 @@ using WinterGame.World;
 
 namespace Demo;
 
-public sealed class FbmTerrainGenerator : IVoxelSource
+public sealed class FbmTerrainGenerator
 {
     public const byte IsoLevel = 127;
 
@@ -65,7 +65,7 @@ public sealed class FbmTerrainGenerator : IVoxelSource
     }
 
     /// <summary>
-    ///     The density at one voxel, shared by the interface's point read and the box fill's inner loop, so the two can never disagree about a position.
+    ///     The density at one voxel, shared by the point read and the box fill's inner loop, so the two can never disagree about a position.
     /// </summary>
     private byte ContentAt(int x, int y, int z)
     {

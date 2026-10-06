@@ -3,6 +3,8 @@ using Graphics2.Mathematics;
 using WinterGame.Jobs;
 using WinterGame.Utilities;
 using WinterGame.World;
+using WinterGame.World.Level;
+using WinterGame.World.Level.Meshing;
 using WinterGame.World.Storage;
 
 namespace WinterGame.Tests;
@@ -25,7 +27,7 @@ public class LevelEditTests
     private sealed class Harness : IDisposable
     {
         public readonly JobScheduler Scheduler;
-        public readonly Level Level;
+        public readonly WorldLevel Level;
         public readonly SectionPos Center = LevelTests.SurfaceSection(0, 0);
 
         private readonly List<SectionMeshChange> _changes = [];
@@ -35,7 +37,7 @@ public class LevelEditTests
             WgAssert.InitGameThread();
 
             Scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = Math.Max(2, Environment.ProcessorCount - 1) });
-            Level = new Level(Scheduler, LevelTests.Graph, slotCount: 32);
+            Level = new WorldLevel(Scheduler, LevelTests.Graph, slotCount: 32);
             Scheduler.Start();
             Level.AddTicket(Center, HorizontalRadius, VerticalRadius);
 
@@ -213,7 +215,7 @@ public class LevelEditTests
         WgAssert.InitGameThread();
 
         using var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = 1 });
-        var level = new Level(scheduler, LevelTests.Graph);
+        var level = new WorldLevel(scheduler, LevelTests.Graph);
         var first = new SectionPos(0, LevelTests.LowestSkySectionY() + 10, 0);
         var second = first with { X = first.X + 1 };
 
@@ -374,7 +376,7 @@ public class LevelEditTests
     /// <summary>
     ///     The ready sections whose window holds a sample of the box and that have a mesh, or now hold a surface with their neighborhood ready.
     /// </summary>
-    private static HashSet<SectionPos> GetSectionsDueAnEdit(Level level, HashSet<SectionPos> reported, Vector3i min, Vector3i max)
+    private static HashSet<SectionPos> GetSectionsDueAnEdit(WorldLevel level, HashSet<SectionPos> reported, Vector3i min, Vector3i max)
     {
         var due = new HashSet<SectionPos>();
         var sectionMin = (min - 2 * SectionPos.SectionSize) >> SectionPos.Log;
@@ -409,7 +411,7 @@ public class LevelEditTests
         return due;
     }
 
-    private static bool IsNeighborhoodReady(Level level, SectionPos position)
+    private static bool IsNeighborhoodReady(WorldLevel level, SectionPos position)
     {
         foreach (var neighbor in LevelTests.Box(position, 1, 1))
         {
@@ -425,7 +427,7 @@ public class LevelEditTests
     /// <summary>
     ///     Whether an edge some cell of the section owns crosses the iso level, scanned from what the level holds now.
     /// </summary>
-    private static bool HasSurface(Level level, SectionPos position)
+    private static bool HasSurface(WorldLevel level, SectionPos position)
     {
         const int ownedSize = SectionPos.SectionSize + 1;
 
@@ -461,7 +463,7 @@ public class LevelEditTests
     /// <summary>
     ///     Checks the content sides the level holds for every section of a region against a scan of the region's model, which starts at <paramref name="first"/>.
     /// </summary>
-    private static void AssertContentSides(Level level, Memory3D<byte> model, SectionPos first, string context)
+    private static void AssertContentSides(WorldLevel level, Memory3D<byte> model, SectionPos first, string context)
     {
         const int size = SectionPos.SectionSize;
 

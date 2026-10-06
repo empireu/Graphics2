@@ -5,6 +5,7 @@ using Silk.NET.Maths;
 using WinterGame.Simulation;
 using WinterGame.Utilities;
 using WinterGame.World;
+using WinterGame.World.Level.Meshing;
 
 namespace WinterGame;
 

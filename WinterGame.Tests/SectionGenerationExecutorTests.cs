@@ -2,6 +2,8 @@ using Graphics2.Data;
 using WinterGame.Jobs;
 using WinterGame.Utilities;
 using WinterGame.World;
+using WinterGame.World.Generation;
+using WinterGame.World.Level.Loading;
 using WinterGame.World.Storage;
 
 namespace WinterGame.Tests;

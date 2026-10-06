@@ -4,6 +4,7 @@ using Graphics2.Windowing.Input;
 using WinterGame.Jobs;
 using WinterGame.Utilities;
 using WinterGame.World;
+using WinterGame.World.Level.Meshing;
 
 namespace WinterGame.Simulation;
 

@@ -6,6 +6,10 @@ using Graphics2.Data;
 using WinterGame.GenerationBenchmark;
 using WinterGame.Jobs;
 using WinterGame.World;
+using WinterGame.World.Generation;
+using WinterGame.World.Level;
+using WinterGame.World.Level.Loading;
+using WinterGame.World.Level.Residency;
 using WinterGame.World.Storage;
 
 // ReSharper disable FieldCanBeMadeReadOnly.Global
@@ -219,11 +223,11 @@ internal static class Benchmark
         int workers,
         int slots,
         double tickHz,
-        Action<Level, LevelTicket>? afterFill)
+        Action<WorldLevel, LevelTicket>? afterFill)
     {
         // The level is declared last so it is disposed first, while the scheduler still runs the work it waits on:
         using var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = workers });
-        using var level = new Level(scheduler, graph, slots, options.UnloadsPerUpdate);
+        using var level = new WorldLevel(scheduler, graph, slots, options.UnloadsPerUpdate);
 
         scheduler.Start();
 
@@ -283,7 +287,7 @@ internal static class Benchmark
     /// <summary>
     ///     Classifies every loaded section and counts its dense bricks, then projects the view radius at which each voxel page size fills the arena.
     /// </summary>
-    private static void MeasureStorage(Level level, SectionPos[] shape, int columns)
+    private static void MeasureStorage(WorldLevel level, SectionPos[] shape, int columns)
     {
         var kinds = Enum.GetValues<SectionKind>();
         var sections = new long[kinds.Length];
@@ -355,7 +359,7 @@ internal static class Benchmark
     ///     Walks the ticket one section at a time along X and then up, timing the main thread's share: the move itself and the update after it.
     ///     Then jumps far away, removes the ticket so nothing new loads, and times the updates that drain the unload backlog, which is what the unload budget is calibrated from.
     /// </summary>
-    private static void MeasureMoves(Level level, LevelTicket ticket, BenchmarkOptions options)
+    private static void MeasureMoves(WorldLevel level, LevelTicket ticket, BenchmarkOptions options)
     {
         var start = ticket.Center;
         var (horizontalMoves, horizontalUpdates) = MeasureSteps(level, ticket, options.Moves, step => new SectionPos(start.X + step + 1, start.Y, start.Z));
@@ -402,7 +406,7 @@ internal static class Benchmark
     /// <summary>
     ///     Updates until nothing is waiting for generation or generating.
     /// </summary>
-    private static void UpdateUntilSettled(Level level, BenchmarkOptions options)
+    private static void UpdateUntilSettled(WorldLevel level, BenchmarkOptions options)
     {
         var watch = Stopwatch.StartNew();
 
@@ -426,7 +430,7 @@ internal static class Benchmark
         }
     }
 
-    private static (double[] Moves, double[] Updates) MeasureSteps(Level level, LevelTicket ticket, int count, Func<int, SectionPos> target)
+    private static (double[] Moves, double[] Updates) MeasureSteps(WorldLevel level, LevelTicket ticket, int count, Func<int, SectionPos> target)
     {
         var moveMilliseconds = new double[count];
         var updateMilliseconds = new double[count];
@@ -499,7 +503,7 @@ internal static class Benchmark
         return count;
     }
 
-    private static void RemoveReady(Level level, List<SectionPos> remaining)
+    private static void RemoveReady(WorldLevel level, List<SectionPos> remaining)
     {
         for (var index = remaining.Count - 1; index >= 0; index--)
         {
@@ -525,7 +529,7 @@ internal static class Benchmark
     }
 
     /// <summary>
-    ///     The sections of a ticket's load shape, which is the vertical cylinder <see cref="Level"/> loads.
+    ///     The sections of a ticket's load shape, which is the vertical cylinder <see cref="WorldLevel"/> loads.
     /// </summary>
     internal static SectionPos[] GetLoadShape(SectionPos center, int horizontalRadius, int verticalRadius, out int columns)
     {
@@ -555,7 +559,7 @@ internal static class Benchmark
     }
 
     /// <summary>
-    ///     The same test <see cref="Level"/> uses to write a section as air without a job.
+    ///     The same test <see cref="WorldLevel"/> uses to write a section as air without a job.
     /// </summary>
     private static bool IsSky(SectionPos position, float skyMinimumY)
     {
@@ -596,7 +600,7 @@ internal sealed class BenchmarkOptions
     public int CostSections = 64;
     public int CostRounds = 3;
     public int Moves = 32;
-    public int UnloadsPerUpdate = Level.DefaultUnloadsPerUpdate;
+    public int UnloadsPerUpdate = WorldLevel.DefaultUnloadsPerUpdate;
     public double TimeoutSeconds = 300.0;
     public bool Residency;
     public bool LoadQueue;

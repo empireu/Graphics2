@@ -5,7 +5,11 @@ using Graphics2.Mathematics;
 using WinterGame.Jobs;
 using WinterGame.Utilities;
 using WinterGame.World;
-using WinterGame.World.Render;
+using WinterGame.World.Generation;
+using WinterGame.World.Level;
+using WinterGame.World.Level.Meshing;
+using WinterGame.World.Mesher;
+using WinterGame.World.Storage;
 
 namespace WinterGame.Tests;
 
@@ -76,7 +80,7 @@ public class SectionMeshingTests
         WgAssert.InitRenderThread();
 
         var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = Math.Max(2, Environment.ProcessorCount - 1) });
-        var level = new Level(scheduler, LevelTests.Graph, slotCount: 32, unloadsPerUpdate: 8);
+        var level = new WorldLevel(scheduler, LevelTests.Graph, slotCount: 32, unloadsPerUpdate: 8);
         var channel = new SectionMeshChannel();
         var publisher = new SectionMeshPublisher(scheduler, Description, channel);
         var receiver = new SectionMeshReceiver(channel);
@@ -121,7 +125,7 @@ public class SectionMeshingTests
         WgAssert.InitRenderThread();
 
         var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = 2 });
-        var level = new Level(scheduler, LevelTests.Graph, slotCount: 32);
+        var level = new WorldLevel(scheduler, LevelTests.Graph, slotCount: 32);
         var channel = new SectionMeshChannel();
         var publisher = new SectionMeshPublisher(scheduler, Description, channel);
         var receiver = new SectionMeshReceiver(channel);
@@ -178,7 +182,7 @@ public class SectionMeshingTests
         WgAssert.InitRenderThread();
 
         var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = Math.Max(2, Environment.ProcessorCount - 1) });
-        var level = new Level(scheduler, LevelTests.Graph, slotCount: 32);
+        var level = new WorldLevel(scheduler, LevelTests.Graph, slotCount: 32);
         var channel = new SectionMeshChannel();
         var publisher = new SectionMeshPublisher(scheduler, Description, channel);
         var receiver = new SectionMeshReceiver(channel);
@@ -252,7 +256,7 @@ public class SectionMeshingTests
                 WgAssert.InitGameThread();
 
                 var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = Math.Max(2, Environment.ProcessorCount - 2) });
-                var level = new Level(scheduler, LevelTests.Graph, slotCount: 32);
+                var level = new WorldLevel(scheduler, LevelTests.Graph, slotCount: 32);
                 var publisher = new SectionMeshPublisher(scheduler, Description, channel);
                 var center = LevelTests.SurfaceSection(0, 0);
                 var region = new HashSet<SectionPos>();
@@ -324,7 +328,7 @@ public class SectionMeshingTests
         WgAssert.InitRenderThread();
 
         var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = Math.Max(2, Environment.ProcessorCount - 1) });
-        var level = new Level(scheduler, LevelTests.Graph, slotCount: 32);
+        var level = new WorldLevel(scheduler, LevelTests.Graph, slotCount: 32);
         var channel = new SectionMeshChannel();
         var publisher = new SectionMeshPublisher(scheduler, Description, channel);
         var receiver = new SectionMeshReceiver(channel);
@@ -373,7 +377,7 @@ public class SectionMeshingTests
         WgAssert.InitGameThread();
 
         var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = Math.Max(2, Environment.ProcessorCount - 1) });
-        var level = new Level(scheduler, LevelTests.Graph, slotCount: 32);
+        var level = new WorldLevel(scheduler, LevelTests.Graph, slotCount: 32);
         var channel = new SectionMeshChannel();
         var publisher = new SectionMeshPublisher(scheduler, Description, channel);
         var region = new HashSet<SectionPos>();
@@ -421,7 +425,7 @@ public class SectionMeshingTests
 
         // Never started, so a job runs only when the test drains the scheduler:
         var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = 2 });
-        var level = new Level(scheduler, LevelTests.Graph, slotCount: 32);
+        var level = new WorldLevel(scheduler, LevelTests.Graph, slotCount: 32);
         var channel = new SectionMeshChannel();
         var publisher = new SectionMeshPublisher(scheduler, Description, channel);
         var receiver = new SectionMeshReceiver(channel);
@@ -473,7 +477,7 @@ public class SectionMeshingTests
     ///     Updates both sides on this thread until the level has nothing pending, generating, unloading or newly ready, and every mesh change has been meshed or dropped.
     ///     A scheduler that never started is drained between updates.
     /// </summary>
-    private static void UpdateUntilSettled(JobScheduler scheduler, Level level, SectionMeshPublisher publisher, SectionMeshReceiver receiver, ISectionMeshSink sink, SectionPos focus)
+    private static void UpdateUntilSettled(JobScheduler scheduler, WorldLevel level, SectionMeshPublisher publisher, SectionMeshReceiver receiver, ISectionMeshSink sink, SectionPos focus)
     {
         var deadline = DateTime.UtcNow.AddSeconds(60);
 
@@ -497,7 +501,7 @@ public class SectionMeshingTests
     /// <summary>
     ///     Updates the level alone until it has nothing pending, generating or unloading, leaving its mesh changes for the publisher.
     /// </summary>
-    private static void UpdateLevelUntilSettled(JobScheduler scheduler, Level level)
+    private static void UpdateLevelUntilSettled(JobScheduler scheduler, WorldLevel level)
     {
         for (var update = 0; update < 1000; update++)
         {
@@ -530,7 +534,7 @@ public class SectionMeshingTests
     ///     Checks that every section due a mesh has one, and that every section with a mesh is still loaded. Each mesh was compared with the generator's when it arrived.
     ///     A section keeps its mesh when a neighbor unloads, so a meshed section need not be due a mesh any more.
     /// </summary>
-    private static void AssertMeshedMatchesLevel(Level level, RecordingSink sink, HashSet<SectionPos> region, string context)
+    private static void AssertMeshedMatchesLevel(WorldLevel level, RecordingSink sink, HashSet<SectionPos> region, string context)
     {
         foreach (var position in GetSectionsDueAMesh(level, region))
         {
@@ -555,7 +559,7 @@ public class SectionMeshingTests
     ///     Checks that every section of the region whose neighborhood is ready has the mesh its window holds now, where an empty mesh counts as none, and that no section that is not ready has a mesh.
     ///     A section keeps its mesh while a neighbor is away, so a section whose neighborhood is incomplete may have one.
     /// </summary>
-    private static void AssertMeshesMatchWindows(Level level, LatestMeshSink sink, HashSet<SectionPos> region, string context)
+    private static void AssertMeshesMatchWindows(WorldLevel level, LatestMeshSink sink, HashSet<SectionPos> region, string context)
     {
         var references = new ReferenceMesher(level);
 
@@ -588,7 +592,7 @@ public class SectionMeshingTests
         }
     }
 
-    private static void FlipVoxel(Level level, Vector3i voxel)
+    private static void FlipVoxel(WorldLevel level, Vector3i voxel)
     {
         var content = Memory3D<byte>.Allocate(1, 1, 1);
         var material = Memory3D<byte>.Allocate(1, 1, 1);
@@ -613,7 +617,7 @@ public class SectionMeshingTests
     /// <summary>
     ///     The sections of the region that are ready with their 26 neighbors and hold a surface by their content sides.
     /// </summary>
-    private static HashSet<SectionPos> GetSectionsDueAMesh(Level level, HashSet<SectionPos> region)
+    private static HashSet<SectionPos> GetSectionsDueAMesh(WorldLevel level, HashSet<SectionPos> region)
     {
         var due = new HashSet<SectionPos>();
 
@@ -640,7 +644,7 @@ public class SectionMeshingTests
         return due;
     }
 
-    private static bool IsNeighborhoodReady(Level level, SectionPos position)
+    private static bool IsNeighborhoodReady(WorldLevel level, SectionPos position)
     {
         foreach (var neighbor in LevelTests.Box(position, 1, 1))
         {
@@ -658,7 +662,7 @@ public class SectionMeshingTests
     /// </summary>
     private static void AddRegion(HashSet<SectionPos> region, SectionPos center)
     {
-        foreach (var position in LevelTests.Box(center, HorizontalRadius + Level.KeepMargin + 1, VerticalRadius + Level.KeepMargin + 1))
+        foreach (var position in LevelTests.Box(center, HorizontalRadius + WorldLevel.KeepMargin + 1, VerticalRadius + WorldLevel.KeepMargin + 1))
         {
             region.Add(position);
         }
@@ -700,7 +704,7 @@ public class SectionMeshingTests
     ///     Meshes sections straight from the generator, or from what a level holds now when one is given, with the window worked out here rather than by the executor.
     ///     The generator's content never changes, so each of its sections is meshed once.
     /// </summary>
-    private sealed class ReferenceMesher(Level? level = null)
+    private sealed class ReferenceMesher(WorldLevel? level = null)
     {
         private static readonly Vector3i CellCount = new(SectionPos.SectionSize);
 

@@ -1,8 +1,7 @@
 using System.Numerics;
 using Graphics2.Data;
 using Graphics2.Mathematics;
-using WinterGame.World;
-using WinterGame.World.Render;
+using WinterGame.World.Mesher;
 
 namespace Graphics2.Tests;
 
@@ -175,43 +174,6 @@ public class SurfaceNetsRangeTests
         );
     }
 
-    [Fact]
-    public void ReadingChunkWindows_AsksTheStorageForExactlyThoseWindows()
-    {
-        const int chunkCells = 8;
-        const int chunkCount = 3;
-        var cellCount = new Vector3i(chunkCells);
-        var storage = new RecordingStorage(new Vector3i(SamplesFor(chunkCells * chunkCount)));
-
-        for (var chunk = 0; chunk < chunkCount; chunk++)
-        {
-            // The first chunk's cells start one low margin into the storage, which is what keeps every window inside it:
-            var cellMin = new Vector3i(LowSampleMargin + chunk * chunkCells);
-            var window = SurfaceNetsMesher.GetSampleRange(cellMin, cellCount);
-            var size = window.Max - window.Min + 1;
-
-            var content = Memory3D<byte>.Allocate(size.X, size.Y, size.Z);
-            var material = Memory3D<byte>.Allocate(size.X, size.Y, size.Z);
-
-            storage.ReadRange(0, window.Min, window.Max, content.Span, material.Span);
-        }
-
-        Assert.Equal(chunkCount, storage.Reads.Count);
-
-        for (var chunk = 0; chunk < chunkCount; chunk++)
-        {
-            var window = storage.Reads[chunk];
-            var size = window.Max - window.Min + 1;
-
-            Assert.Equal(new Vector3i(SamplesFor(chunkCells)), size);
-            Assert.Equal(new Vector3i(chunk * chunkCells), window.Min);
-            Assert.True(window.Min.X >= 0 && window.Min.Y >= 0 && window.Min.Z >= 0);
-            Assert.True(window.Max.X < storage.SizeInVoxels.X);
-            Assert.True(window.Max.Y < storage.SizeInVoxels.Y);
-            Assert.True(window.Max.Z < storage.SizeInVoxels.Z);
-        }
-    }
-
     private static (List<SurfaceNetsVertex> Vertices, List<int> Indices) Mesh(Memory3D<byte> content)
     {
         var vertices = new List<SurfaceNetsVertex>();
@@ -315,26 +277,4 @@ public class SurfaceNetsRangeTests
         left.Min.X <= right.Max.X && left.Max.X >= right.Min.X &&
         left.Min.Y <= right.Max.Y && left.Max.Y >= right.Min.Y &&
         left.Min.Z <= right.Max.Z && left.Max.Z >= right.Min.Z;
-
-    private sealed class RecordingStorage(Vector3i sizeInVoxels) : IVoxelStorage
-    {
-        public readonly List<BoundingBox3i> Reads = [];
-
-        public Vector3i SizeInVoxels { get; } = sizeInVoxels;
-
-        public void ReadRange(int lod, Vector3i min, Vector3i maxInclusive, Span3D<byte> content, Span3D<byte> material)
-        {
-            if (content.SizeX != maxInclusive.X - min.X + 1 ||
-                content.SizeY != maxInclusive.Y - min.Y + 1 ||
-                content.SizeZ != maxInclusive.Z - min.Z + 1)
-            {
-                throw new ArgumentException("The content box must be maxInclusive - min + 1 on every axis.", nameof(content));
-            }
-
-            Reads.Add(new BoundingBox3i(min, maxInclusive));
-
-            content.Data.Fill(0);
-            material.Data.Fill(255);
-        }
-    }
 }
