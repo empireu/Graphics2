@@ -3,7 +3,7 @@ using Graphics2.Data;
 using Graphics2.Mathematics;
 using WinterGame.World.Mesher;
 
-namespace Graphics2.Tests;
+namespace WinterGame.Tests;
 
 public class SurfaceNetsRangeTests
 {
@@ -235,7 +235,7 @@ public class SurfaceNetsRangeTests
 
         return destination;
     }
-    
+
     private static HashSet<(Vector3, Vector3, Vector3)> TriangleSet(List<SurfaceNetsVertex> vertices, List<int> indices)
     {
         var triangles = new HashSet<(Vector3, Vector3, Vector3)>();

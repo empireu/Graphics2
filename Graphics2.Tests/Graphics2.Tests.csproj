@@ -22,7 +22,7 @@
         <ProjectReference Include="..\Graphics2.Allocator\Graphics2.Allocator.csproj"/>
         <ProjectReference Include="..\Graphics2.Core\Graphics2.Core.csproj"/>
         <ProjectReference Include="..\Graphics2.Data\Graphics2.Data.csproj" />
-        <ProjectReference Include="..\WinterGame.World\WinterGame.World.csproj" />
+        <ProjectReference Include="..\Graphics2.Mathematics\Graphics2.Mathematics.csproj" />
     </ItemGroup>
 
 </Project>

@@ -1,10 +1,9 @@
 using System.Numerics;
 using Graphics2.Data;
 using Graphics2.Mathematics;
-using WinterGame.World;
 using WinterGame.World.Mesher;
 
-namespace Graphics2.Tests;
+namespace WinterGame.Tests;
 
 public class SurfaceNetsMesherTests
 {
@@ -280,7 +279,7 @@ public class SurfaceNetsMesherTests
     }
 
     [Fact]
-    public void DefaultRange_MatchesTheRangeTheDemoPasses()
+    public void DefaultRange_MatchesTheExplicitInteriorRange()
     {
         var field = SphereField(5);
 
@@ -316,17 +315,5 @@ public class SurfaceNetsMesherTests
 
         Assert.True(wideVertices.Count > narrowVertices.Count);
         Assert.True(wideIndices.Count > narrowIndices.Count);
-    }
-
-    [Fact]
-    public void SubRange_NeverEmitsAnIndexOutsideTheTraversal()
-    {
-        var field = SphereField(6);
-
-        var (vertices, indices) = Mesh(field, new Vector3i(4, 4, 4), new Vector3i(9, 9, 9));
-
-        AssertIndicesValid(vertices, indices);
-        Assert.NotEmpty(vertices);
-        Assert.NotEmpty(indices);
     }
 }

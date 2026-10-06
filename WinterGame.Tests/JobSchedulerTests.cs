@@ -1,12 +1,10 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using WinterGame.Jobs;
-using Xunit.Abstractions;
 // ReSharper disable RedundantArgumentDefaultValue
 
 namespace WinterGame.Tests;
 
-public class JobSchedulerTests(ITestOutputHelper output)
+public class JobSchedulerTests
 {
     private sealed class CountingExecutor : IWorkExecutor
     {
@@ -106,14 +104,6 @@ public class JobSchedulerTests(ITestOutputHelper output)
             {
                 throw new InvalidOperationException("The target scheduler refused the item");
             }
-        }
-    }
-
-    private sealed class TimestampExecutor(long[] started) : IWorkExecutor
-    {
-        public void Execute(in WorkExecutionContext context, int item)
-        {
-            started[item] = Stopwatch.GetTimestamp();
         }
     }
 
@@ -559,39 +549,6 @@ public class JobSchedulerTests(ITestOutputHelper output)
     }
 
     [Fact]
-    public void EndToEndLatency_IsReported()
-    {
-        const int samples = 1000;
-        const int warmup = 50;
-        using var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = 4 });
-        var started = new long[samples + 1];
-        var providerId = scheduler.RegisterExecutor(new TimestampExecutor(started));
-        scheduler.Start();
-
-        var latencies = new double[samples];
-
-        for (var index = 0; index < samples; index++)
-        {
-            latencies[index] = MeasureDispatchToStart(scheduler, providerId, started, index);
-        }
-
-        Thread.Sleep(100);
-
-        var parked = MeasureDispatchToStart(scheduler, providerId, started, samples);
-
-        var steady = latencies[warmup..];
-        Array.Sort(steady);
-
-        output.WriteLine(
-            $"Back-to-back dispatch to start over {steady.Length} tasks: mean {steady.Average():F1} us, " +
-            $"median {steady[steady.Length / 2]:F1} us, p99 {steady[(int)(steady.Length * 0.99)]:F1} us, " +
-            $"max {steady[^1]:F1} us"
-        );
-        
-        output.WriteLine($"Dispatch to start after 100 ms idle: {parked:F1} us");
-    }
-
-    [Fact]
     public void Dispose_StopsTheWorkers()
     {
         const int threadCount = 3;
@@ -629,21 +586,6 @@ public class JobSchedulerTests(ITestOutputHelper output)
         {
             Assert.False(thread.IsAlive);
         }
-    }
-
-    /// <summary>
-    ///     Measures microseconds from publish to the moment the executor starts.
-    /// </summary>
-    private static double MeasureDispatchToStart(JobScheduler scheduler, int providerId, long[] started, int item)
-    {
-        var job = scheduler.Pool.CreateJob(1);
-        var start = Stopwatch.GetTimestamp();
-
-        Assert.True(scheduler.Publish(job, providerId, item));
-        Assert.True(WaitForCompletion(scheduler.Pool, job, 10_000), "A latency sample never completed");
-        scheduler.Pool.Release(job);
-
-        return Stopwatch.GetElapsedTime(start, started[item]).TotalMicroseconds;
     }
 
     private static bool WaitForParked(JobScheduler scheduler, int milliseconds)

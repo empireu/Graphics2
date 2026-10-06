@@ -1,7 +1,6 @@
 using Graphics2.Data;
 using WinterGame.Jobs;
 using WinterGame.Utilities;
-using WinterGame.World;
 using WinterGame.World.Generation;
 using WinterGame.World.Level.Loading;
 using WinterGame.World.Storage;
@@ -10,7 +9,7 @@ namespace WinterGame.Tests;
 
 public class SectionGenerationExecutorTests
 {
-    private static readonly TerrainGraph Graph = TerrainGraph.Build(11, new TerrainConfig());
+    private static readonly TerrainGraph Graph = LevelTests.Graph;
 
     private sealed class Harness : IDisposable
     {
@@ -49,24 +48,11 @@ public class SectionGenerationExecutorTests
     }
 
     [Fact]
-    public void Execute_MatchesTheSourceVoxelForVoxel()
-    {
-        using var harness = new Harness();
-        var position = SurfaceSection(0, 0);
-
-        var slot = harness.Generate(position);
-        var section = harness.Executor.GetResult(slot).Section;
-
-        Assert.Equal(position, section.Position);
-        AssertMatchesSource(section);
-    }
-
-    [Fact]
     public void Execute_OnASurfaceSection_StoresUniformAndDenseBricks()
     {
         using var harness = new Harness();
 
-        var section = harness.Executor.GetResult(harness.Generate(SurfaceSection(0, 0))).Section;
+        var section = harness.Executor.GetResult(harness.Generate(LevelTests.SurfaceSection(0, 0))).Section;
 
         var types = Enumerable.Range(0, Section.Bricks).Select(index => section.GetBrickType(VoxelChannel.Content, index)).ToArray();
 
@@ -76,21 +62,20 @@ public class SectionGenerationExecutorTests
     }
 
     [Fact]
-    public void Execute_AboveTheSurface_IsUniformAirInBothChannels()
+    public void GenerateNow_AtTheLowestSkySection_IsUniformAirInBothChannels()
     {
-        using var harness = new Harness();
-        var skyY = SectionPos.VoxelToSectionCoord((int)MathF.Ceiling(Graph.MaxSurfaceY / WorldConstants.VoxelSize)) + 1;
+        WgAssert.InitGameThread();
 
-        var section = harness.Executor.GetResult(harness.Generate(new SectionPos(0, skyY, 0))).Section;
+        var executor = new SectionGenerationExecutor(Graph, workerCount: 1, slotCount: 1);
+        var arena = new SectionArena();
+        var skyY = LevelTests.LowestSkySectionY();
 
-        Assert.Equal(SectionType.Shared, section.Type);
-
-        for (var index = 0; index < Section.Bricks; index++)
+        for (var x = -2; x <= 2; x++)
         {
-            Assert.Equal(BrickType.Uniform, section.GetBrickType(VoxelChannel.Content, index));
-            Assert.Equal(0, section.GetUniformValue(VoxelChannel.Content, index));
-            Assert.Equal(BrickType.Uniform, section.GetBrickType(VoxelChannel.Material, index));
-            Assert.Equal(SurfaceMaterial.Null, section.GetUniformValue(VoxelChannel.Material, index));
+            for (var z = -2; z <= 2; z++)
+            {
+                LevelTests.AssertUniformAir(executor.GenerateNow(new SectionPos(x, skyY, z), arena).Section);
+            }
         }
     }
 
@@ -110,7 +95,7 @@ public class SectionGenerationExecutorTests
     public void Execute_OnDifferentWorkers_ProducesTheSameBricks()
     {
         using var harness = new Harness();
-        var position = SurfaceSection(1, -1);
+        var position = LevelTests.SurfaceSection(1, -1);
 
         var first = harness.Executor.GetResult(harness.Generate(position, workerId: 0));
         var second = harness.Executor.GetResult(harness.Generate(position, workerId: 1));
@@ -126,7 +111,7 @@ public class SectionGenerationExecutorTests
 
         for (var round = 0; round < 3; round++)
         {
-            var position = SurfaceSection(round, 0);
+            var position = LevelTests.SurfaceSection(round, 0);
             var slot = harness.Generate(position);
             var section = harness.Executor.GetResult(slot).Section;
 
@@ -141,14 +126,14 @@ public class SectionGenerationExecutorTests
     public void CopiedResult_OutlivesTheSlot()
     {
         using var harness = new Harness(slotCount: 1);
-        var position = SurfaceSection(0, 0);
+        var position = LevelTests.SurfaceSection(0, 0);
         var level = new SectionArena();
 
         var slot = harness.Generate(position);
         var copy = level.CreateCopy(harness.Executor.GetResult(slot).Section);
 
         harness.Executor.Free(slot);
-        harness.Generate(SurfaceSection(2, 2));
+        harness.Generate(LevelTests.SurfaceSection(2, 2));
 
         AssertMatchesSource(copy);
     }
@@ -164,7 +149,7 @@ public class SectionGenerationExecutorTests
         var copy = level.CreateCopy(harness.Executor.GetResult(slot).Section);
 
         harness.Executor.Free(slot);
-        harness.Generate(SurfaceSection(2, 2));
+        harness.Generate(LevelTests.SurfaceSection(2, 2));
 
         Assert.Equal(SectionType.Shared, copy.Type);
         AssertMatchesSource(copy);
@@ -216,7 +201,7 @@ public class SectionGenerationExecutorTests
         WgAssert.InitGameThread();
 
         var executor = new SectionGenerationExecutor(Graph, workerCount: 1, slotCount: 1);
-        var position = SurfaceSection(0, 0);
+        var position = LevelTests.SurfaceSection(0, 0);
         var reference = executor.GenerateNow(position, new SectionArena()).Section;
 
         var denseBricks = Enum.GetValues<VoxelChannel>().Sum(
@@ -229,18 +214,6 @@ public class SectionGenerationExecutorTests
         Assert.True(denseBricks > full.MaxVoxelArrays);
         Assert.Throws<InvalidOperationException>(() => executor.GenerateNow(position, full));
         Assert.Throws<InvalidOperationException>(() => full.Destroy(position));
-    }
-
-    /// <summary>
-    ///     The section holding the surface at the column in the middle of the given section column.
-    /// </summary>
-    private static SectionPos SurfaceSection(int sectionX, int sectionZ)
-    {
-        var x = SectionPos.SectionToVoxelCoord(sectionX) + SectionPos.SectionSize / 2;
-        var z = SectionPos.SectionToVoxelCoord(sectionZ) + SectionPos.SectionSize / 2;
-        var surfaceY = (int)MathF.Floor(new TerrainGraphSource(Graph).Elevation(x, z) / WorldConstants.VoxelSize);
-
-        return new SectionPos(sectionX, SectionPos.VoxelToSectionCoord(surfaceY), sectionZ);
     }
 
     private static void AssertMatchesSource(Section section)

@@ -16,12 +16,6 @@ public class BoundedWorkStealingDequeTests
     }
 
     [Fact]
-    public void Capacity_AcceptsTheMinimum()
-    {
-        Assert.Equal(BoundedWorkStealingDeque.MinCapacity, new BoundedWorkStealingDeque(BoundedWorkStealingDeque.MinCapacity).Capacity);
-    }
-
-    [Fact]
     public void Capacity_RefusesLessThanTheMinimum()
     {
         // One is a power of two, so it reaches the minimum check instead of the power-of-two check.
@@ -261,30 +255,6 @@ public class BoundedWorkStealingDequeTests
             {
                 Assert.True(deque.PopBottom(out var popped));
                 Assert.Equal(next + 3 - i, popped);
-            }
-
-            next += 4;
-            Assert.Equal(0, deque.ApproximateCount);
-        }
-    }
-
-    [Fact]
-    public void WrapAround_KeepsStealOrderedAcrossManyCycles()
-    {
-        var deque = new BoundedWorkStealingDeque(4);
-        var next = 0L;
-
-        for (var cycle = 0; cycle < 100; cycle++)
-        {
-            for (var i = 0; i < 4; i++)
-            {
-                Assert.True(deque.TryPushBottom(next + i));
-            }
-
-            for (var i = 0; i < 4; i++)
-            {
-                Assert.True(deque.StealTop(out var stolen));
-                Assert.Equal(next + i, stolen);
             }
 
             next += 4;

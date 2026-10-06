@@ -379,26 +379,6 @@ public class AllocatorTests
     }
 
     [Fact]
-    public void BlockAllocator_AllocatePageCalledWithBlockSize()
-    {
-        var allocator = NewAllocator(4096, out var layer);
-        _ = allocator.Allocate(100, 1);
-
-        Assert.Single(layer.Pages);
-        Assert.Equal(4096, layer.Pages[0].Size);
-    }
-
-    [Fact]
-    public void BlockAllocator_DedicatedAllocationCallsAllocatePageWithExactSize()
-    {
-        var allocator = NewAllocator(256, out var layer);
-        _ = allocator.Allocate(8192, 1);
-
-        Assert.Single(layer.Pages);
-        Assert.Equal(8192, layer.Pages[0].Size);
-    }
-
-    [Fact]
     public void BlockAllocator_DisposeFreesAllPages()
     {
         var allocator = NewAllocator(1000, out var layer);

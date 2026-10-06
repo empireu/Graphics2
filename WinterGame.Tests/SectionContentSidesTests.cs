@@ -24,7 +24,7 @@ public class SectionContentSidesTests
     /// </summary>
     private const int WindowSize = Size + WindowLowMargin + 2;
 
-    private static readonly TerrainGraph Graph = TerrainGraph.Build(11, new TerrainConfig());
+    private static readonly TerrainGraph Graph = LevelTests.Graph;
 
     private static readonly ContentSide[] AllSides = [ContentSide.None, ContentSide.Air, ContentSide.Solid, ContentSide.Mixed];
 
@@ -217,7 +217,7 @@ public class SectionContentSidesTests
         var arena = new SectionArena();
         var source = new TerrainGraphSource(Graph);
         var generated = new Dictionary<SectionPos, SectionContentSides>();
-        var center = SurfaceSection(source);
+        var center = LevelTests.SurfaceSection(0, 0);
         var surfaces = 0;
         var empty = 0;
 
@@ -275,7 +275,7 @@ public class SectionContentSidesTests
 
         var executor = new SectionGenerationExecutor(Graph, workerCount: 1, slotCount: 1);
         var source = new TerrainGraphSource(Graph);
-        var surface = SurfaceSection(source);
+        var surface = LevelTests.SurfaceSection(0, 0);
         var skyY = SectionPos.VoxelToSectionCoord((int)MathF.Ceiling(Graph.MaxSurfaceY / WorldConstants.VoxelSize)) + 1;
         var content = Memory3D<byte>.Allocate(Size, Size, Size);
         var material = Memory3D<byte>.Allocate(Size, Size, Size);
@@ -500,13 +500,6 @@ public class SectionContentSidesTests
         );
 
         return indices.Count > 0;
-    }
-
-    private static SectionPos SurfaceSection(TerrainGraphSource source)
-    {
-        var surfaceY = (int)MathF.Floor(source.Elevation(Size / 2, Size / 2) / WorldConstants.VoxelSize);
-
-        return new SectionPos(0, SectionPos.VoxelToSectionCoord(surfaceY), 0);
     }
 
     private sealed class Window

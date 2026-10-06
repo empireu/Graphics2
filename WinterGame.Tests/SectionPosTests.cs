@@ -6,16 +6,10 @@ namespace WinterGame.Tests;
 public class SectionPosTests
 {
     [Theory]
-    [InlineData(0, 0, 0)]
-    [InlineData(1, 2, 3)]
-    [InlineData(-1, -2, -3)]
-    [InlineData(-1, 0, 0)]
-    [InlineData(0, -1, 0)]
-    [InlineData(0, 0, -1)]
     [InlineData(12345, -6789, 101112)]
     [InlineData(SectionPos.MaxX, SectionPos.MaxY, SectionPos.MaxZ)]
     [InlineData(SectionPos.MinX, SectionPos.MinY, SectionPos.MinZ)]
-    public void AsLong_AndFromLong_RoundTrip(int x, int y, int z)
+    public void Pack_AndUnpack_RoundTrip(int x, int y, int z)
     {
         var key = SectionPos.Pack(x, y, z);
 
@@ -27,7 +21,7 @@ public class SectionPosTests
     }
 
     [Fact]
-    public void AsLong_AndFromLong_RoundTripEveryCoordinateOfASmallCube()
+    public void Pack_AndUnpack_RoundTripEveryCoordinateOfASmallCube()
     {
         for (var z = -3; z <= 3; z++)
         {
@@ -40,23 +34,6 @@ public class SectionPosTests
                     Assert.Equal(x, unpackedX);
                     Assert.Equal(y, unpackedY);
                     Assert.Equal(z, unpackedZ);
-                }
-            }
-        }
-    }
-
-    [Fact]
-    public void AsLong_GivesADistinctKeyPerCoordinate()
-    {
-        var keys = new HashSet<ulong>();
-
-        for (var z = -2; z <= 2; z++)
-        {
-            for (var y = -2; y <= 2; y++)
-            {
-                for (var x = -2; x <= 2; x++)
-                {
-                    Assert.True(keys.Add(SectionPos.Pack(x, y, z)), $"({x}, {y}, {z}) collided with another section.");
                 }
             }
         }

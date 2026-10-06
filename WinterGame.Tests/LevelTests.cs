@@ -199,24 +199,6 @@ public class LevelTests
     }
 
     [Fact]
-    public void LowestSkySection_GeneratesAsUniformAir()
-    {
-        WgAssert.InitGameThread();
-
-        var executor = new SectionGenerationExecutor(Graph, workerCount: 1, slotCount: 1);
-        var arena = new SectionArena();
-        var skyY = LowestSkySectionY();
-
-        for (var x = -2; x <= 2; x++)
-        {
-            for (var z = -2; z <= 2; z++)
-            {
-                AssertUniformAir(executor.GenerateNow(new SectionPos(x, skyY, z), arena).Section);
-            }
-        }
-    }
-
-    [Fact]
     public void MoveTicket_UnloadsOnlyPastTheKeepMargin()
     {
         using var harness = new Harness();
@@ -527,34 +509,7 @@ public class LevelTests
 
         for (var step = 0; step < 400; step++)
         {
-            var choice = random.Next(10);
-
-            if (tickets.Count == 0 || (choice == 0 && tickets.Count < 4))
-            {
-                var start = new SectionPos(random.Next(-20, 21), random.Next(-20, 21), random.Next(-20, 21));
-
-                tickets.Add(harness.Level.AddTicket(start, random.Next(0, 4), random.Next(0, 3)));
-            }
-            else if (choice == 1)
-            {
-                var index = random.Next(tickets.Count);
-
-                harness.Level.RemoveTicket(tickets[index]);
-                tickets.RemoveAt(index);
-            }
-            else
-            {
-                var ticket = tickets[random.Next(tickets.Count)];
-                var center = ticket.Center;
-
-                // Mostly short moves along every axis, and now and then a jump the two placements cannot overlap across:
-                var target = choice == 2
-                    ? new SectionPos(center.X + random.Next(-40, 41), center.Y + random.Next(-20, 21), center.Z + random.Next(-40, 41))
-                    : new SectionPos(center.X + random.Next(-3, 4), center.Y + random.Next(-3, 4), center.Z + random.Next(-3, 4));
-
-                harness.Level.MoveTicket(ticket, target);
-            }
-
+            ApplyRandomTicketChange(harness.Level, tickets, random, -20, 20);
             AssertTicketCountsMatchBruteForce(harness.Level, tickets, step);
         }
     }
@@ -1323,7 +1278,7 @@ public class LevelTests
     }
 
     /// <summary>
-    ///     Adds, removes or moves a ticket the way the brute-force count test does, keeping every center's Y in [<paramref name="minimumY"/>, <paramref name="maximumY"/>].
+    ///     Adds, removes or moves a ticket at random, keeping every center's Y in [<paramref name="minimumY"/>, <paramref name="maximumY"/>].
     /// </summary>
     private static void ApplyRandomTicketChange(WorldLevel level, List<LevelTicket> tickets, Random random, int minimumY, int maximumY)
     {
@@ -1347,6 +1302,7 @@ public class LevelTests
             var ticket = tickets[random.Next(tickets.Count)];
             var center = ticket.Center;
 
+            // Mostly short moves along every axis, and now and then a jump the two placements cannot overlap across:
             var target = choice == 2
                 ? new SectionPos(center.X + random.Next(-40, 41), center.Y + random.Next(-20, 21), center.Z + random.Next(-40, 41))
                 : new SectionPos(center.X + random.Next(-3, 4), center.Y + random.Next(-3, 4), center.Z + random.Next(-3, 4));
@@ -1517,7 +1473,7 @@ public class LevelTests
         }
     }
 
-    private static void AssertUniformAir(Section section)
+    internal static void AssertUniformAir(Section section)
     {
         Assert.Equal(SectionType.Shared, section.Type);
 

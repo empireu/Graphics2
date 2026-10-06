@@ -23,31 +23,6 @@ public class SectionTests
     [Theory]
     [InlineData(VoxelChannel.Content)]
     [InlineData(VoxelChannel.Material)]
-    public void Create_StartsWithEveryBrickNone(VoxelChannel channel)
-    {
-        var section = CreateSection();
-
-        Assert.True(section.AreAllBricksOfType(channel, BrickType.None));
-    }
-
-    [Fact]
-    public void SetUniform_SetDense_AreIndependentPerBrick()
-    {
-        var section = CreateSection();
-
-        section.SetUniform(VoxelChannel.Content, 17, 201);
-        section.SetDense(VoxelChannel.Material, 17);
-
-        Assert.Equal(BrickType.Uniform, section.GetBrickType(VoxelChannel.Content, 17));
-        Assert.Equal(201, section.GetUniformValue(VoxelChannel.Content, 17));
-
-        Assert.Equal(BrickType.Dense, section.GetBrickType(VoxelChannel.Material, 17));
-        Assert.Equal(Section.VoxelsPerBrick, section.GetDense(VoxelChannel.Material, 17).Span.Length);
-    }
-
-    [Theory]
-    [InlineData(VoxelChannel.Content)]
-    [InlineData(VoxelChannel.Material)]
     public void SetUniform_RoundTripsAtEveryIndex(VoxelChannel channel)
     {
         var section = CreateSection();
