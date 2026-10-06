@@ -20,6 +20,12 @@ if (options.Residency)
     return;
 }
 
+if (options.LoadQueue)
+{
+    LoadQueueBenchmark.Run(options);
+    return;
+}
+
 Console.WriteLine("Section generation and storage benchmark");
 Console.WriteLine($"  Runtime:  {RuntimeInformation.FrameworkDescription}, {(GCSettings.IsServerGC ? "server" : "workstation")} GC, {Environment.ProcessorCount} core(s)");
 Console.WriteLine($"  Terrain:  seed {options.Seed}, default TerrainConfig");
@@ -357,6 +363,9 @@ internal static class Benchmark
         var turn = ticket.Center;
         var (verticalMoves, verticalUpdates) = MeasureSteps(level, ticket, 4, step => new SectionPos(turn.X, turn.Y + step + 1, turn.Z));
 
+        // The steps outrun generation, so the shape is loaded first and the teleport releases all of it:
+        UpdateUntilSettled(level, options);
+
         var teleportStart = Stopwatch.GetTimestamp();
 
         level.MoveTicket(ticket, new SectionPos(start.X + 10_000, start.Y, start.Z + 10_000));
@@ -388,6 +397,33 @@ internal static class Benchmark
             $"  Unload drain at {options.UnloadsPerUpdate} per update: {backlog} section(s) in {drainMilliseconds.Count} update(s), median {drainMilliseconds.Order().ElementAt(drainMilliseconds.Count / 2):F3} ms, max {drainMilliseconds.Max():F3} ms, {1000.0 * drainTotal / backlog:F2} us per section"
         );
         Console.WriteLine();
+    }
+
+    /// <summary>
+    ///     Updates until nothing is waiting for generation or generating.
+    /// </summary>
+    private static void UpdateUntilSettled(Level level, BenchmarkOptions options)
+    {
+        var watch = Stopwatch.StartNew();
+
+        while (true)
+        {
+            level.Update();
+
+            var stats = level.GetStats();
+
+            if (stats.PendingSections == 0 && stats.GeneratingSections == 0)
+            {
+                return;
+            }
+
+            if (watch.Elapsed.TotalSeconds > options.TimeoutSeconds)
+            {
+                throw new TimeoutException($"{stats.PendingSections} section(s) were still pending after {options.TimeoutSeconds} s.");
+            }
+
+            Thread.Yield();
+        }
     }
 
     private static (double[] Moves, double[] Updates) MeasureSteps(Level level, LevelTicket ticket, int count, Func<int, SectionPos> target)
@@ -526,7 +562,7 @@ internal static class Benchmark
         return SectionPos.SectionToVoxelCoord(position.Y) * WorldConstants.VoxelSize >= skyMinimumY;
     }
 
-    private static SectionPos SurfaceSection(TerrainGraph graph, int sectionX, int sectionZ)
+    internal static SectionPos SurfaceSection(TerrainGraph graph, int sectionX, int sectionZ)
     {
         var x = SectionPos.SectionToVoxelCoord(sectionX) + SectionPos.SectionSize / 2;
         var z = SectionPos.SectionToVoxelCoord(sectionZ) + SectionPos.SectionSize / 2;
@@ -563,6 +599,10 @@ internal sealed class BenchmarkOptions
     public int UnloadsPerUpdate = Level.DefaultUnloadsPerUpdate;
     public double TimeoutSeconds = 300.0;
     public bool Residency;
+    public bool LoadQueue;
+    public int Machines = 100;
+    public int MachineRadius = 1;
+    public int MachineVerticalRadius = 1;
 
     public static BenchmarkOptions Parse(string[] args)
     {
@@ -613,8 +653,21 @@ internal sealed class BenchmarkOptions
                     options.Residency = true;
                     hasValue = false;
                     break;
+                case "--load-queue":
+                    options.LoadQueue = true;
+                    hasValue = false;
+                    break;
+                case "--machines":
+                    options.Machines = int.Parse(value, CultureInfo.InvariantCulture);
+                    break;
+                case "--machine-radius":
+                    options.MachineRadius = int.Parse(value, CultureInfo.InvariantCulture);
+                    break;
+                case "--machine-vertical-radius":
+                    options.MachineVerticalRadius = int.Parse(value, CultureInfo.InvariantCulture);
+                    break;
                 default:
-                    throw new ArgumentException($"Unknown option '{name}'. Options: --seed, --radius, --vertical-radius, --workers 1,2,4, --slots 10,20, --tick-hz, --cost-sections, --cost-rounds, --moves, --unloads, --timeout, --residency.");
+                    throw new ArgumentException($"Unknown option '{name}'. Options: --seed, --radius, --vertical-radius, --workers 1,2,4, --slots 10,20, --tick-hz, --cost-sections, --cost-rounds, --moves, --unloads, --timeout, --residency, --load-queue, --machines, --machine-radius, --machine-vertical-radius.");
             }
 
             if (hasValue)

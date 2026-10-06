@@ -69,11 +69,6 @@ internal sealed class TicketShape
         return true;
     }
 
-    public bool Contains(SectionPos center, int x, int y, int z)
-    {
-        return TryGetRow(center, y, z, out var minX, out var maxX) && x >= minX && x <= maxX;
-    }
-
     /// <summary>
     ///     False when the shape placed at the two centers cannot share a section, because their bounding boxes are apart on some axis.
     /// </summary>

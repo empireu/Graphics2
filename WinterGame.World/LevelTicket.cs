@@ -32,6 +32,12 @@ public sealed class LevelTicket
     /// </summary>
     internal Level? Owner { get; set; }
 
+    /// <summary>
+    ///     Set when a load queue rebuild found every section of the load shape loaded or generating, so later rebuilds skip the ticket until it moves.
+    ///     It stays true while the ticket stands still, since a section the ticket holds is never unloaded and its generation always loads it.
+    /// </summary>
+    internal bool IsSatisfied { get; set; }
+
     public SectionPos Center { get; internal set; }
 
     public int HorizontalRadius { get; }

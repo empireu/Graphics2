@@ -71,11 +71,26 @@ public class LevelTests
 
         harness.Level.AddTicket(center, horizontalRadius: 1, verticalRadius: 1);
 
-        // The keep shape is radius 2 horizontally, which is 13 columns, and 5 sections tall, and only the load shape inside it is pending:
+        // The keep shape is radius 2 horizontally, which is 13 columns, and 5 sections tall, and nothing is queued before an update:
         Assert.Equal(13 * 5, harness.Level.SectionEntryCount);
-        Assert.Equal(5 * 3, harness.Level.PendingCount);
+        Assert.Equal(0, harness.Level.PendingCount);
         Assert.Equal(0, harness.Level.InFlightCount);
         Assert.Equal(SectionStatus.None, harness.Level.GetStatus(center));
+    }
+
+    [Fact]
+    public void Update_QueuesTheLoadShapeAndNotTheKeepMargin()
+    {
+        using var harness = new Harness(slotCount: 1);
+        var center = SurfaceSection(0, 0);
+
+        harness.Level.AddTicket(center, horizontalRadius: 1, verticalRadius: 1);
+        harness.Level.Update();
+
+        // The load shape is 5 columns of 3, and its nearest section took the only slot:
+        Assert.Equal(5 * 3 - 1, harness.Level.PendingCount);
+        Assert.Equal(1, harness.Level.InFlightCount);
+        Assert.Equal(SectionStatus.Generating, harness.Level.GetStatus(center));
     }
 
     [Fact]
@@ -136,7 +151,7 @@ public class LevelTests
             Assert.Equal(inShape ? SectionStatus.Ready : SectionStatus.None, harness.Level.GetStatus(position));
         }
 
-        // The keep margin is claimed but never pending, and the 5 loaded sections are no longer pending:
+        // The keep margin is claimed but never queued, and the 5 loaded sections are no longer queued:
         Assert.Equal(0, harness.Level.PendingCount);
     }
 
@@ -235,17 +250,23 @@ public class LevelTests
         harness.TickUntilSettled();
 
         // The placements cannot overlap, and the rows between them number about 3 * 10^5, so each shape is applied whole:
-        harness.Level.MoveTicket(ticket, new SectionPos(center.X + 100_000, center.Y, center.Z + 100_000));
+        var far = new SectionPos(center.X + 100_000, center.Y, center.Z + 100_000);
 
-        // The load shape is radius 1 and one section tall, and nothing in it is loaded yet:
-        Assert.Equal(5, harness.Level.PendingCount);
-
+        harness.Level.MoveTicket(ticket, far);
         harness.Level.Update();
 
         foreach (var position in Box(center, 2, 1))
         {
             Assert.Equal(SectionStatus.None, harness.Level.GetStatus(position));
         }
+
+        // The load shape is radius 1 and one section tall, and the update took all 5 of its sections:
+        foreach (var position in Box(far, 1, 0).Where(position => IsInsideCylinder(far, position, 1, 0)))
+        {
+            Assert.NotEqual(SectionStatus.None, harness.Level.GetStatus(position));
+        }
+
+        Assert.Equal(0, harness.Level.PendingCount);
     }
 
     [Fact]
@@ -261,13 +282,15 @@ public class LevelTests
         Assert.True(harness.Level.TryGetSection(overlap, out var before));
 
         // Three sections along both horizontal axes still overlaps the keep disc of radius 3, so only the difference is applied:
-        harness.Level.MoveTicket(ticket, new SectionPos(center.X + 3, center.Y, center.Z + 3));
+        var target = new SectionPos(center.X + 3, center.Y, center.Z + 3);
 
-        // The load disc of radius 2 holds 13 sections and none of them is loaded, since the overlap is in the keep margin:
-        Assert.Equal(13, harness.Level.PendingCount);
-
+        harness.Level.MoveTicket(ticket, target);
         harness.Level.Update();
 
+        // The load disc of radius 2 holds 13 sections and none of them was loaded, since the overlap is in the keep margin, so each is either taken by the update or queued:
+        var taken = Box(target, 2, 0).Count(position => IsInsideCylinder(target, position, 2, 0) && harness.Level.GetStatus(position) != SectionStatus.None);
+
+        Assert.Equal(13, taken + harness.Level.PendingCount);
         Assert.True(harness.Level.TryGetSection(overlap, out var after));
         Assert.Equal(before.SlotIndex, after.SlotIndex);
         Assert.Equal(SectionStatus.None, harness.Level.GetStatus(center));
@@ -280,11 +303,17 @@ public class LevelTests
         var center = SurfaceSection(0, 0);
 
         var ticket = harness.Level.AddTicket(center, horizontalRadius: 1, verticalRadius: 1);
+
+        harness.Level.Update();
+
+        var entries = harness.Level.SectionEntryCount;
         var pending = harness.Level.PendingCount;
 
         harness.Level.MoveTicket(ticket, center);
 
+        Assert.Equal(entries, harness.Level.SectionEntryCount);
         Assert.Equal(pending, harness.Level.PendingCount);
+        Assert.Equal(1, harness.Level.GetTicketCount(center));
     }
 
     [Fact]
@@ -399,25 +428,89 @@ public class LevelTests
     }
 
     [Fact]
-    public void Update_DropsPendingSectionsThatLeftEveryLoadShape()
+    public void Update_AfterAMove_QueuesOnlyTheMovedLoadShape()
     {
         using var harness = new Harness(slotCount: 1);
         var center = SurfaceSection(0, 0);
 
         var ticket = harness.Level.AddTicket(center, horizontalRadius: 2, verticalRadius: 0);
-
-        Assert.Equal(13, harness.Level.PendingCount);
-
-        // Each of the disc's 5 rows gains a section ahead and loses one behind, and the one behind stays pending until the next update:
-        harness.Level.MoveTicket(ticket, new SectionPos(center.X + 1, center.Y, center.Z));
-
-        Assert.Equal(13 + 5, harness.Level.PendingCount);
-
-        // The update drops the 5 and publishes one section into the only slot:
         harness.Level.Update();
 
+        // The disc holds 13 sections, and the center took the only slot:
+        Assert.Equal(13 - 1, harness.Level.PendingCount);
+        Assert.Equal(SectionStatus.Generating, harness.Level.GetStatus(center));
+
+        // Each of the disc's 5 rows gains a section ahead and loses one behind:
+        var moved = new SectionPos(center.X + 1, center.Y, center.Z);
+
+        harness.Level.MoveTicket(ticket, moved);
+        harness.Level.Update();
+
+        var queued = harness.Level.GetQueuedSections().ToHashSet();
+        var leftBehind = Box(center, 2, 0).Where(position => IsInsideCylinder(center, position, 2, 0) && !IsInsideCylinder(moved, position, 2, 0)).ToArray();
+
+        // The moved disc is queued without the generating center, and the 5 sections left behind are not:
         Assert.Equal(13 - 1, harness.Level.PendingCount);
         Assert.Equal(1, harness.Level.InFlightCount);
+        Assert.Equal(5, leftBehind.Length);
+        Assert.All(leftBehind, position => Assert.DoesNotContain(position, queued));
+    }
+
+    [Fact]
+    public void Ticket_IsSatisfiedOnceARebuildFindsItsLoadShapeLoaded_UntilItMoves()
+    {
+        using var harness = new Harness();
+        var center = SurfaceSection(0, 0);
+
+        var ticket = harness.Level.AddTicket(center, horizontalRadius: 1, verticalRadius: 0);
+        harness.TickUntilSettled();
+
+        // The rebuild that queued the shape found sections to load:
+        Assert.False(ticket.IsSatisfied);
+
+        // Another ticket rebuilds the queue, which finds nothing left to load in the first shape:
+        var other = harness.Level.AddTicket(SurfaceSection(10, 10), horizontalRadius: 0, verticalRadius: 0);
+        harness.Level.Update();
+
+        Assert.True(ticket.IsSatisfied);
+        Assert.False(other.IsSatisfied);
+
+        var moved = new SectionPos(center.X + 1, center.Y, center.Z);
+
+        harness.Level.MoveTicket(ticket, moved);
+
+        Assert.False(ticket.IsSatisfied);
+
+        harness.TickUntilSettled();
+
+        foreach (var position in Box(moved, 1, 0).Where(position => IsInsideCylinder(moved, position, 1, 0)))
+        {
+            Assert.Equal(SectionStatus.Ready, harness.Level.GetStatus(position));
+        }
+    }
+
+    [Fact]
+    public void LoadQueue_HoldsEveryUnloadedWantedSectionOverRandomTicketChangesAndPartialLoads()
+    {
+        using var harness = new Harness(slotCount: 3);
+        var random = new Random(2468);
+        var tickets = new List<LevelTicket>();
+        var surfaceY = SurfaceSection(0, 0).Y;
+
+        for (var step = 0; step < 300; step++)
+        {
+            ApplyRandomTicketChange(harness.Level, tickets, random, surfaceY - 2, surfaceY + 2);
+
+            // Generation completes only now and then, so some sections stay queued over many updates and some tickets get satisfied:
+            if (random.Next(3) == 0)
+            {
+                harness.Scheduler.Drain();
+            }
+
+            harness.Level.Update();
+
+            AssertLoadQueueHoldsTheUnloadedWantedSections(harness.Level, tickets, step);
+        }
     }
 
     [Fact]
@@ -1152,13 +1245,12 @@ public class LevelTests
     }
 
     /// <summary>
-    ///     Counts each section's keep shapes by testing every section of every ticket's box, and checks the level's counts, its entries and its pending set against that.
+    ///     Counts each section's keep shapes by testing every section of every ticket's box, and checks the level's counts and its entries against that.
     ///     The level is never updated here, so every section is unloaded and has an entry exactly when some keep shape holds it.
     /// </summary>
     private static void AssertTicketCountsMatchBruteForce(Level level, List<LevelTicket> tickets, int step)
     {
         var expectedCounts = new Dictionary<SectionPos, int>();
-        var wanted = new HashSet<SectionPos>();
 
         foreach (var ticket in tickets)
         {
@@ -1170,11 +1262,6 @@ public class LevelTests
                 if (IsInsideCylinder(ticket.Center, position, keepHorizontal, keepVertical))
                 {
                     expectedCounts[position] = expectedCounts.GetValueOrDefault(position) + 1;
-                }
-
-                if (IsInsideCylinder(ticket.Center, position, ticket.HorizontalRadius, ticket.VerticalRadius))
-                {
-                    wanted.Add(position);
                 }
             }
         }
@@ -1190,12 +1277,42 @@ public class LevelTests
                 Assert.Fail($"Step {step}: section ({position.X}, {position.Y}, {position.Z}) has {actual} ticket reference(s), expected {expected}.");
             }
         }
+    }
+
+    /// <summary>
+    ///     Checks right after an update that every section inside some load shape that is neither generating nor loaded is queued, whichever tickets are satisfied, and that nothing outside every load shape is.
+    ///     A queued section may be generating or loaded when two load shapes queued it and one of its entries was taken.
+    /// </summary>
+    private static void AssertLoadQueueHoldsTheUnloadedWantedSections(Level level, List<LevelTicket> tickets, int step)
+    {
+        var wanted = new HashSet<SectionPos>();
+
+        foreach (var ticket in tickets)
+        {
+            foreach (var position in Box(ticket.Center, ticket.HorizontalRadius, ticket.VerticalRadius))
+            {
+                if (IsInsideCylinder(ticket.Center, position, ticket.HorizontalRadius, ticket.VerticalRadius))
+                {
+                    wanted.Add(position);
+                }
+            }
+        }
+
+        var queued = level.GetQueuedSections().ToHashSet();
 
         foreach (var position in wanted)
         {
-            if (!level.IsPending(position))
+            if (level.GetStatus(position) == SectionStatus.None && !queued.Contains(position))
             {
-                Assert.Fail($"Step {step}: section ({position.X}, {position.Y}, {position.Z}) is inside a load shape but not pending.");
+                Assert.Fail($"Step {step}: section ({position.X}, {position.Y}, {position.Z}) is unloaded inside a load shape but not queued.");
+            }
+        }
+
+        foreach (var position in queued)
+        {
+            if (!wanted.Contains(position))
+            {
+                Assert.Fail($"Step {step}: section ({position.X}, {position.Y}, {position.Z}) is queued outside every load shape.");
             }
         }
     }

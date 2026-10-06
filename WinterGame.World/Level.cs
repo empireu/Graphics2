@@ -50,7 +50,6 @@ public sealed class Level : IDisposable
     /// </summary>
     private enum RowOperation
     {
-        None,
         /// <summary>
         ///     Adds a ticket reference, creating the entry if there is none.
         /// </summary>
@@ -60,9 +59,9 @@ public sealed class Level : IDisposable
         /// </summary>
         Release,
         /// <summary>
-        ///     Makes a section that is neither generating nor loaded pending. Only for load shapes, whose sections always have an entry.
+        ///     Adds a section that is neither generating nor loaded to the load queue, by its squared distance to the shape's center. Only for load shapes, whose sections always have an entry.
         /// </summary>
-        Want
+        Queue
     }
 
     /// <summary>
@@ -125,24 +124,13 @@ public sealed class Level : IDisposable
     private readonly SectionBlockAllocator _blockStorage = new();
 
     /// <summary>
-    ///     Sections inside some ticket's load shape that are neither generating nor loaded.
-    ///     A section that has left every load shape since is only dropped by the next <see cref="RebuildLoadQueue"/>, so a move does no work for the sections leaving a load shape.
-    /// </summary>
-    private readonly HashSet<ulong> _pending = [];
-
-    /// <summary>
-    ///     Pending sections the last rebuild found outside every load shape, removed once the rebuild has walked the set.
-    /// </summary>
-    private readonly List<ulong> _stalePending = [];
-
-    /// <summary>
     ///     Loaded sections whose ticket count reached zero, oldest first. Each <see cref="Update"/> destroys up to <see cref="_unloadsPerUpdate"/> of them, and skips one a ticket has claimed again since.
     /// </summary>
     private readonly Queue<ulong> _unloadQueue = new();
 
     /// <summary>
-    ///     The pending sections inside some ticket's shape, by squared distance to the nearest ticket center.
-    ///     Rebuilt from <see cref="_pending"/> after a ticket changes, and entries that went stale since are skipped when dequeued.
+    ///     The sections inside some ticket's load shape that are neither generating nor loaded, by squared distance to that ticket's center.
+    ///     Rebuilt from the load shapes after a ticket changes. A section two load shapes hold is queued once by each, so the nearer entry comes first, and entries that went stale since are skipped when dequeued.
     /// </summary>
     private readonly PriorityQueue<ulong, long> _loadQueue = new();
 
@@ -211,7 +199,18 @@ public sealed class Level : IDisposable
     /// </summary>
     public BoundingBox3i MeshWindow => _meshWindow;
 
-    internal int PendingCount => _pending.Count;
+    internal int PendingCount => _loadQueue.Count;
+
+    /// <summary>
+    ///     The sections in the load queue, a section once for each of its entries.
+    /// </summary>
+    internal IEnumerable<SectionPos> GetQueuedSections()
+    {
+        foreach (var (key, _) in _loadQueue.UnorderedItems)
+        {
+            yield return new SectionPos(key);
+        }
+    }
 
     internal int InFlightCount => _inFlight.Count;
 
@@ -257,11 +256,6 @@ public sealed class Level : IDisposable
         return TryGetBlock(position, out _, out var view) ? view.TicketCounts[SectionBlockPos.GetLocalIndex(position)] : 0;
     }
 
-    internal bool IsPending(SectionPos position)
-    {
-        return _pending.Contains(position.GetKey());
-    }
-
     internal bool IsUnloadQueued(SectionPos position)
     {
         return TryGetBlock(position, out _, out var view) && view.IsUnloadQueued(SectionBlockPos.GetLocalIndex(position));
@@ -291,7 +285,6 @@ public sealed class Level : IDisposable
 
         _tickets.Add(ticket);
         ApplyShape(ticket.KeepShape, center, RowOperation.Claim);
-        ApplyShape(ticket.LoadShape, center, RowOperation.Want);
         _loadQueueDirty = true;
 
         return ticket;
@@ -315,6 +308,8 @@ public sealed class Level : IDisposable
         }
 
         ticket.Center = center;
+        ticket.IsSatisfied = false;
+        _loadQueueDirty = true;
 
         var keepShape = ticket.KeepShape;
 
@@ -323,17 +318,12 @@ public sealed class Level : IDisposable
         if (!keepShape.CanOverlap(previous, center))
         {
             ApplyShape(keepShape, center, RowOperation.Claim);
-            ApplyShape(ticket.LoadShape, center, RowOperation.Want);
             ApplyShape(keepShape, previous, RowOperation.Release);
-            _loadQueueDirty = true;
 
             return;
         }
 
-        // The keep difference goes first, since a section entering the load shape needs the entry that claiming it creates:
         ApplyShapeDifference(keepShape, previous, center, RowOperation.Claim, RowOperation.Release);
-        ApplyShapeDifference(ticket.LoadShape, previous, center, RowOperation.Want, RowOperation.None);
-        _loadQueueDirty = true;
     }
 
     /// <summary>
@@ -423,7 +413,7 @@ public sealed class Level : IDisposable
     {
         WgAssert.DebugIsOnGameThread();
 
-        return new LevelStats(_terrain.SectionCount, _inFlight.Count, _pending.Count, _unloadQueue.Count);
+        return new LevelStats(_terrain.SectionCount, _inFlight.Count, _loadQueue.Count, _unloadQueue.Count);
     }
 
     public SectionStatus GetStatus(SectionPos position)
@@ -466,8 +456,6 @@ public sealed class Level : IDisposable
         var blockKey = SectionBlockPos.FromSection(position).GetKey();
         var view = GetOrAddBlock(blockKey);
         var index = SectionBlockPos.GetLocalIndex(position);
-
-        _pending.Remove(key);
 
         SetReady(blockKey, view, index, generated.Section.SlotIndex, generated.ContentSides);
 
@@ -942,7 +930,7 @@ public sealed class Level : IDisposable
                     }
                 }
 
-                ApplyRuns(runs[..count], blockY, blockZ);
+                ApplyRuns(runs[..count], blockY, blockZ, center);
             }
         }
     }
@@ -978,14 +966,14 @@ public sealed class Level : IDisposable
                             count = AddRunsOutside(runs, count, entering, minX, maxX, wasInside, previousMinX, previousMaxX, y, z);
                         }
 
-                        if (wasInside && leaving != RowOperation.None)
+                        if (wasInside)
                         {
                             count = AddRunsOutside(runs, count, leaving, previousMinX, previousMaxX, isInside, minX, maxX, y, z);
                         }
                     }
                 }
 
-                ApplyRuns(runs[..count], blockY, blockZ);
+                ApplyRuns(runs[..count], blockY, blockZ, center);
             }
         }
     }
@@ -1016,8 +1004,9 @@ public sealed class Level : IDisposable
 
     /// <summary>
     ///     Applies the runs of one row of blocks, one block at a time, so each block the runs touch is looked up once.
+    ///     <paramref name="center"/> is where the shape the runs come from is placed, which orders the sections a run queues.
     /// </summary>
-    private void ApplyRuns(ReadOnlySpan<RowRun> runs, int blockY, int blockZ)
+    private void ApplyRuns(ReadOnlySpan<RowRun> runs, int blockY, int blockZ, SectionPos center)
     {
         if (runs.IsEmpty)
         {
@@ -1048,12 +1037,12 @@ public sealed class Level : IDisposable
         {
             if (touched[offset])
             {
-                ApplyRunsToBlock(runs, firstBlockX + offset, blockY, blockZ);
+                ApplyRunsToBlock(runs, firstBlockX + offset, blockY, blockZ, center);
             }
         }
     }
 
-    private void ApplyRunsToBlock(ReadOnlySpan<RowRun> runs, int blockX, int blockY, int blockZ)
+    private void ApplyRunsToBlock(ReadOnlySpan<RowRun> runs, int blockX, int blockY, int blockZ, SectionPos center)
     {
         var blockMinX = blockX << SectionBlockPos.Log;
         var blockMaxX = blockMinX + SectionBlockPos.BlockMask;
@@ -1074,13 +1063,13 @@ public sealed class Level : IDisposable
 
             if (!fetched)
             {
-                // Only a claim creates a block, since a released or wanted section is already claimed:
+                // Only a claim creates a block, since a released or queued section is already claimed:
                 view = run.Operation == RowOperation.Claim ? GetOrAddBlock(blockKey) : _blockStorage.Get(_blocks[blockKey]);
                 fetched = true;
             }
 
             released |= run.Operation == RowOperation.Release;
-            ApplyRun(view, run.Operation, minX, maxX, run.Y, run.Z);
+            ApplyRun(view, run.Operation, minX, maxX, run.Y, run.Z, center);
         }
 
         if (released)
@@ -1089,14 +1078,12 @@ public sealed class Level : IDisposable
         }
     }
 
-    private void ApplyRun(SectionBlockView view, RowOperation operation, int minX, int maxX, int y, int z)
+    private void ApplyRun(SectionBlockView view, RowOperation operation, int minX, int maxX, int y, int z, SectionPos center)
     {
         var rowIndex = SectionBlockPos.GetLocalIndex(0, y, z);
 
         switch (operation)
         {
-            case RowOperation.None:
-                break;
             case RowOperation.Claim:
                 for (var x = minX; x <= maxX; x++)
                 {
@@ -1111,12 +1098,8 @@ public sealed class Level : IDisposable
                 }
 
                 break;
-            case RowOperation.Want:
-                for (var x = minX; x <= maxX; x++)
-                {
-                    MarkWanted(view, rowIndex | (x & SectionBlockPos.BlockMask), new SectionPos(x, y, z));
-                }
-
+            case RowOperation.Queue:
+                QueueRow(view, rowIndex, minX, maxX, y, z, center);
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(operation), operation, null);
@@ -1142,32 +1125,37 @@ public sealed class Level : IDisposable
 
         view.ClearClaimed(index);
 
-        if (view.IsReady(index))
+        // A queued section claimed again before its turn is skipped then, so it is queued at most once.
+        // A generating section keeps its entry until the generation completes and the harvest discards it:
+        if (view.IsReady(index) && !view.IsUnloadQueued(index))
         {
-            // A queued section claimed again before its turn is skipped then, so it is queued at most once:
-            if (!view.IsUnloadQueued(index))
-            {
-                view.SetUnloadQueued(index);
-                _unloadQueue.Enqueue(position.GetKey());
-            }
-
-            return;
-        }
-
-        // A generating section keeps its entry until the generation completes and the harvest discards it, and any other was at most pending:
-        if (!view.IsGenerating(index))
-        {
-            _pending.Remove(position.GetKey());
+            view.SetUnloadQueued(index);
+            _unloadQueue.Enqueue(position.GetKey());
         }
     }
 
-    private void MarkWanted(SectionBlockView view, int index, SectionPos position)
+    /// <summary>
+    ///     Queues the sections of one row of one block that are neither generating nor loaded, by squared distance to <paramref name="center"/>.
+    /// </summary>
+    private void QueueRow(SectionBlockView view, int rowIndex, int minX, int maxX, int y, int z, SectionPos center)
     {
-        Debug.Assert(view.IsClaimed(index), $"Section ({position.X}, {position.Y}, {position.Z}) entered a load shape without being claimed by the keep shape around it.");
+        var row = ((1UL << (maxX - minX + 1)) - 1) << (rowIndex | (minX & SectionBlockPos.BlockMask));
 
-        if (!view.IsReadyOrGenerating(index))
+        Debug.Assert((row & ~view.GetMask(SectionBlockView.ClaimedMask)) == 0, $"A section of row ({y}, {z}) is in a load shape without being claimed by the keep shape around it.");
+
+        var wanted = row & ~(view.GetMask(SectionBlockView.ReadyMask) | view.GetMask(SectionBlockView.GeneratingMask));
+        var blockMinX = minX & ~SectionBlockPos.BlockMask;
+        long deltaY = y - center.Y;
+        long deltaZ = z - center.Z;
+        var distanceYZ = deltaY * deltaY + deltaZ * deltaZ;
+
+        while (wanted != 0)
         {
-            _pending.Add(position.GetKey());
+            var x = blockMinX | (BitOperations.TrailingZeroCount(wanted) & SectionBlockPos.BlockMask);
+            long deltaX = x - center.X;
+
+            wanted &= wanted - 1;
+            _loadQueue.Enqueue(new SectionPos(x, y, z).GetKey(), deltaX * deltaX + distanceYZ);
         }
     }
 
@@ -1298,55 +1286,27 @@ public sealed class Level : IDisposable
         return true;
     }
 
+    /// <summary>
+    ///     Queues the wanted sections of every ticket that is not satisfied, and marks satisfied each one whose load shape had none.
+    /// </summary>
     private void RebuildLoadQueue()
     {
         _loadQueue.Clear();
 
-        foreach (var key in _pending)
-        {
-            if (TryGetLoadPriority(new SectionPos(key), out var priority))
-            {
-                _loadQueue.Enqueue(key, priority);
-            }
-            else
-            {
-                _stalePending.Add(key);
-            }
-        }
-
-        foreach (var key in _stalePending)
-        {
-            _pending.Remove(key);
-        }
-
-        _stalePending.Clear();
-        _loadQueueDirty = false;
-    }
-
-    /// <summary>
-    ///     The squared distance from the section to the nearest ticket whose load shape holds it. False when no load shape holds it.
-    /// </summary>
-    private bool TryGetLoadPriority(SectionPos position, out long priority)
-    {
-        priority = long.MaxValue;
-
         foreach (var ticket in _tickets)
         {
-            var center = ticket.Center;
-
-            if (!ticket.LoadShape.Contains(center, position.X, position.Y, position.Z))
+            if (ticket.IsSatisfied)
             {
                 continue;
             }
 
-            long deltaX = position.X - center.X;
-            long deltaY = position.Y - center.Y;
-            long deltaZ = position.Z - center.Z;
+            var queued = _loadQueue.Count;
 
-            priority = Math.Min(priority, deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ);
+            ApplyShape(ticket.LoadShape, ticket.Center, RowOperation.Queue);
+            ticket.IsSatisfied = _loadQueue.Count == queued;
         }
 
-        return priority != long.MaxValue;
+        _loadQueueDirty = false;
     }
 
     private void PublishGenerations()
@@ -1364,13 +1324,11 @@ public sealed class Level : IDisposable
 
             var index = SectionBlockPos.GetLocalIndex(position);
 
-            // A section that left every keep shape or loaded since the rebuild went stale in the queue:
+            // A section that left every keep shape, loaded, or was taken from another load shape's entry since the rebuild went stale in the queue:
             if (!view.IsClaimed(index) || view.IsReadyOrGenerating(index))
             {
                 continue;
             }
-
-            _pending.Remove(key);
 
             if (IsSky(position))
             {

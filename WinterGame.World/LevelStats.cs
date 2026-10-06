@@ -16,7 +16,7 @@ public readonly struct LevelStats(int loadedSections, int generatingSections, in
     public readonly int GeneratingSections = generatingSections;
 
     /// <summary>
-    ///     Sections inside some ticket's load shape that wait for a free generation slot.
+    ///     Sections inside some ticket's load shape that wait for a free generation slot. A section two load shapes hold is counted once for each.
     /// </summary>
     public readonly int PendingSections = pendingSections;
 
