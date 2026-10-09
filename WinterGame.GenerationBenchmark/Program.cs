@@ -10,6 +10,7 @@ using WinterGame.World.Generation;
 using WinterGame.World.Level;
 using WinterGame.World.Level.Loading;
 using WinterGame.World.Level.Residency;
+using WinterGame.World.Lighting;
 using WinterGame.World.Storage;
 
 // ReSharper disable FieldCanBeMadeReadOnly.Global
@@ -62,6 +63,26 @@ internal static class Benchmark
         public required int Ticks;
         public required double UpdateAverageMilliseconds;
         public required double UpdateMaximumMilliseconds;
+
+        /// <summary>
+        ///     The light engine's update after each level update, zero when the run had none.
+        /// </summary>
+        public required double LightAverageMilliseconds;
+
+        public required double LightMaximumMilliseconds;
+    }
+
+    /// <summary>
+    ///     The light box of the game, or the ticket's when that is smaller.
+    /// </summary>
+    public static int LightRadius(BenchmarkOptions options)
+    {
+        return Math.Min(options.Radius, 8);
+    }
+
+    public static int LightVerticalRadius(BenchmarkOptions options)
+    {
+        return Math.Min(options.VerticalRadius, 4);
     }
 
     public static void Run(BenchmarkOptions options)
@@ -126,6 +147,11 @@ internal static class Benchmark
             Console.WriteLine(
                 $"  {result.Slots,5}  {result.Seconds,8:F2}  {generated / result.Seconds,10:F0}  {slots * options.TickHz,18:F0}  {result.Ticks,5}  {result.UpdateAverageMilliseconds,6:F3} / {result.UpdateMaximumMilliseconds:F2}"
             );
+
+            if (options.Light)
+            {
+                Console.WriteLine($"         Light after each update avg / max (ms): {result.LightAverageMilliseconds:F3} / {result.LightMaximumMilliseconds:F3}");
+            }
         }
     }
 
@@ -225,15 +251,20 @@ internal static class Benchmark
         double tickHz,
         Action<WorldLevel, LevelTicket>? afterFill)
     {
+        // Only the paced runs follow the level with the light engine, since only they have no moves after the fill to record changes nobody takes:
+        var withLight = options.Light && tickHz > 0.0;
+
         // The level is declared last so it is disposed first, while the scheduler still runs the work it waits on:
         using var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = workers });
-        using var level = new WorldLevel(scheduler, graph, slots, options.UnloadsPerUpdate);
+        using var level = new WorldLevel(scheduler, graph, slots, options.UnloadsPerUpdate, recordChanges: withLight);
+        var light = withLight ? new LightEngine(level, LightRadius(options), LightVerticalRadius(options)) : null;
 
         scheduler.Start();
 
         var ticket = level.AddTicket(center, options.Radius, options.VerticalRadius);
         var remaining = new List<SectionPos>(shape);
         var updateMilliseconds = new List<double>();
+        var lightMilliseconds = new List<double>();
         var period = tickHz > 0.0 ? 1.0 / tickHz : 0.0;
         var watch = Stopwatch.StartNew();
         var nextTick = 0.0;
@@ -244,6 +275,14 @@ internal static class Benchmark
 
             level.Update();
             updateMilliseconds.Add(Stopwatch.GetElapsedTime(updateStart).TotalMilliseconds);
+
+            if (light != null)
+            {
+                var lightStart = Stopwatch.GetTimestamp();
+
+                light.Update(center);
+                lightMilliseconds.Add(Stopwatch.GetElapsedTime(lightStart).TotalMilliseconds);
+            }
 
             RemoveReady(level, remaining);
 
@@ -280,7 +319,9 @@ internal static class Benchmark
             Seconds = seconds,
             Ticks = updateMilliseconds.Count,
             UpdateAverageMilliseconds = updateMilliseconds.Average(),
-            UpdateMaximumMilliseconds = updateMilliseconds.Max()
+            UpdateMaximumMilliseconds = updateMilliseconds.Max(),
+            LightAverageMilliseconds = lightMilliseconds.Count > 0 ? lightMilliseconds.Average() : 0.0,
+            LightMaximumMilliseconds = lightMilliseconds.Count > 0 ? lightMilliseconds.Max() : 0.0
         };
     }
 
@@ -603,6 +644,7 @@ internal sealed class BenchmarkOptions
     public int UnloadsPerUpdate = WorldLevel.DefaultUnloadsPerUpdate;
     public double TimeoutSeconds = 300.0;
     public bool Residency;
+    public bool Light;
     public bool LoadQueue;
     public int Machines = 100;
     public int MachineRadius = 1;
@@ -657,6 +699,10 @@ internal sealed class BenchmarkOptions
                     options.Residency = true;
                     hasValue = false;
                     break;
+                case "--light":
+                    options.Light = true;
+                    hasValue = false;
+                    break;
                 case "--load-queue":
                     options.LoadQueue = true;
                     hasValue = false;
@@ -671,7 +717,7 @@ internal sealed class BenchmarkOptions
                     options.MachineVerticalRadius = int.Parse(value, CultureInfo.InvariantCulture);
                     break;
                 default:
-                    throw new ArgumentException($"Unknown option '{name}'. Options: --seed, --radius, --vertical-radius, --workers 1,2,4, --slots 10,20, --tick-hz, --cost-sections, --cost-rounds, --moves, --unloads, --timeout, --residency, --load-queue, --machines, --machine-radius, --machine-vertical-radius.");
+                    throw new ArgumentException($"Unknown option '{name}'. Options: --seed, --radius, --vertical-radius, --workers 1,2,4, --slots 10,20, --tick-hz, --cost-sections, --cost-rounds, --moves, --unloads, --timeout, --residency, --light (the residency and paced runs), --load-queue, --machines, --machine-radius, --machine-vertical-radius.");
             }
 
             if (hasValue)

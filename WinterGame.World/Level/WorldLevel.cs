@@ -61,13 +61,15 @@ public sealed class WorldLevel : IDisposable
     /// <summary>
     ///     Creates a level and registers its generation executor.
     ///     <paramref name="meshing"/> has to be the description the sections are meshed with, since its window decides which sections a write meshes again, and is the default one when null.
+    ///     <paramref name="recordChanges"/> keeps every section that becomes ready, is written or is destroyed for <see cref="TakeChanges"/>, which then has to be called every update.
     /// </summary>
     public WorldLevel(
         JobScheduler scheduler,
         TerrainGraph graph,
         int slotCount = SectionGenerationExecutor.DefaultSlotCount,
         int unloadsPerUpdate = DefaultUnloadsPerUpdate,
-        SectionMeshingDescription? meshing = null)
+        SectionMeshingDescription? meshing = null,
+        bool recordChanges = false)
     {
         ArgumentNullException.ThrowIfNull(scheduler);
         ArgumentNullException.ThrowIfNull(graph);
@@ -80,7 +82,7 @@ public sealed class WorldLevel : IDisposable
 
         _scheduler = scheduler;
         _meshReadiness = new MeshReadiness(_blocks, (meshing ?? new SectionMeshingDescription()).GetWindow());
-        _table = new SectionTable(_blocks, _meshReadiness);
+        _table = new SectionTable(_blocks, _meshReadiness, recordChanges);
         _residency = new TicketResidency(_table, unloadsPerUpdate);
         _loader = new SectionLoader(_table, scheduler, graph, slotCount);
     }
@@ -89,6 +91,17 @@ public sealed class WorldLevel : IDisposable
     ///     The inclusive box of samples a section's mesh reads, relative to its origin, as the level was told at construction.
     /// </summary>
     public BoundingBox3i MeshWindow => _meshReadiness.MeshWindow;
+
+    /// <summary>
+    ///     The lowest section the level writes as uniform air without generating it, since the generator puts no surface there.
+    ///     The sections above it hold only what writes put there.
+    /// </summary>
+    public int LowestSkySectionY => _loader.LowestSkySectionY;
+
+    /// <summary>
+    ///     Whether the level was created to record its changes for <see cref="TakeChanges"/>.
+    /// </summary>
+    public bool RecordsChanges => _table.RecordsChanges;
 
     /// <summary>
     ///     Released sections waiting to be destroyed, the backlog a long move leaves behind.
@@ -214,6 +227,24 @@ public sealed class WorldLevel : IDisposable
         ArgumentNullException.ThrowIfNull(destination);
 
         _meshReadiness.Take(destination);
+    }
+
+    /// <summary>
+    ///     Moves the sections that became ready, were written or were destroyed since the last call into <paramref name="destination"/>, in the order it happened, for a consumer that follows the store.
+    ///     A section can be listed more than once and can have changed again by the time it is read, so a consumer reads it again, and skips one that is not ready or drops what it holds of it.
+    ///     Only a level created to record changes has any.
+    /// </summary>
+    public void TakeChanges(List<SectionChange> destination)
+    {
+        WgAssert.DebugIsOnGameThread();
+        ArgumentNullException.ThrowIfNull(destination);
+
+        if (!_table.RecordsChanges)
+        {
+            throw new InvalidOperationException("The level was created without recording changes.");
+        }
+
+        _table.TakeChanges(destination);
     }
 
     /// <summary>
@@ -384,6 +415,7 @@ public sealed class WorldLevel : IDisposable
                         Debug.Assert(found, "A section the write found ready has a block.");
 
                         view.SetContentSides(SectionBlockPos.GetLocalIndex(position), SectionContentSides.FromSection(section));
+                        _table.RecordWritten(position);
                     }
                 }
             }

@@ -1,5 +1,3 @@
-using System.Diagnostics;
-using System.Runtime.Intrinsics;
 using Graphics2.Data;
 
 namespace WinterGame.World.Storage;
@@ -28,14 +26,6 @@ public readonly struct SectionContentSides(byte packed) : IEquatable<SectionCont
     private const int LowXShift = FieldBits;
     private const int LowYShift = 2 * FieldBits;
     private const int LowZShift = 3 * FieldBits;
-
-    /// <summary>
-    ///     The voxels of a brick at its lowest X, in the brick's x fastest order with one bit per voxel.
-    /// </summary>
-    private const ulong BrickLowXVoxels = 0x1111_1111_1111_1111;
-
-    private const ulong BrickLowYVoxels = 0x000F_000F_000F_000F;
-    private const ulong BrickLowZVoxels = 0xFFFF;
 
     public readonly byte Packed = packed;
 
@@ -103,13 +93,11 @@ public readonly struct SectionContentSides(byte packed) : IEquatable<SectionCont
     }
 
     /// <summary>
-    ///     Scans a stored section's content bricks, which is what a write uses instead of expanding the section first.
-    ///     A sample is solid exactly when its high bit is set, so a dense brick's 64 samples become one solid mask in two Vector256 loads, and each face is a test of that mask.
+    ///     Scans a stored section's content bricks without expanding them.
+    ///     Each brick is read as one solid mask (<see cref="Section.GetSolidMask"/>), and each face is a test of that mask.
     /// </summary>
     public static SectionContentSides FromSection(Section section)
     {
-        Debug.Assert(WorldConstants.ContentIsoLevel == sbyte.MaxValue, "The solid mask is the samples' high bit, which only matches an iso level of 127.");
-
         var interior = ContentSide.None;
         var lowX = ContentSide.None;
         var lowY = ContentSide.None;
@@ -117,23 +105,23 @@ public readonly struct SectionContentSides(byte packed) : IEquatable<SectionCont
 
         for (var brickIndex = 0; brickIndex < Section.Bricks; brickIndex++)
         {
-            var solid = GetSolidMask(section, brickIndex);
+            var solid = section.GetSolidMask(brickIndex);
 
             interior |= GetSide(solid, ulong.MaxValue);
 
             if (brickIndex % Section.BricksPerAxis == 0)
             {
-                lowX |= GetSide(solid, BrickLowXVoxels);
+                lowX |= GetSide(solid, CubeMask.LowX);
             }
 
             if (brickIndex / Section.BricksPerAxis % Section.BricksPerAxis == 0)
             {
-                lowY |= GetSide(solid, BrickLowYVoxels);
+                lowY |= GetSide(solid, CubeMask.LowY);
             }
 
             if (brickIndex < Section.BricksPerAxis * Section.BricksPerAxis)
             {
-                lowZ |= GetSide(solid, BrickLowZVoxels);
+                lowZ |= GetSide(solid, CubeMask.LowZ);
             }
         }
 
@@ -189,23 +177,6 @@ public readonly struct SectionContentSides(byte packed) : IEquatable<SectionCont
         }
 
         return side;
-    }
-
-    /// <summary>
-    ///     One bit per voxel of a content brick, set where the voxel is solid, in the brick's x fastest order.
-    /// </summary>
-    private static ulong GetSolidMask(Section section, int brickIndex)
-    {
-        if (section.GetBrickType(VoxelChannel.Content, brickIndex) == BrickType.Uniform)
-        {
-            return section.GetUniformValue(VoxelChannel.Content, brickIndex) > WorldConstants.ContentIsoLevel ? ulong.MaxValue : 0;
-        }
-
-        var voxels = section.GetDense(VoxelChannel.Content, brickIndex).Span;
-        var low = Vector256.Create<byte>(voxels);
-        var high = Vector256.Create<byte>(voxels[Vector256<byte>.Count..]);
-
-        return low.ExtractMostSignificantBits() | ((ulong)high.ExtractMostSignificantBits() << Vector256<byte>.Count);
     }
 
     public bool Equals(SectionContentSides other)

@@ -7,11 +7,18 @@ namespace WinterGame.World.Level;
 ///     The level's sections: their voxels in <see cref="Terrain"/>, their state in <see cref="Blocks"/>, and the transitions between states.
 ///     A section only becomes generating, ready or gone through this table, so whatever has to follow a transition happens in one place.
 /// </summary>
-internal sealed class SectionTable(SectionBlockMap blocks, MeshReadiness meshReadiness)
+internal sealed class SectionTable(SectionBlockMap blocks, MeshReadiness meshReadiness, bool recordsChanges)
 {
     public readonly SectionArena Terrain = new();
 
+    /// <summary>
+    ///     The sections that became ready, were written or were destroyed since the last <see cref="TakeChanges"/>, in the order it happened, kept only while <see cref="RecordsChanges"/>.
+    /// </summary>
+    private readonly List<SectionChange> _changes = [];
+
     public SectionBlockMap Blocks => blocks;
+
+    public bool RecordsChanges => recordsChanges;
 
     /// <summary>
     ///     Marks a claimed section generating into <paramref name="executorSlot"/>.
@@ -29,6 +36,28 @@ internal sealed class SectionTable(SectionBlockMap blocks, MeshReadiness meshRea
     {
         meshReadiness.TrackNewlyReady(blockKey, view);
         view.SetReady(localIndex, arenaSlot, contentSides);
+
+        if (recordsChanges)
+        {
+            _changes.Add(new SectionChange(new SectionBlockPos(blockKey).GetSection(localIndex), SectionChangeKind.Ready));
+        }
+    }
+
+    /// <summary>
+    ///     Records that a write changed some of a ready section's voxels.
+    /// </summary>
+    public void RecordWritten(SectionPos position)
+    {
+        if (recordsChanges)
+        {
+            _changes.Add(new SectionChange(position, SectionChangeKind.Written));
+        }
+    }
+
+    public void TakeChanges(List<SectionChange> destination)
+    {
+        destination.AddRange(_changes);
+        _changes.Clear();
     }
 
     /// <summary>
@@ -54,6 +83,11 @@ internal sealed class SectionTable(SectionBlockMap blocks, MeshReadiness meshRea
 
         view.ClearReady(localIndex);
         blocks.FreeIfEmpty(blockKey, view);
+
+        if (recordsChanges)
+        {
+            _changes.Add(new SectionChange(position, SectionChangeKind.Destroyed));
+        }
     }
 
     public SectionStatus GetStatus(SectionPos position)

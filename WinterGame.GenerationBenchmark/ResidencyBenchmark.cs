@@ -8,6 +8,7 @@ using WinterGame.World;
 using WinterGame.World.Generation;
 using WinterGame.World.Level;
 using WinterGame.World.Level.Residency;
+using WinterGame.World.Lighting;
 using WinterGame.World.Storage;
 
 namespace WinterGame.GenerationBenchmark;
@@ -40,15 +41,22 @@ internal static class ResidencyBenchmark
         Console.WriteLine($"  Runtime:  {RuntimeInformation.FrameworkDescription}, {(GCSettings.IsServerGC ? "server" : "workstation")} GC, tiered compilation {tieredCompilation}");
         Console.WriteLine($"  Ticket:   horizontal radius {options.Radius}, vertical radius {options.VerticalRadius}, above the surface, {loadShape.Length} section(s) loaded and {keepSections} kept");
         Console.WriteLine($"  Unloads:  {options.UnloadsPerUpdate} per update");
+        Console.WriteLine(
+            options.Light
+                ? $"  Light:    the engine over the game's box (radius {Benchmark.LightRadius(options)}, vertical {Benchmark.LightVerticalRadius(options)}) around the ticket, updated after every update, timed apart from it"
+                : "  Light:    off"
+        );
         Console.WriteLine();
 
         // The level is declared last so it is disposed first:
         using var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = 1 });
-        using var level = new WorldLevel(scheduler, graph, unloadsPerUpdate: options.UnloadsPerUpdate);
+        using var level = new WorldLevel(scheduler, graph, unloadsPerUpdate: options.UnloadsPerUpdate, recordChanges: options.Light);
+        var light = options.Light ? new LightEngine(level, Benchmark.LightRadius(options), Benchmark.LightVerticalRadius(options)) : null;
 
         // One section loaded and unloaded first, so the arena's shared descriptor page is not counted as residency memory:
         level.GetOrLoadSection(new SectionPos(center.X - 10_000, center.Y, center.Z));
         level.Update();
+        UpdateLight(light, center);
 
         var memoryBefore = GC.GetTotalMemory(forceFullCollection: true);
         var addStart = Stopwatch.GetTimestamp();
@@ -63,37 +71,47 @@ internal static class ResidencyBenchmark
         RequireLoaded(level, loadShape);
 
         var memoryAfter = GC.GetTotalMemory(forceFullCollection: true);
+        var lightFill = UpdateLight(light, center);
 
         Console.WriteLine("Fill, the first time each path runs:");
         Console.WriteLine($"  AddTicket:           {add:F3} ms");
         Console.WriteLine($"  The update loading:  {fill:F3} ms");
         Console.WriteLine($"  Heap growth:         {Mib(memoryAfter - memoryBefore):F2} MiB, {(double)(memoryAfter - memoryBefore) / keepSections:F0} bytes per kept section");
+
+        if (light != null)
+        {
+            Console.WriteLine($"  Light after it:      {lightFill:F3} ms, {light.LastVisitCount} cell visit(s)");
+        }
+
         Console.WriteLine();
 
-        Warmup(level, ticket);
+        Warmup(level, ticket, light);
         MeasureReads(level, loadShape, options.Seed);
 
-        var alongX = MeasureSteps(level, ticket, options.Moves, (start, step) => new SectionPos(start.X + step, start.Y, start.Z));
-        var diagonal = MeasureSteps(level, ticket, options.Moves, (start, step) => new SectionPos(start.X + step, start.Y, start.Z + step));
-        var up = MeasureSteps(level, ticket, options.Moves, (start, step) => new SectionPos(start.X, start.Y + step, start.Z));
+        var alongX = MeasureSteps(level, ticket, light, options.Moves, (start, step) => new SectionPos(start.X + step, start.Y, start.Z));
+        var diagonal = MeasureSteps(level, ticket, light, options.Moves, (start, step) => new SectionPos(start.X + step, start.Y, start.Z + step));
+        var up = MeasureSteps(level, ticket, light, options.Moves, (start, step) => new SectionPos(start.X, start.Y + step, start.Z));
 
         Console.WriteLine($"Ticket steps of one section, {options.Moves} per direction, each followed by one update:");
         Console.WriteLine($"  MoveTicket along X:  {Describe(alongX.Moves)}");
         Console.WriteLine($"  Update after it:     {Describe(alongX.Updates)}");
+        DescribeLight(light, alongX.Light);
         Console.WriteLine($"  MoveTicket diagonal: {Describe(diagonal.Moves)}");
         Console.WriteLine($"  Update after it:     {Describe(diagonal.Updates)}");
+        DescribeLight(light, diagonal.Light);
         Console.WriteLine($"  MoveTicket up:       {Describe(up.Moves)}");
         Console.WriteLine($"  Update after it:     {Describe(up.Updates)}");
+        DescribeLight(light, up.Light);
         Console.WriteLine("  The update loads every section the step brought into the load shape, which only a ticket above the surface does, and unloads up to the budget.");
         Console.WriteLine();
 
-        MeasureTeleport(level, ticket, center, options);
+        MeasureTeleport(level, ticket, light, center, options);
     }
 
     /// <summary>
     ///     Walks out and back along X, diagonally and up, and teleports away and back, so every path of a move and an update has run often enough to be promoted.
     /// </summary>
-    private static void Warmup(WorldLevel level, LevelTicket ticket)
+    private static void Warmup(WorldLevel level, LevelTicket ticket, LightEngine? light)
     {
         var home = ticket.Center;
 
@@ -101,27 +119,53 @@ internal static class ResidencyBenchmark
         {
             for (var step = 1; step <= WarmupSteps; step++)
             {
-                StepTo(level, ticket, new SectionPos(home.X + step, home.Y + step % 3, home.Z + step / 2));
+                StepTo(level, ticket, light, new SectionPos(home.X + step, home.Y + step % 3, home.Z + step / 2));
             }
 
             for (var step = WarmupSteps - 1; step >= 0; step--)
             {
-                StepTo(level, ticket, new SectionPos(home.X + step, home.Y + step % 3, home.Z + step / 2));
+                StepTo(level, ticket, light, new SectionPos(home.X + step, home.Y + step % 3, home.Z + step / 2));
             }
 
-            StepTo(level, ticket, new SectionPos(home.X + 10_000, home.Y, home.Z));
-            StepTo(level, ticket, home);
-            Drain(level);
+            StepTo(level, ticket, light, new SectionPos(home.X + 10_000, home.Y, home.Z));
+            StepTo(level, ticket, light, home);
+            Drain(level, light, home);
 
             // Tiered compilation promotes a method on a background thread some time after its 30th call:
             Thread.Sleep(500);
         }
     }
 
-    private static void StepTo(WorldLevel level, LevelTicket ticket, SectionPos center)
+    private static void StepTo(WorldLevel level, LevelTicket ticket, LightEngine? light, SectionPos center)
     {
         level.MoveTicket(ticket, center);
         level.Update();
+        UpdateLight(light, center);
+    }
+
+    /// <summary>
+    ///     Updates the light engine around <paramref name="center"/> and returns how long it took, or zero without one.
+    /// </summary>
+    private static double UpdateLight(LightEngine? light, SectionPos center)
+    {
+        if (light == null)
+        {
+            return 0.0;
+        }
+
+        var start = Stopwatch.GetTimestamp();
+
+        light.Update(center);
+
+        return Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+    }
+
+    private static void DescribeLight(LightEngine? light, double[] milliseconds)
+    {
+        if (light != null)
+        {
+            Console.WriteLine($"  Light after it:      {Describe(milliseconds)}");
+        }
     }
 
     /// <summary>
@@ -263,11 +307,17 @@ internal static class ResidencyBenchmark
     /// <summary>
     ///     Steps the ticket away from where it stands, timing each move and the update after it, then puts it back and drains the unloads, untimed.
     /// </summary>
-    private static (double[] Moves, double[] Updates) MeasureSteps(WorldLevel level, LevelTicket ticket, int count, Func<SectionPos, int, SectionPos> target)
+    private static (double[] Moves, double[] Updates, double[] Light) MeasureSteps(
+        WorldLevel level,
+        LevelTicket ticket,
+        LightEngine? light,
+        int count,
+        Func<SectionPos, int, SectionPos> target)
     {
         var start = ticket.Center;
         var moveMilliseconds = new double[count];
         var updateMilliseconds = new double[count];
+        var lightMilliseconds = new double[count];
 
         for (var step = 0; step < count; step++)
         {
@@ -280,22 +330,24 @@ internal static class ResidencyBenchmark
 
             level.Update();
             updateMilliseconds[step] = Stopwatch.GetElapsedTime(updateStart).TotalMilliseconds;
+            lightMilliseconds[step] = UpdateLight(light, ticket.Center);
         }
 
-        StepTo(level, ticket, start);
-        Drain(level);
+        StepTo(level, ticket, light, start);
+        Drain(level, light, start);
 
-        return (moveMilliseconds, updateMilliseconds);
+        return (moveMilliseconds, updateMilliseconds, lightMilliseconds);
     }
 
     /// <summary>
     ///     Jumps far away, loads the new shape, then removes the ticket and times the updates that drain the backlog.
     /// </summary>
-    private static void MeasureTeleport(WorldLevel level, LevelTicket ticket, SectionPos center, BenchmarkOptions options)
+    private static void MeasureTeleport(WorldLevel level, LevelTicket ticket, LightEngine? light, SectionPos center, BenchmarkOptions options)
     {
         var moveStart = Stopwatch.GetTimestamp();
+        var destination = new SectionPos(center.X + 10_000, center.Y, center.Z + 10_000);
 
-        level.MoveTicket(ticket, new SectionPos(center.X + 10_000, center.Y, center.Z + 10_000));
+        level.MoveTicket(ticket, destination);
 
         var move = Stopwatch.GetElapsedTime(moveStart).TotalMilliseconds;
         var updateStart = Stopwatch.GetTimestamp();
@@ -303,6 +355,7 @@ internal static class ResidencyBenchmark
         level.Update();
 
         var update = Stopwatch.GetElapsedTime(updateStart).TotalMilliseconds;
+        var lightUpdate = UpdateLight(light, destination);
         var removeStart = Stopwatch.GetTimestamp();
 
         level.RemoveTicket(ticket);
@@ -317,11 +370,18 @@ internal static class ResidencyBenchmark
 
             level.Update();
             drainMilliseconds.Add(Stopwatch.GetElapsedTime(drainStart).TotalMilliseconds);
+            UpdateLight(light, destination);
         }
 
         Console.WriteLine("Teleport and removal:");
         Console.WriteLine($"  MoveTicket 10000 along X and Z:  {move:F3} ms");
         Console.WriteLine($"  The update loading the new shape: {update:F3} ms");
+
+        if (light != null)
+        {
+            Console.WriteLine($"  Light after it:                   {lightUpdate:F3} ms, {light.LastVisitCount} cell visit(s)");
+        }
+
         Console.WriteLine($"  RemoveTicket:                     {remove:F3} ms");
         Console.WriteLine(
             $"  Unload drain at {options.UnloadsPerUpdate} per update: {backlog} section(s) in {drainMilliseconds.Count} update(s), {Describe(drainMilliseconds.ToArray())}, {1000.0 * drainMilliseconds.Sum() / backlog:F2} us per section"
@@ -329,11 +389,12 @@ internal static class ResidencyBenchmark
         Console.WriteLine();
     }
 
-    private static void Drain(WorldLevel level)
+    private static void Drain(WorldLevel level, LightEngine? light, SectionPos center)
     {
         while (level.UnloadQueueCount > 0)
         {
             level.Update();
+            UpdateLight(light, center);
         }
     }
 

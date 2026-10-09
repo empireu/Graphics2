@@ -51,6 +51,11 @@ internal sealed class SectionLoader
     private readonly float _skyMinimumY;
 
     /// <summary>
+    ///     The lowest section written as uniform air without a job, the first whose lowest sample is at or above <see cref="_skyMinimumY"/>.
+    /// </summary>
+    public readonly int LowestSkySectionY;
+
+    /// <summary>
     ///     The sections inside some ticket's load shape that are neither generating nor loaded, by squared distance to that ticket's center.
     ///     Rebuilt from the load shapes after a ticket changes. A section two load shapes hold is queued once by each, so the nearer entry comes first, and entries that went stale since are skipped when dequeued.
     /// </summary>
@@ -70,6 +75,12 @@ internal sealed class SectionLoader
         _executor = new SectionGenerationExecutor(graph, scheduler.ThreadCount, slotCount);
         _providerId = scheduler.RegisterExecutor(_executor);
         _skyMinimumY = graph.MaxSurfaceY + WorldConstants.VoxelSize;
+        LowestSkySectionY = (int)MathF.Ceiling(_skyMinimumY / (SectionPos.SectionSize * WorldConstants.VoxelSize));
+
+        Debug.Assert(
+            IsSky(new SectionPos(0, LowestSkySectionY, 0)) && !IsSky(new SectionPos(0, LowestSkySectionY - 1, 0)),
+            $"Section {LowestSkySectionY} is not the lowest one the loader writes as sky."
+        );
     }
 
     public int PendingCount => _loadQueue.Count;

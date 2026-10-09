@@ -266,6 +266,84 @@ public class LevelEditTests
     }
 
     [Fact]
+    public void TakeChanges_ListsEveryReadySection_AndEachSectionAWriteChanged()
+    {
+        WgAssert.InitGameThread();
+
+        using var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = 1 });
+        var level = new WorldLevel(scheduler, LevelTests.Graph, recordChanges: true);
+        var first = new SectionPos(0, LevelTests.LowestSkySectionY() + 10, 0);
+        var second = first with { X = first.X + 1 };
+        var changes = new List<SectionChange>();
+
+        // Sky sections load without a job, so one update readies the whole load shape, 5 columns of 3:
+        var ticket = level.AddTicket(first, 1, 1);
+
+        level.Update();
+        level.TakeChanges(changes);
+
+        var ready = changes.Select(change => change.Position).ToHashSet();
+
+        Assert.All(changes, change => Assert.Equal(SectionChangeKind.Ready, change.Kind));
+        Assert.Equal(5 * 3, changes.Count);
+        Assert.Equal(changes.Count, ready.Count);
+        Assert.All(ready, position => Assert.Equal(SectionStatus.Ready, level.GetStatus(position)));
+
+        // A write across both sections that changes a voxel of the first lists only the first:
+        var min = first.GetOrigin() + 16;
+        var max = second.GetOrigin() + 16;
+        var size = max - min + 1;
+        var content = Memory3D<byte>.Allocate(size.X, size.Y, size.Z);
+        var material = Memory3D<byte>.Allocate(size.X, size.Y, size.Z);
+
+        Assert.True(level.ReadRange(min, max, content.Span, material.Span));
+        content.Span[0, 0, 0] = 200;
+        Assert.True(level.WriteRange(min, max, content.Span, material.Span));
+
+        changes.Clear();
+        level.TakeChanges(changes);
+
+        var written = Assert.Single(changes);
+
+        Assert.Equal(first, written.Position);
+        Assert.Equal(SectionChangeKind.Written, written.Kind);
+
+        // Writing back the values already there lists nothing:
+        Assert.True(level.WriteRange(min, max, content.Span, material.Span));
+
+        changes.Clear();
+        level.TakeChanges(changes);
+
+        Assert.Empty(changes);
+
+        // Removing the ticket unloads every section, each listed once as destroyed:
+        level.RemoveTicket(ticket);
+        level.Update();
+
+        changes.Clear();
+        level.TakeChanges(changes);
+
+        Assert.All(changes, change => Assert.Equal(SectionChangeKind.Destroyed, change.Kind));
+        Assert.True(ready.SetEquals(changes.Select(change => change.Position)), "The destroyed sections are not the ones that were ready.");
+        Assert.Equal(ready.Count, changes.Count);
+
+        level.Dispose();
+    }
+
+    [Fact]
+    public void TakeChanges_Throws_WhenTheLevelDoesNotRecordThem()
+    {
+        WgAssert.InitGameThread();
+
+        using var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = 1 });
+        var level = new WorldLevel(scheduler, LevelTests.Graph);
+
+        Assert.Throws<InvalidOperationException>(() => level.TakeChanges([]));
+
+        level.Dispose();
+    }
+
+    [Fact]
     public void WriteRange_TouchingASectionThatIsNotReady_WritesNothing()
     {
         using var harness = new Harness();

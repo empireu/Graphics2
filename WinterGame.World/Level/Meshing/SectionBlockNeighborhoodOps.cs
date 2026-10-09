@@ -4,23 +4,13 @@ using WinterGame.World.Storage;
 namespace WinterGame.World.Level.Meshing;
 
 /// <summary>
-///     Block mask arithmetic over a block and its 26 neighbors, one bit per section in the layout of <see cref="SectionBlockPos.GetLocalIndex(int,int,int)"/>.
+///     Block mask arithmetic over a block and its 26 neighbors.
+///     A block mask is a <see cref="CubeMask"/> with one bit per section, in the layout of <see cref="SectionBlockPos.GetLocalIndex(int,int,int)"/>.
 ///     A neighborhood is 27 masks indexed by <see cref="GetIndex"/>, and a block that is not there is a zero mask.
 /// </summary>
 internal static class SectionBlockNeighborhoodOps
 {
     public const int Count = 27;
-
-    private const int XStride = 1;
-    private const int YStride = SectionBlockPos.BlockSize;
-    private const int ZStride = SectionBlockPos.BlockSize * SectionBlockPos.BlockSize;
-
-    private const ulong LowXFace = 0x1111_1111_1111_1111;
-    private const ulong HighXFace = 0x8888_8888_8888_8888;
-    private const ulong LowYFace = 0x000F_000F_000F_000F;
-    private const ulong HighYFace = 0xF000_F000_F000_F000;
-    private const ulong LowZFace = 0x0000_0000_0000_FFFF;
-    private const ulong HighZFace = 0xFFFF_0000_0000_0000;
 
     /// <summary>
     ///     The index of the block at the offset from the center block, each offset in [-1, 1].
@@ -36,7 +26,7 @@ internal static class SectionBlockNeighborhoodOps
     /// </summary>
     public static ulong GetBorder(int offsetX, int offsetY, int offsetZ)
     {
-        return GetAxisBorder(offsetX, LowXFace, HighXFace) & GetAxisBorder(offsetY, LowYFace, HighYFace) & GetAxisBorder(offsetZ, LowZFace, HighZFace);
+        return GetAxisBorder(offsetX, CubeMask.LowX, CubeMask.HighX) & GetAxisBorder(offsetY, CubeMask.LowY, CubeMask.HighY) & GetAxisBorder(offsetZ, CubeMask.LowZ, CubeMask.HighZ);
     }
 
     /// <summary>
@@ -80,14 +70,14 @@ internal static class SectionBlockNeighborhoodOps
 
         for (var row = 0; row < alongX.Length; row++)
         {
-            alongX[row] = CombineAlongAxis(masks[3 * row], masks[3 * row + 1], masks[3 * row + 2], XStride, LowXFace, HighXFace, grow);
+            alongX[row] = CombineAlongAxis(masks[3 * row], masks[3 * row + 1], masks[3 * row + 2], CubeMask.StrideX, CubeMask.LowX, CubeMask.HighX, grow);
         }
 
-        var lowZ = CombineAlongAxis(alongX[0], alongX[1], alongX[2], YStride, LowYFace, HighYFace, grow);
-        var centerZ = CombineAlongAxis(alongX[3], alongX[4], alongX[5], YStride, LowYFace, HighYFace, grow);
-        var highZ = CombineAlongAxis(alongX[6], alongX[7], alongX[8], YStride, LowYFace, HighYFace, grow);
+        var lowZ = CombineAlongAxis(alongX[0], alongX[1], alongX[2], CubeMask.StrideY, CubeMask.LowY, CubeMask.HighY, grow);
+        var centerZ = CombineAlongAxis(alongX[3], alongX[4], alongX[5], CubeMask.StrideY, CubeMask.LowY, CubeMask.HighY, grow);
+        var highZ = CombineAlongAxis(alongX[6], alongX[7], alongX[8], CubeMask.StrideY, CubeMask.LowY, CubeMask.HighY, grow);
 
-        return CombineAlongAxis(lowZ, centerZ, highZ, ZStride, LowZFace, HighZFace, grow);
+        return CombineAlongAxis(lowZ, centerZ, highZ, CubeMask.StrideZ, CubeMask.LowZ, CubeMask.HighZ, grow);
     }
 
     /// <summary>

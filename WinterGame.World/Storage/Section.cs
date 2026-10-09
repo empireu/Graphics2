@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
 
 namespace WinterGame.World.Storage;
 
@@ -53,6 +54,16 @@ public readonly struct Section
     public const int BrickSize = 1 << BrickLog;
     public const int BricksPerAxis = SectionPos.SectionSize / BrickSize;
     public const int Bricks = BricksPerAxis * BricksPerAxis * BricksPerAxis;
+
+    /// <summary>
+    ///     <see cref="BricksPerAxis"/> as a power of two.
+    /// </summary>
+    public const int BricksPerAxisLog = SectionPos.Log - BrickLog;
+
+    /// <summary>
+    ///     Truncates a brick coordinate to its offset inside its section.
+    /// </summary>
+    public const int BricksPerAxisMask = BricksPerAxis - 1;
 
     /// <summary>
     ///     Number of descriptors one channel stores, one per brick.
@@ -149,6 +160,26 @@ public readonly struct Section
         );
 
         return Arena.GetVoxelArray(VoxelArrayHandle.Unpack(descriptor.UserData));
+    }
+
+    /// <summary>
+    ///     A <see cref="CubeMask"/> of a content brick's voxels, set where the voxel is solid.
+    ///     A sample is solid exactly when its high bit is set, so a dense brick is read with two Vector256 loads.
+    /// </summary>
+    internal ulong GetSolidMask(int brickIndex)
+    {
+        Debug.Assert(WorldConstants.ContentIsoLevel == sbyte.MaxValue, "The solid mask is the samples' high bit, which only matches an iso level of 127.");
+
+        if (GetBrickType(VoxelChannel.Content, brickIndex) == BrickType.Uniform)
+        {
+            return GetUniformValue(VoxelChannel.Content, brickIndex) > WorldConstants.ContentIsoLevel ? ulong.MaxValue : 0;
+        }
+
+        var voxels = GetDense(VoxelChannel.Content, brickIndex).Span;
+        var low = Vector256.Create<byte>(voxels);
+        var high = Vector256.Create<byte>(voxels[Vector256<byte>.Count..]);
+
+        return low.ExtractMostSignificantBits() | ((ulong)high.ExtractMostSignificantBits() << Vector256<byte>.Count);
     }
     
     /// <summary>
