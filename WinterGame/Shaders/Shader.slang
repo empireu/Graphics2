@@ -263,11 +263,9 @@ float4 fsMain(VertexOutput input) : SV_TARGET {
 
     float normalDotLight = saturate(dot(normal, lighting.lightDirection.xyz));
     uint shadowCascade = ShadowCascadeCount;
-    float mapShadow = normalDotLight > 0.0 ? SunShadow(input.worldPosition, positionDx, positionDy, normal, normalDotLight, shadowCascade) : 0.0;
-    float shadow = 1.0;
+    float shadow = normalDotLight > 0.0 ? SunShadow(input.worldPosition, positionDx, positionDy, normal, normalDotLight, shadowCascade) : 0.0;
 
-    float volumeSkyVisibility = SkyVisibility(input.worldPosition, normal);
-    float skyVisibility = 1.0;
+    float skyVisibility = SkyVisibility(input.worldPosition, normal);
 
     // A point no sky light reaches gets no sun either, which keeps the sun out of caves deeper than the shadow cascades reach:
     float sunReach = saturate(skyVisibility * MaxLightLevel);
@@ -287,10 +285,10 @@ float4 fsMain(VertexOutput input) : SV_TARGET {
         color *= LightAngleTints[band];
     }
     else if (debugView == 3) {
-        color = float3(volumeSkyVisibility, volumeSkyVisibility, volumeSkyVisibility);
+        color = float3(skyVisibility, skyVisibility, skyVisibility);
     }
     else if (debugView == 4) {
-        color = float3(mapShadow, mapShadow, mapShadow);
+        color = float3(shadow, shadow, shadow);
     }
     else if (debugView == 5) {
         // The triangle's own normal, turned to the side of the smooth one:
@@ -301,7 +299,7 @@ float4 fsMain(VertexOutput input) : SV_TARGET {
         // The sun's shadow tinted by the triangle's angle to the light, in the bands of view 2, and purple where the triangle faces away from the sun:
         uint band = faceDotLight >= 0.5 ? 0 : faceDotLight >= 0.25 ? 1 : faceDotLight >= 0.09 ? 2 : 3;
         float3 tint = faceDotLight > 0.0 ? LightAngleTints[band] : float3(0.6, 0.35, 1.0);
-        color = lerp(0.25, 1.0, mapShadow) * tint;
+        color = lerp(0.25, 1.0, shadow) * tint;
     }
 
     return float4(color, 1.0);
