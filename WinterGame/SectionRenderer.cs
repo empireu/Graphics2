@@ -25,18 +25,24 @@ internal sealed class SectionRenderer : IDisposable
         {
             Source = source,
             VertexEntryPoint = "vsDepth",
-            ColorAttachments = [],
+            FragmentEntryPoint = "fsDepth",
+            ColorAttachments = [WorldLayer.NormalFormat],
             DepthAttachment = TextureFormat.D32Sfloat,
             DepthTest = true,
             DepthWrite = true,
             CullMode = CullMode.Back,
             FrontFace = FrontFace.CounterClockwise,
+            Blends = [BlendState.None],
 
-            // The prepass reads only the position, so the layout names that one attribute at its place in the full vertex:
+            // The prepass reads only the position and the normal, so the layout names those two attributes at their places in the full vertex:
             VertexLayout = new VertexLayout
             {
                 Stride = (uint)Unsafe.SizeOf<VoxelVertex>(),
-                Attributes = [new VertexLayoutAttribute(nameof(VoxelVertex.Position), VertexAttributeFormat.Float3, (uint)Marshal.OffsetOf<VoxelVertex>(nameof(VoxelVertex.Position)))]
+                Attributes =
+                [
+                    new VertexLayoutAttribute(nameof(VoxelVertex.Position), VertexAttributeFormat.Float3, (uint)Marshal.OffsetOf<VoxelVertex>(nameof(VoxelVertex.Position))),
+                    new VertexLayoutAttribute(nameof(VoxelVertex.Normal), VertexAttributeFormat.Float3, (uint)Marshal.OffsetOf<VoxelVertex>(nameof(VoxelVertex.Normal)))
+                ]
             },
             SsboLayouts = new Dictionary<string, SsboLayout>
             {
@@ -69,7 +75,7 @@ internal sealed class SectionRenderer : IDisposable
     }
 
     /// <summary>
-    ///     Draws the depth of <paramref name="geometry"/>, prepared for this frame, into <paramref name="pass"/>, a depth-only pass, from the camera of <paramref name="lighting"/>'s <see cref="FrameLighting"/>.
+    ///     Draws the depth and the world normal of <paramref name="geometry"/>, prepared for this frame, into <paramref name="pass"/>, whose colour attachment is in <see cref="WorldLayer.NormalFormat"/>, from the camera of <paramref name="lighting"/>'s <see cref="FrameLighting"/>.
     /// </summary>
     public void DrawDepth(Frame frame, RenderPassEncoder pass, SectionGeometry geometry, RingAllocation lighting)
     {

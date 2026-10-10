@@ -7,6 +7,9 @@
 // The occlusion the filter averages:
 [[vk::binding(1, 0)]] Texture2D<float> rawOcclusion;
 
+// The prepass's world normal, encoded as n * 0.5 + 0.5:
+[[vk::binding(2, 0)]] Texture2D<float4> sceneNormal;
+
 // AmbientOcclusion.PushConstants in C#:
 struct PushConstants {
     // The tangents of half the horizontal and vertical field of view in xy, the near and far planes in metres in zw:
@@ -14,6 +17,11 @@ struct PushConstants {
 
     // The radius in metres in x, and the frame's size in pixels in zw:
     float4 parameters;
+
+    // The camera's right, up and forward in world space, which are view space's x, y and z:
+    float4 viewRight;
+    float4 viewUp;
+    float4 viewForward;
 };
 
 [[vk::push_constant]] PushConstants pc;
@@ -58,23 +66,10 @@ float3 ViewPosition(int2 pixel, float depth) {
     return float3(ndc.x * pc.projection.x * z, -ndc.y * pc.projection.y * z, z);
 }
 
-float3 ViewPositionAt(int2 pixel) {
-    pixel = ClampPixel(pixel);
-    return ViewPosition(pixel, sceneDepth.Load(int3(pixel, 0)));
-}
-
-// The surface's view space normal from the depth around the pixel, taking on each axis the neighbour nearer in depth so an edge does not bend it, and turned to face the camera:
-float3 ReconstructNormal(int2 pixel, float3 center) {
-    float3 left = ViewPositionAt(pixel - int2(1, 0));
-    float3 right = ViewPositionAt(pixel + int2(1, 0));
-    float3 up = ViewPositionAt(pixel - int2(0, 1));
-    float3 down = ViewPositionAt(pixel + int2(0, 1));
-
-    float3 alongX = abs(center.z - left.z) < abs(right.z - center.z) ? center - left : right - center;
-    float3 alongY = abs(center.z - up.z) < abs(down.z - center.z) ? center - up : down - center;
-    float3 normal = normalize(cross(alongX, alongY));
-
-    return dot(normal, -center) < 0.0 ? -normal : normal;
+// The pixel's interpolated normal in view space. A normal rebuilt from the depth is the triangle's own, and in a concave bowl each neighbouring triangle rises above that plane and darkens it:
+float3 ViewNormal(int2 pixel) {
+    float3 normal = normalize(sceneNormal.Load(int3(pixel, 0)).xyz * 2.0 - 1.0);
+    return float3(dot(normal, pc.viewRight.xyz), dot(normal, pc.viewUp.xyz), dot(normal, pc.viewForward.xyz));
 }
 
 // The cosine of a sample's elevation above the view vector, faded towards the side's tangent plane as the sample nears the radius.
@@ -102,7 +97,7 @@ float fsOcclusion(float4 position : SV_Position) : SV_TARGET {
     }
 
     float3 center = ViewPosition(pixel, depth);
-    float3 normal = ReconstructNormal(pixel, center);
+    float3 normal = ViewNormal(pixel);
     float3 viewVector = normalize(-center);
 
     float radius = pc.parameters.x;

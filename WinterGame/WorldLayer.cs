@@ -29,6 +29,11 @@ internal sealed class WorldLayer : IDisposable
     public const TextureFormat SceneFormat = TextureFormat.R16G16B16A16Sfloat;
 
     /// <summary>
+    ///     The depth prepass's normal format: the interpolated world normal as n * 0.5 + 0.5, within about half a degree.
+    /// </summary>
+    public const TextureFormat NormalFormat = TextureFormat.R8G8B8A8Unorm;
+
+    /// <summary>
     ///     The haze's density per metre, which takes a fifth of a surface's colour over about 45 m.
     /// </summary>
     private const float HazeDensity = 0.005f;
@@ -48,6 +53,11 @@ internal sealed class WorldLayer : IDisposable
     private bool _textInitialized;
 
     private Texture[]? _depthTextures;
+
+    /// <summary>
+    ///     The depth prepass's normals per frame slot, in <see cref="NormalFormat"/>.
+    /// </summary>
+    private Texture[]? _normalTextures;
 
     /// <summary>
     ///     The world pass's colour per frame slot, in <see cref="SceneFormat"/>.
@@ -160,6 +170,7 @@ internal sealed class WorldLayer : IDisposable
 
         var slotCount = (int)_app.Context!.FramesInFlight;
         _depthTextures = new Texture[slotCount];
+        _normalTextures = new Texture[slotCount];
         _sceneTextures = new Texture[slotCount];
 
         for (var slot = 0; slot < slotCount; slot++)
@@ -170,6 +181,14 @@ internal sealed class WorldLayer : IDisposable
                 Height = (uint)framebufferSize.Y,
                 Format = TextureFormat.D32Sfloat,
                 Usage = TextureUsage.DepthAttachment | TextureUsage.Sampled
+            });
+
+            _normalTextures[slot] = factory.CreateTexture(new TextureDescription
+            {
+                Width = (uint)framebufferSize.X,
+                Height = (uint)framebufferSize.Y,
+                Format = NormalFormat,
+                Usage = TextureUsage.ColorAttachment | TextureUsage.Sampled
             });
 
             _sceneTextures[slot] = factory.CreateTexture(new TextureDescription
@@ -258,13 +277,24 @@ internal sealed class WorldLayer : IDisposable
 
         var scene = _sceneTextures![frame.SlotIndex];
         var depth = _depthTextures![frame.SlotIndex];
+        var normals = _normalTextures![frame.SlotIndex];
 
         // The light engine places its window on the first tick, and until then there is no volume to light the sections with, so they are left out of the depth too:
         var lightVolume = _lightVolume.Texture;
 
+        // A pixel the prepass leaves uncovered keeps the cleared depth, and the ambient occlusion reads no normal there, so the normals need no clear:
         var depthPassDescription = new RenderPassDescription
         {
-            ColorAttachments = [],
+            ColorAttachments =
+            [
+                new ColorAttachment
+                {
+                    Target = normals,
+                    LoadOp = LoadOp.DontCare,
+                    StoreOp = StoreOp.Store,
+                    FinalLayout = TextureLayout.ShaderRead
+                }
+            ],
             DepthAttachment = new DepthAttachment
             {
                 Target = depth,
@@ -283,7 +313,7 @@ internal sealed class WorldLayer : IDisposable
             }
         }
 
-        var ambientOcclusion = _ambientOcclusion.Render(frame, depth, _camera);
+        var ambientOcclusion = _ambientOcclusion.Render(frame, depth, normals, _camera);
 
         var worldPassDescription = new RenderPassDescription
         {
@@ -422,6 +452,16 @@ internal sealed class WorldLayer : IDisposable
             }
 
             _depthTextures = null;
+        }
+
+        if (_normalTextures != null)
+        {
+            foreach (var normalTexture in _normalTextures)
+            {
+                normalTexture.Dispose();
+            }
+
+            _normalTextures = null;
         }
 
         if (_sceneTextures != null)

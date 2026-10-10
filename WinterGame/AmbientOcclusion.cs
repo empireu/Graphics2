@@ -8,7 +8,7 @@ using WinterGame.Utilities;
 namespace WinterGame;
 
 /// <summary>
-///     Screen space ambient occlusion from the depth prepass, at full resolution: GTAO into a raw image, then a depth-aware 4x4 average that removes its noise pattern.
+///     Screen space ambient occlusion from the depth prepass and its normals, at full resolution: GTAO into a raw image, then a depth-aware 4x4 average that removes its noise pattern.
 ///     Both images are owned per frame slot and sized with the frame. The lit pass reads the result at its own pixel and darkens only the sky light with it. Render thread only.
 /// </summary>
 internal sealed class AmbientOcclusion : IDisposable
@@ -29,6 +29,13 @@ internal sealed class AmbientOcclusion : IDisposable
         ///     <see cref="Radius"/> in x, and the frame's size in pixels in zw.
         /// </summary>
         public Vector4 Parameters;
+
+        /// <summary>
+        ///     The camera's right, up and forward in world space, which turn the prepass's world normals into view space.
+        /// </summary>
+        public Vector4 ViewRight;
+        public Vector4 ViewUp;
+        public Vector4 ViewForward;
     }
 
     private readonly Pipeline _occlusion;
@@ -62,9 +69,9 @@ internal sealed class AmbientOcclusion : IDisposable
     }
 
     /// <summary>
-    ///     Computes this frame's occlusion from <paramref name="depth"/>, the depth prepass of <paramref name="camera"/>'s view, and returns it ready for sampling. No pass may be open.
+    ///     Computes this frame's occlusion from <paramref name="depth"/> and <paramref name="normals"/>, the depth prepass of <paramref name="camera"/>'s view, and returns it ready for sampling. No pass may be open.
     /// </summary>
-    public VkTexture Render(Frame frame, VkTexture depth, Camera3D camera)
+    public VkTexture Render(Frame frame, VkTexture depth, VkTexture normals, Camera3D camera)
     {
         WgAssert.DebugIsOnRenderThread();
 
@@ -75,7 +82,10 @@ internal sealed class AmbientOcclusion : IDisposable
         var constants = new PushConstants
         {
             Projection = new Vector4(tanHalfWidth, tanHalfHeight, camera.Near, camera.Far),
-            Parameters = new Vector4(Radius, 0.0f, frame.Extent.X, frame.Extent.Y)
+            Parameters = new Vector4(Radius, 0.0f, frame.Extent.X, frame.Extent.Y),
+            ViewRight = new Vector4(camera.Right, 0.0f),
+            ViewUp = new Vector4(camera.Up, 0.0f),
+            ViewForward = new Vector4(camera.Forward, 0.0f)
         };
 
         using (var pass = BeginPass(frame, _raw![slot]))
@@ -83,6 +93,7 @@ internal sealed class AmbientOcclusion : IDisposable
             pass.SetPipeline(_occlusion);
             SetFullFrame(frame, pass);
             pass.BindTexture("sceneDepth", depth);
+            pass.BindTexture("sceneNormal", normals);
             pass.PushConstants(constants);
             pass.Draw(3);
         }

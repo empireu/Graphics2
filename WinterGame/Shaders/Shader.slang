@@ -125,12 +125,28 @@ VertexOutput vsMain(VertexInput input, uint recordIndex : SV_StartInstanceLocati
 
 struct DepthInput {
     float3 position;
+    float3 normal;
+};
+
+struct DepthOutput {
+    float4 position : SV_Position;
+    float3 normal : NORMAL;
 };
 
 // The depth prepass, which the ambient occlusion reads before the lit pass draws:
 [shader("vertex")]
-float4 vsDepth(DepthInput input, uint recordIndex : SV_StartInstanceLocation) : SV_Position {
-    return ClipPosition(WorldPosition(input.position, recordIndex));
+DepthOutput vsDepth(DepthInput input, uint recordIndex : SV_StartInstanceLocation) {
+    DepthOutput output;
+
+    output.position = ClipPosition(WorldPosition(input.position, recordIndex));
+    output.normal = input.normal;
+    return output;
+}
+
+// The interpolated world normal, as WorldLayer.NormalFormat stores it, so the ambient occlusion sees the shading's smooth surface rather than the triangles of the depth:
+[shader("fragment")]
+float4 fsDepth(DepthOutput input) : SV_TARGET {
+    return float4(normalize(input.normal) * 0.5 + 0.5, 0.0);
 }
 
 // One comparison at a position in texels inside a cascade's tile, filtered over its four nearest texels by the sampler.
