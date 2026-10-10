@@ -15,6 +15,7 @@ using WinterGame.Utilities;
 using WinterGame.World;
 using WinterGame.World.Level.Meshing;
 using WinterGame.World.Lighting;
+using WinterGame.World.Storage;
 
 // ReSharper disable ForCanBeConvertedToForeach
 
@@ -26,6 +27,18 @@ internal sealed class WorldLayer : IDisposable
     ///     The world pass's colour format: linear radiance, which the tone mapper brings to the display.
     /// </summary>
     public const TextureFormat SceneFormat = TextureFormat.R16G16B16A16Sfloat;
+
+    /// <summary>
+    ///     The haze's density per metre, which takes a fifth of a surface's colour over about 45 m.
+    /// </summary>
+    private const float HazeDensity = 0.005f;
+
+    /// <summary>
+    ///     Where the meshed terrain ends, in metres from the player. A mesh needs all 26 neighbours of its section loaded, so the ticket's outer ring of sections has none, and the player can stand half a section from their own section's centre.
+    /// </summary>
+    private const float FogEnd = (GameSimulation.TicketHorizontalRadius - 1.5f) * SectionPos.SectionSize * WorldConstants.VoxelSize;
+
+    private const float FogStart = 0.5f * FogEnd;
 
     private readonly App _app;
 
@@ -205,6 +218,7 @@ internal sealed class WorldLayer : IDisposable
             SkyZenith = new Vector4(_daylight.SkyZenith, 0.0f),
             SkyHorizon = new Vector4(_daylight.SkyHorizon, 0.0f),
             LightVolumePlacement = _lightVolume.ShaderParameters,
+            FogParameters = new Vector4(HazeDensity, FogStart, FogEnd, 0.0f),
             DebugOptions = new Vector4(_debugView, 0.0f, 0.0f, 0.0f)
         };
 

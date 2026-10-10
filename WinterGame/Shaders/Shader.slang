@@ -28,6 +28,7 @@ struct FrameLighting {
     float4 skyHorizon;
     ShadowCascade shadowCascades[ShadowCascadeCount];
     float4 lightVolumePlacement;
+    float4 fogParameters;
     float4 debugOptions;
 };
 
@@ -259,15 +260,34 @@ float3 SkyRadiance(float3 direction) {
     return lerp(lighting.skyHorizon.rgb, lighting.skyZenith.rgb, sqrt(saturate(direction.y)));
 }
 
-// The sun's disc, 0.53 degrees wide, and the glow around it, towards a unit direction. Both are zero while the sun is down, because its radiance is.
+// The glow the air scatters around the sun, towards a unit direction. It is zero while the sun is down, because its radiance is.
+float3 SunGlow(float3 direction) {
+    float cosAngle = saturate(dot(direction, lighting.lightDirection.xyz));
+    return lighting.lightRadiance.rgb * (0.5 * pow(cosAngle, 2000.0) + 0.04 * pow(cosAngle, 16.0));
+}
+
+// The sun's disc, 0.53 degrees wide, and its glow, towards a unit direction:
 float3 SunRadiance(float3 direction) {
-    float cosAngle = dot(direction, lighting.lightDirection.xyz);
-
     // The disc's edge is 0.265 degrees from its centre, where the cosine is 1 - 1.07e-5:
-    float disc = smoothstep(1.0 - 1.3e-5, 1.0 - 0.9e-5, cosAngle);
-    float glow = 0.5 * pow(saturate(cosAngle), 2000.0) + 0.04 * pow(saturate(cosAngle), 16.0);
+    float disc = smoothstep(1.0 - 1.3e-5, 1.0 - 0.9e-5, dot(direction, lighting.lightDirection.xyz));
+    return lighting.lightRadiance.rgb * SunDiscBrightness * disc + SunGlow(direction);
+}
 
-    return lighting.lightRadiance.rgb * (SunDiscBrightness * disc + glow);
+// The fraction of a surface's colour the air replaces: a thin haze over the whole distance, and a fade over the last stretch of the meshed terrain that reaches the whole sky where the terrain ends, so the world does not stop in a cut.
+// The fade uses the horizontal distance, because the loaded terrain is a cylinder around the player.
+float FogAmount(float distance, float horizontalDistance) {
+    float haze = 1.0 - exp(-distance * lighting.fogParameters.x);
+    float edge = smoothstep(lighting.fogParameters.y, lighting.fogParameters.z, horizontalDistance);
+    return max(haze, edge);
+}
+
+// The fog takes the colour of the sky behind it, with the sun's glow, so far terrain melts into the sky:
+float3 ApplyFog(float3 color, float3 worldPosition) {
+    float3 toPoint = worldPosition - lighting.cameraPosition.xyz;
+    float distance = length(toPoint);
+    float3 direction = toPoint / max(distance, 1e-4);
+
+    return lerp(color, SkyRadiance(direction) + SunGlow(direction), FogAmount(distance, length(toPoint.xz)));
 }
 
 [shader("fragment")]
@@ -297,7 +317,11 @@ float4 fsMain(VertexOutput input) : SV_TARGET {
 
     uint debugView = uint(lighting.debugOptions.x);
 
-    if (debugView == 1 && shadowCascade < ShadowCascadeCount) {
+    // A debug view shows its values unfogged at every distance:
+    if (debugView == 0) {
+        color = ApplyFog(color, input.worldPosition);
+    }
+    else if (debugView == 1 && shadowCascade < ShadowCascadeCount) {
         color *= ShadowCascadeTints[shadowCascade];
     }
     else if (debugView == 2 && normalDotLight > 0.0) {

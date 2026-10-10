@@ -19,7 +19,10 @@ internal sealed class GameSimulation : IDisposable
     public const double TickSeconds = 1.0 / TicksPerSecond;
 
     private const int Seed = 3141;
-    private const int TicketHorizontalRadius = 8;
+    /// <summary>
+    ///     The player's ticket's radius in sections, which the render side's fog also follows.
+    /// </summary>
+    public const int TicketHorizontalRadius = 8;
     private const int TicketVerticalRadius = 4;
 
     /// <summary>

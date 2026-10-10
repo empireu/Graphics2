@@ -40,6 +40,11 @@ internal struct FrameLighting
     public Vector4 LightVolumePlacement;
 
     /// <summary>
+    ///     The haze's density per metre in x, and in y and z the horizontal distances in metres over which the fog fades the terrain into the sky, ending where the meshed terrain does.
+    /// </summary>
+    public Vector4 FogParameters;
+
+    /// <summary>
     ///     The debug view in x: 0 is none, 1 tints every sunlit pixel by the shadow cascade it read, 2 by the angle between its surface and the light, 3 shows the sky light alone, 4 the sun's shadow alone, and 5 the sun's shadow tinted by the angle between each triangle's own plane and the light.
     /// </summary>
     public Vector4 DebugOptions;
