@@ -600,6 +600,114 @@ public class MultiLabelSurfaceNetsTests
     }
 
     /// <summary>
+    ///     A brush sphere dug out of solid ground. While every vertex had to stay inside its own cell, a vertex whose cell the surface only grazes stayed on the cell's corner as the relaxation drew its neighbours into the air, and the folds around it drew dark stars in the ambient occlusion.
+    /// </summary>
+    [Fact]
+    public void DugSphereHasNoSharpFolds()
+    {
+        const int size = 48;
+        const float radius = 4.0f;
+        var sphereCentre = new Vector3(24.4f, 24.28f, 24.48f);
+
+        var content = HeightField(size, size, size, (_, _) => size + 8.0f);
+        var material = SolidMaterial(content, SurfaceMaterial.Rock);
+        var contentSpan = content.Span;
+        var materialSpan = material.Span;
+
+        // The debug brush's dig, which leaves the null material wherever a sample turns to air:
+        for (var z = 0; z < size; z++)
+        {
+            for (var y = 0; y < size; y++)
+            {
+                for (var x = 0; x < size; x++)
+                {
+                    var distance = ((new Vector3(x, y, z) - sphereCentre).Length() - radius) * WorldConstants.VoxelSize;
+                    var brushContent = DensitySampler.ContentFromDensity(distance, 0);
+
+                    if (brushContent >= contentSpan[x, y, z])
+                    {
+                        continue;
+                    }
+
+                    contentSpan[x, y, z] = brushContent;
+
+                    if (brushContent <= IsoLevel)
+                    {
+                        materialSpan[x, y, z] = SurfaceMaterial.Null;
+                    }
+                }
+            }
+        }
+
+        var vertices = new List<VoxelVertex>();
+        var indices = new List<int>();
+
+        Mesh(content, material, new Vector3i(8), new Vector3i(32), new SectionMeshingDescription().Fairing, vertices, indices);
+
+        // Each edge by its two end positions, so a cell's coincident material copies meet as one edge:
+        var trianglesByEdge = new Dictionary<(Vector3, Vector3), List<int>>();
+
+        for (var triangle = 0; triangle < indices.Count; triangle += 3)
+        {
+            for (var corner = 0; corner < 3; corner++)
+            {
+                var a = vertices[indices[triangle + corner]].Position;
+                var b = vertices[indices[triangle + (corner + 1) % 3]].Position;
+                var key = a.X < b.X || a.X == b.X && (a.Y < b.Y || a.Y == b.Y && a.Z < b.Z) ? (a, b) : (b, a);
+
+                if (!trianglesByEdge.TryGetValue(key, out var triangles))
+                {
+                    triangles = [];
+                    trianglesByEdge[key] = triangles;
+                }
+
+                triangles.Add(triangle);
+            }
+        }
+
+        var worstFold = 0.0f;
+        var edgeCount = 0;
+
+        foreach (var ((a, b), triangles) in trianglesByEdge)
+        {
+            if (triangles.Count != 2)
+            {
+                continue;
+            }
+
+            var first = TriangleNormal(vertices, indices, triangles[0]);
+            var second = TriangleNormal(vertices, indices, triangles[1]);
+
+            if (first == Vector3.Zero || second == Vector3.Zero)
+            {
+                continue;
+            }
+
+            // A fold is concave when the second triangle's far corner lies on the air side of the first:
+            var farCorner = Enumerable.Range(0, 3).Select(corner => vertices[indices[triangles[1] + corner]].Position).First(position => position != a && position != b);
+
+            if (Vector3.Dot(farCorner - a, first) <= 0.0f)
+            {
+                continue;
+            }
+
+            worstFold = MathF.Max(worstFold, MathF.Acos(Math.Clamp(Vector3.Dot(first, second), -1.0f, 1.0f)) * 180.0f / MathF.PI);
+            edgeCount++;
+        }
+
+        Assert.True(edgeCount > 100, "The dig left too few concave edges, so the test proves nothing.");
+        Assert.True(worstFold < 40.0f, $"Two triangles of the dug sphere fold {worstFold} degrees into each other.");
+    }
+
+    private static Vector3 TriangleNormal(List<VoxelVertex> vertices, List<int> indices, int triangle)
+    {
+        var a = vertices[indices[triangle]].Position;
+        var cross = Vector3.Cross(vertices[indices[triangle + 1]].Position - a, vertices[indices[triangle + 2]].Position - a);
+
+        return cross.LengthSquared() < 1e-18f ? Vector3.Zero : Vector3.Normalize(cross);
+    }
+
+    /// <summary>
     ///     Calls the emitter for one cell's edge-0 quad. The four cells are seeded so the fan can register its apex against the emitting cell the way the pass does.
     /// </summary>
     private static void EmitQuadDirect(

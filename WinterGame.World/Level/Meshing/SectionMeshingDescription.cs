@@ -14,7 +14,7 @@ public sealed class SectionMeshingDescription
     /// </summary>
     public SurfaceFairingSettings Fairing { get; init; } = new()
     {
-        AllowedRange = 0.5f,
+        AllowedRange = 0.75f,
         StepSize = 0.5f,
         Iterations = 4
     };

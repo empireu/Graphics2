@@ -501,7 +501,7 @@ internal sealed class BenchmarkOptions
 
     public int FairingIterations = 4;
     public float FairingStep = 0.5f;
-    public float FairingRange = 0.5f;
+    public float FairingRange = 0.75f;
 
     public bool CutEnabled = true;
     public float CutWidth = 24.0f;
