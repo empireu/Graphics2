@@ -1,3 +1,4 @@
+using System.Buffers;
 using Graphics2.Core.Bootstrap;
 using Graphics2.Core.Resources;
 using Silk.NET.Maths;
@@ -131,9 +132,80 @@ public sealed unsafe class Frame
     public void CopyBufferToImage(VkBuffer src, ulong srcOffset, VkTexture dst, uint x, uint y, uint z, uint width, uint height, uint depth)
     {
         ValidateNotInRenderPass();
+        RecordImageCopyBarrier(dst);
 
-        var vk = Device.Instance.Vk;
+        var region = CreateImageCopy(srcOffset, x, y, z, width, height, depth);
 
+        Device.Instance.Vk.CmdCopyBufferToImage(CommandBuffer, src.Handle, dst.Image, ImageLayout.TransferDstOptimal, 1, &region);
+
+        PendingImageCopies.Add(dst);
+    }
+
+    public void CopyBufferToImage(RingAllocation src, VkTexture dst, uint x, uint y, uint width, uint height)
+    {
+        CopyBufferToImage(src.Buffer, src.Offset, dst, x, y, 0, width, height, 1);
+    }
+
+    public void CopyBufferToImage(RingAllocation src, VkTexture dst, uint x, uint y, uint z, uint width, uint height, uint depth)
+    {
+        CopyBufferToImage(src.Buffer, src.Offset, dst, x, y, z, width, height, depth);
+    }
+
+    /// <summary>
+    ///     Copies several boxes of <paramref name="src"/> into <paramref name="dst"/> behind one barrier and in one copy command.
+    ///     Vulkan forbids regions that overlap in the texture or in the source. An empty span records nothing.
+    /// </summary>
+    public void CopyBufferToImage(RingAllocation src, Texture dst, ReadOnlySpan<TextureCopyRegion> regions)
+    {
+        ValidateNotInRenderPass();
+
+        if (regions.IsEmpty)
+        {
+            return;
+        }
+
+        foreach (var region in regions)
+        {
+            region.Validate(dst.Width, dst.Height, dst.Depth, dst.Format, src.Offset, src.Size);
+        }
+
+        RecordImageCopyBarrier(dst);
+
+        var copies = ArrayPool<BufferImageCopy>.Shared.Rent(regions.Length);
+
+        for (var index = 0; index < regions.Length; index++)
+        {
+            var region = regions[index];
+
+            copies[index] = CreateImageCopy(src.Offset + region.SourceOffset, region.X, region.Y, region.Z, region.Width, region.Height, region.Depth);
+        }
+
+        fixed (BufferImageCopy* first = copies)
+        {
+            Device.Instance.Vk.CmdCopyBufferToImage(CommandBuffer, src.Buffer.Handle, dst.Image, ImageLayout.TransferDstOptimal, (uint)regions.Length, first);
+        }
+
+        ArrayPool<BufferImageCopy>.Shared.Return(copies);
+        PendingImageCopies.Add(dst);
+    }
+
+    public RenderPassEncoder BeginRenderPass(RenderPassDescription description) => RenderPassEncoder.Begin(this, description);
+
+    private void ValidateNotInRenderPass()
+    {
+        if (PassOpen)
+        {
+            throw new InvalidOperationException(
+                "A copy cannot be recorded while a render pass is open, because dynamic rendering forbids the barrier that has to precede it."
+            );
+        }
+    }
+
+    /// <summary>
+    ///     Moves the image to the copy layout and orders the copy after every earlier command.
+    /// </summary>
+    private void RecordImageCopyBarrier(VkTexture dst)
+    {
         // The image is transitioned for the copy and may still be read or written by an earlier submission, so the source scope covers every prior command touching it:
         var preBarrier = new ImageMemoryBarrier2
         {
@@ -164,12 +236,18 @@ public sealed unsafe class Frame
             PImageMemoryBarriers = &preBarrier
         };
 
-        vk.CmdPipelineBarrier2(CommandBuffer, &preDependencyInfo);
+        Device.Instance.Vk.CmdPipelineBarrier2(CommandBuffer, &preDependencyInfo);
         dst.CurrentLayout = ImageLayout.TransferDstOptimal;
+    }
 
-        var region = new BufferImageCopy
+    /// <summary>
+    ///     A copy of tightly packed texels into the first layer and mip level of a color image.
+    /// </summary>
+    private static BufferImageCopy CreateImageCopy(ulong bufferOffset, uint x, uint y, uint z, uint width, uint height, uint depth)
+    {
+        return new BufferImageCopy
         {
-            BufferOffset = srcOffset,
+            BufferOffset = bufferOffset,
             BufferRowLength = 0,
             BufferImageHeight = 0,
             ImageSubresource = new ImageSubresourceLayers
@@ -182,32 +260,6 @@ public sealed unsafe class Frame
             ImageOffset = new Offset3D((int)x, (int)y, (int)z),
             ImageExtent = new Extent3D(width, height, depth)
         };
-
-        vk.CmdCopyBufferToImage(CommandBuffer, src.Handle, dst.Image, ImageLayout.TransferDstOptimal, 1, &region);
-
-        PendingImageCopies.Add(dst);
-    }
-
-    public void CopyBufferToImage(RingAllocation src, VkTexture dst, uint x, uint y, uint width, uint height)
-    {
-        CopyBufferToImage(src.Buffer, src.Offset, dst, x, y, 0, width, height, 1);
-    }
-
-    public void CopyBufferToImage(RingAllocation src, VkTexture dst, uint x, uint y, uint z, uint width, uint height, uint depth)
-    {
-        CopyBufferToImage(src.Buffer, src.Offset, dst, x, y, z, width, height, depth);
-    }
-
-    public RenderPassEncoder BeginRenderPass(RenderPassDescription description) => RenderPassEncoder.Begin(this, description);
-
-    private void ValidateNotInRenderPass()
-    {
-        if (PassOpen)
-        {
-            throw new InvalidOperationException(
-                "A copy cannot be recorded while a render pass is open, because dynamic rendering forbids the barrier that has to precede it."
-            );
-        }
     }
 
     /// <summary>

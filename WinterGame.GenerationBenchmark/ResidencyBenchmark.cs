@@ -29,6 +29,11 @@ internal static class ResidencyBenchmark
     private const int ReadRounds = 5;
     private const int LineLength = 128;
 
+    /// <summary>
+    ///     Where each light update's volume changes are taken, as the game takes them every tick.
+    /// </summary>
+    private static readonly List<LightVolumeMessage> VolumeChanges = [];
+
     public static void Run(BenchmarkOptions options)
     {
         var graph = TerrainGraph.Build(options.Seed, new TerrainConfig());
@@ -43,7 +48,7 @@ internal static class ResidencyBenchmark
         Console.WriteLine($"  Unloads:  {options.UnloadsPerUpdate} per update");
         Console.WriteLine(
             options.Light
-                ? $"  Light:    the engine over the game's box (radius {Benchmark.LightRadius(options)}, vertical {Benchmark.LightVerticalRadius(options)}) around the ticket, updated after every update, timed apart from it"
+                ? $"  Light:    the engine over the game's box (radius {Benchmark.LightRadius(options)}, vertical {Benchmark.LightVerticalRadius(options)}) around the ticket, updated and its volume changes taken after every update, timed apart from it"
                 : "  Light:    off"
         );
         Console.WriteLine();
@@ -156,6 +161,8 @@ internal static class ResidencyBenchmark
         var start = Stopwatch.GetTimestamp();
 
         light.Update(center);
+        light.TakeVolumeChanges(VolumeChanges);
+        VolumeChanges.Clear();
 
         return Stopwatch.GetElapsedTime(start).TotalMilliseconds;
     }

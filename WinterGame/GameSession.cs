@@ -6,6 +6,7 @@ using WinterGame.Simulation;
 using WinterGame.Utilities;
 using WinterGame.World;
 using WinterGame.World.Level.Meshing;
+using WinterGame.World.Lighting;
 
 namespace WinterGame;
 
@@ -30,13 +31,14 @@ internal sealed class GameSession : IDisposable
     {
         WgAssert.DebugIsOnRenderThread();
 
-        var meshChannel = new SectionMeshChannel();
+        var meshChannel = new MessageChannel<SectionMeshMessage>();
+        var lightChannel = new MessageChannel<LightVolumeMessage>();
 
         _app = app;
-        _world = new WorldLayer(app, _camera);
+        _world = new WorldLayer(app, _camera, lightChannel);
         _world.OnResize(framebufferSize);
         _meshReceiver = new SectionMeshReceiver(meshChannel);
-        _gameThread = new GameThread(meshChannel);
+        _gameThread = new GameThread(meshChannel, lightChannel);
     }
 
     /// <summary>

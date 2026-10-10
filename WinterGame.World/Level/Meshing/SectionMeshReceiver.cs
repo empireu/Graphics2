@@ -38,7 +38,7 @@ public sealed class SectionMeshReceiver
         public bool Cancelled;
     }
 
-    private readonly SectionMeshChannel _channel;
+    private readonly MessageChannel<SectionMeshMessage> _channel;
     private readonly List<SectionMeshMessage> _messages = [];
     private readonly List<InFlightMesh> _inFlight = [];
 
@@ -47,7 +47,7 @@ public sealed class SectionMeshReceiver
     /// </summary>
     private readonly HashSet<ulong> _meshed = [];
 
-    public SectionMeshReceiver(SectionMeshChannel channel)
+    public SectionMeshReceiver(MessageChannel<SectionMeshMessage> channel)
     {
         ArgumentNullException.ThrowIfNull(channel);
 

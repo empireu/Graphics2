@@ -265,6 +265,7 @@ internal static class Benchmark
         var remaining = new List<SectionPos>(shape);
         var updateMilliseconds = new List<double>();
         var lightMilliseconds = new List<double>();
+        var volumeChanges = new List<LightVolumeMessage>();
         var period = tickHz > 0.0 ? 1.0 / tickHz : 0.0;
         var watch = Stopwatch.StartNew();
         var nextTick = 0.0;
@@ -281,6 +282,8 @@ internal static class Benchmark
                 var lightStart = Stopwatch.GetTimestamp();
 
                 light.Update(center);
+                light.TakeVolumeChanges(volumeChanges);
+                volumeChanges.Clear();
                 lightMilliseconds.Add(Stopwatch.GetElapsedTime(lightStart).TotalMilliseconds);
             }
 

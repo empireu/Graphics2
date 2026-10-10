@@ -47,6 +47,7 @@ internal sealed class LightPropagator(LightWindow window, SkyColumns sky)
         Span<int> pushBelow = stackalloc int[SkyBlockers.ColumnsPerSection];
 
         GetPushBelow(position.X, position.Z, floors, pushBelow);
+        window.MarkChanged(slot);
 
         var air = window.Air;
         var light = window.Light;
@@ -150,6 +151,8 @@ internal sealed class LightPropagator(LightWindow window, SkyColumns sky)
         var originZ = (position.Z - window.Min.Z) << Section.BricksPerAxisLog;
         var firstCell = slot << LightWindow.CellLog;
 
+        window.MarkChanged(slot);
+
         for (var local = 0; local < LightWindow.CellsPerSection; local++)
         {
             var level = light[firstCell | local] & LightWord.LevelMask;
@@ -204,6 +207,7 @@ internal sealed class LightPropagator(LightWindow window, SkyColumns sky)
                 }
 
                 light[cell] = 0;
+                window.MarkChanged(cell >> LightWindow.CellLog);
                 _removals.Enqueue(LightWindow.Pack(relativeX, relativeY, relativeZ) | ((uint)level << RemovedLevelShift));
             }
         }
@@ -289,6 +293,7 @@ internal sealed class LightPropagator(LightWindow window, SkyColumns sky)
         if (level < removedLevel)
         {
             light[neighbor] = 0;
+            window.MarkChanged(neighbor >> LightWindow.CellLog);
             _removals.Enqueue(packed | ((uint)level << RemovedLevelShift));
             return;
         }
@@ -395,6 +400,7 @@ internal sealed class LightPropagator(LightWindow window, SkyColumns sky)
         }
 
         light[neighbor] = (ushort)word;
+        window.MarkChanged(neighbor >> LightWindow.CellLog);
         _adds.Enqueue(packed);
     }
 

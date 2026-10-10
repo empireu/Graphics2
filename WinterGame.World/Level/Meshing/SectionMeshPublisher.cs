@@ -5,7 +5,7 @@ using WinterGame.World.Storage;
 namespace WinterGame.World.Level.Meshing;
 
 /// <summary>
-///     The game thread's side of meshing. It takes the level's mesh changes, keeps the sections that want a mesh nearest the focus first behind the ones an edit wants in the order of the edits, and for each free slot reads the section's window out of the level, publishes its job and sends the job to the render thread through a <see cref="SectionMeshChannel"/>.
+///     The game thread's side of meshing. It takes the level's mesh changes, keeps the sections that want a mesh nearest the focus first behind the ones an edit wants in the order of the edits, and for each free slot reads the section's window out of the level, publishes its job and sends the job to the render thread through a <see cref="MessageChannel{T}"/>.
 ///     A slot comes back only once the render thread has taken its result, so a render thread that falls behind stops the publishing instead of piling results up.
 ///     Game thread only, and created before the scheduler starts, since it registers its executor.
 /// </summary>
@@ -20,7 +20,7 @@ public sealed class SectionMeshPublisher
     private readonly JobScheduler _scheduler;
     private readonly SectionMeshExecutor _executor;
     private readonly int _providerId;
-    private readonly SectionMeshChannel _channel;
+    private readonly MessageChannel<SectionMeshMessage> _channel;
 
     private readonly List<SectionMeshChange> _changes = [];
 
@@ -50,7 +50,7 @@ public sealed class SectionMeshPublisher
 
     private SectionPos _focus;
 
-    public SectionMeshPublisher(JobScheduler scheduler, SectionMeshingDescription description, SectionMeshChannel channel)
+    public SectionMeshPublisher(JobScheduler scheduler, SectionMeshingDescription description, MessageChannel<SectionMeshMessage> channel)
     {
         ArgumentNullException.ThrowIfNull(scheduler);
         ArgumentNullException.ThrowIfNull(description);

@@ -11,8 +11,10 @@ using ImGuiNET;
 using Silk.NET.Maths;
 using WinterGame.Core;
 using WinterGame.Simulation;
+using WinterGame.Utilities;
 using WinterGame.World;
 using WinterGame.World.Level.Meshing;
+using WinterGame.World.Lighting;
 
 // ReSharper disable ForCanBeConvertedToForeach
 
@@ -38,6 +40,7 @@ internal sealed class WorldLayer : IDisposable
     private readonly SectionGeometry _geometry;
     private readonly SectionRenderer _sections;
     private readonly SunShadow _sunShadow;
+    private readonly LightVolume _lightVolume;
 
     /// <summary>
     ///     The light the last <see cref="Render"/> used, for the panel.
@@ -51,7 +54,7 @@ internal sealed class WorldLayer : IDisposable
 
     private const float SunMarkerSize = 5.0f;
 
-    private static readonly string[] DebugViewNames = ["None", "Shadow cascades", "Light angle"];
+    private static readonly string[] DebugViewNames = ["None", "Shadow cascades", "Light angle", "Sky light", "Sun shadow", "Triangle light angle"];
 
     /// <summary>
     ///     The index into <see cref="DebugViewNames"/> the world shader shows.
@@ -65,7 +68,10 @@ internal sealed class WorldLayer : IDisposable
     /// </summary>
     private Vector3 _shadowDirection;
 
-    public WorldLayer(App app, Camera3D camera)
+    /// <summary>
+    ///     The light engine's changes to its window arrive through <paramref name="lightChannel"/>.
+    /// </summary>
+    public WorldLayer(App app, Camera3D camera, MessageChannel<LightVolumeMessage> lightChannel)
     {
         _app = app;
         _camera = camera;
@@ -126,6 +132,7 @@ internal sealed class WorldLayer : IDisposable
         _geometry = new SectionGeometry(factory, framesInFlight);
         _sections = new SectionRenderer(factory);
         _sunShadow = new SunShadow(factory, framesInFlight);
+        _lightVolume = new LightVolume(factory, lightChannel);
     }
 
     public void OnResize(Vector2D<int> framebufferSize)
@@ -154,11 +161,12 @@ internal sealed class WorldLayer : IDisposable
     }
 
     /// <summary>
-    ///     Takes the level's finished meshes from <paramref name="meshReceiver"/>. The uploads are recorded into the frame.
+    ///     Takes the level's finished meshes from <paramref name="meshReceiver"/> and the light engine's changes. The mesh uploads are recorded into the frame, and the light is uploaded by <see cref="Render"/>.
     /// </summary>
     public void Update(Frame frame, SectionMeshReceiver meshReceiver)
     {
         _geometry.TakeMeshes(frame, meshReceiver);
+        _lightVolume.Take();
 
         if (!_textInitialized)
         {
@@ -182,6 +190,7 @@ internal sealed class WorldLayer : IDisposable
             LightRadiance = new Vector4(_daylight.SunRadiance, 0.0f),
             SkyZenith = new Vector4(_daylight.SkyZenith, 0.0f),
             SkyHorizon = new Vector4(_daylight.SkyHorizon, 0.0f),
+            LightVolumePlacement = _lightVolume.ShaderParameters,
             DebugOptions = new Vector4(_debugView, 0.0f, 0.0f, 0.0f)
         };
 
@@ -202,6 +211,9 @@ internal sealed class WorldLayer : IDisposable
 
         // At night the sun lights nothing, so its map is only cleared:
         _sunShadow.Render(frame, _daylight.SunIsUp ? _geometry : null, frameLighting.ShadowCascades);
+
+        // The copy waits for every command before it, so it comes after the shadow pass, and only the world pass waits for the copy:
+        _lightVolume.Upload(frame);
 
         _overlayQuadRenderer3D.SetCamera(_camera.ViewProj);
         _textRenderer.SetCamera(_camera.ViewProj);
@@ -247,7 +259,12 @@ internal sealed class WorldLayer : IDisposable
             _lineRenderer3D.Submit(frame, worldPass);
             _overlayQuadRenderer3D.Submit(frame, worldPass);
             _textRenderer.Submit(frame, worldPass);
-            _sections.Draw(frame, worldPass, _geometry, lighting, _sunShadow.GetMap(frame), _sunShadow.Sampler);
+
+            // The light engine places its window on the first tick, and until then there is no volume to light the sections with:
+            if (_lightVolume.Texture != null)
+            {
+                _sections.Draw(frame, worldPass, _geometry, lighting, _sunShadow.GetMap(frame), _sunShadow.Sampler, _lightVolume.Texture, _lightVolume.Sampler);
+            }
         }
     }
 
@@ -338,6 +355,7 @@ internal sealed class WorldLayer : IDisposable
         _overlayQuadRenderer3D.Dispose();
         _lineRenderer3D.Dispose();
         _sunShadow.Dispose();
+        _lightVolume.Dispose();
         _sections.Dispose();
         _geometry.Dispose();
     }

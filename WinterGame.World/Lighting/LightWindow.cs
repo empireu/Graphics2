@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using Graphics2.Mathematics;
 using WinterGame.World.Storage;
 
 namespace WinterGame.World.Lighting;
@@ -62,6 +63,11 @@ internal sealed class LightWindow
     public readonly ulong[] Split;
 
     /// <summary>
+    ///     One bit per slot, set when the light or the air of a cell in the slot is written (<see cref="MarkChanged"/>). <see cref="LightEngine.TakeVolumeChanges"/> clears it.
+    /// </summary>
+    public readonly ulong[] ChangedSlots;
+
+    /// <summary>
     ///     The slot terms of each section coordinate relative to <see cref="Min"/>, one table per axis. A slot is the sum of one entry from each.
     /// </summary>
     public readonly int[] SlotX;
@@ -95,6 +101,7 @@ internal sealed class LightWindow
         Air = new ulong[SlotCount * CellsPerSection];
         Light = new ushort[SlotCount * CellsPerSection];
         Split = new ulong[SlotCount * CellsPerSection / 64];
+        ChangedSlots = new ulong[(SlotCount + 63) / 64];
         SlotX = new int[SizeX];
         SlotY = new int[SizeY];
         SlotZ = new int[SizeZ];
@@ -184,6 +191,24 @@ internal sealed class LightWindow
         return ((Split[cell >> 6] >> (cell & 63)) & 1) != 0;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void MarkChanged(int slot)
+    {
+        ChangedSlots[slot >> 6] |= 1UL << (slot & 63);
+    }
+
+    /// <summary>
+    ///     Where a slot's first cell lies in a volume that keeps each cell at its brick coordinates modulo the window's cells along each axis.
+    /// </summary>
+    public Vector3i GetSlotOrigin(int slot)
+    {
+        return new Vector3i(
+            (slot % SizeX) << Section.BricksPerAxisLog,
+            (slot / SizeX % SizeY) << Section.BricksPerAxisLog,
+            (slot / (SizeX * SizeY)) << Section.BricksPerAxisLog
+        );
+    }
+
     public bool IsPresent(int slot)
     {
         return _present[slot];
@@ -204,11 +229,12 @@ internal sealed class LightWindow
 
     /// <summary>
     ///     Fills a slot's air and split bits from the section's content bricks and marks the slot as holding the section.
-    ///     The slot's light is not touched.
+    ///     The slot's light is not touched. The slot is marked changed.
     /// </summary>
     public void Build(int slot, SectionPos position, Section section, int stamp)
     {
         _present[slot] = true;
+        MarkChanged(slot);
         _sections[slot] = position;
         _builtStamps[slot] = stamp;
 
@@ -239,11 +265,12 @@ internal sealed class LightWindow
     }
 
     /// <summary>
-    ///     Empties a slot and clears its cells' air, light and split bits.
+    ///     Empties a slot and clears its cells' air, light and split bits. The slot is marked changed.
     /// </summary>
     public void Drop(int slot)
     {
         _present[slot] = false;
+        MarkChanged(slot);
         Air.AsSpan(slot << CellLog, CellsPerSection).Clear();
         Light.AsSpan(slot << CellLog, CellsPerSection).Clear();
         Split.AsSpan(slot * (CellsPerSection / 64), CellsPerSection / 64).Clear();

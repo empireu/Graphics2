@@ -2,6 +2,8 @@ using System.Numerics;
 using Graphics2.Data;
 using Graphics2.Mathematics;
 using WinterGame.World;
+using WinterGame.World.Generation.GraphProgram;
+using WinterGame.World.Level.Meshing;
 using WinterGame.World.Mesher;
 
 namespace WinterGame.Tests;
@@ -55,6 +57,53 @@ public class MultiLabelSurfaceNetsTests
         }
 
         return content;
+    }
+
+    /// <summary>
+    ///     Solid below a height in samples, encoded the way the generator encodes a distance, so it saturates one sample either side of the surface.
+    /// </summary>
+    private static Memory3D<byte> HeightField(int sizeX, int sizeY, int sizeZ, Func<int, int, float> height)
+    {
+        var content = Memory3D<byte>.Allocate(sizeX, sizeY, sizeZ);
+        var span = content.Span;
+
+        for (var z = 0; z < sizeZ; z++)
+        {
+            for (var x = 0; x < sizeX; x++)
+            {
+                var surface = height(x, z);
+
+                for (var y = 0; y < sizeY; y++)
+                {
+                    span[x, y, z] = DensitySampler.ContentFromDensity((surface - y) * WorldConstants.VoxelSize, 0);
+                }
+            }
+        }
+
+        return content;
+    }
+
+    /// <summary>
+    ///     One material on the solid samples and air on the rest, as the generator labels them, so the faces the surface crosses are surface crossings and the vertices relax.
+    /// </summary>
+    private static Memory3D<byte> SolidMaterial(Memory3D<byte> content, byte material)
+    {
+        var labels = Memory3D<byte>.Allocate(content.SizeX, content.SizeY, content.SizeZ);
+        var contentSpan = content.Span;
+        var span = labels.Span;
+
+        for (var z = 0; z < content.SizeZ; z++)
+        {
+            for (var y = 0; y < content.SizeY; y++)
+            {
+                for (var x = 0; x < content.SizeX; x++)
+                {
+                    span[x, y, z] = contentSpan[x, y, z] > IsoLevel ? material : SurfaceMaterial.Null;
+                }
+            }
+        }
+
+        return labels;
     }
 
     private static Memory3D<byte> SingleMaterial(int sizeX, int sizeY, int sizeZ, byte material)
@@ -313,6 +362,96 @@ public class MultiLabelSurfaceNetsTests
             Assert.Equal(rightPosition.X, leftWorld.X, 5);
             Assert.Equal(rightPosition.Y, leftWorld.Y, 5);
             Assert.Equal(rightPosition.Z, leftWorld.Z, 5);
+        }
+
+        Assert.True(shared > 0, "The two chunks share no vertex, so the test proves nothing.");
+    }
+
+    /// <summary>
+    ///     A normal taken from the saturated content field tilts in bands along a slope's contour lines, several degrees off at the middle of a cell.
+    /// </summary>
+    [Fact]
+    public void NormalsFollowASlopedPlane()
+    {
+        const int size = 32;
+        var content = HeightField(size, size, size, (x, z) => 10.3f + 0.3f * x + 0.2f * z);
+        var material = SolidMaterial(content, SurfaceMaterial.Rock);
+        var expected = Vector3.Normalize(new Vector3(-0.3f, 1.0f, -0.2f));
+
+        var vertices = new List<VoxelVertex>();
+        var indices = new List<int>();
+
+        Mesh(content, material, new Vector3i(8), new Vector3i(16), new SectionMeshingDescription().Fairing, vertices, indices);
+
+        Assert.NotEmpty(vertices);
+
+        var worstDegrees = 0.0f;
+
+        foreach (var vertex in vertices)
+        {
+            var degrees = MathF.Acos(Math.Clamp(Vector3.Dot(vertex.Normal, expected), -1.0f, 1.0f)) * 180.0f / MathF.PI;
+            worstDegrees = MathF.Max(worstDegrees, degrees);
+        }
+
+        Assert.True(worstDegrees < 0.5f, $"A normal is {worstDegrees} degrees off the plane's.");
+    }
+
+    /// <summary>
+    ///     A normal reads the quads around its vertex, so two units agree on a shared vertex's normal only when the corners of those quads are relaxed exactly in both.
+    /// </summary>
+    [Fact]
+    public void ChunkBoundaryNormalsAgree()
+    {
+        const int sizeX = 64;
+        const int sizeY = 32;
+        const int sizeZ = 32;
+
+        var content = HeightField(sizeX, sizeY, sizeZ, (x, z) => 16.0f + 2.5f * MathF.Sin(0.45f * x) + 2.0f * MathF.Cos(0.35f * z));
+        var material = SolidMaterial(content, SurfaceMaterial.Rock);
+
+        var fairing = new SurfaceFairingSettings
+        {
+            AllowedRange = 0.5f,
+            StepSize = 0.5f,
+            Iterations = 3
+        };
+
+        var cellCount = new Vector3i(16, 16, 12);
+
+        var leftVertices = new List<VoxelVertex>();
+        var leftCells = new List<Vector3i>();
+        Mesh(content, material, new Vector3i(8, 8, 8), cellCount, fairing, leftVertices, new List<int>(), leftCells);
+
+        var rightVertices = new List<VoxelVertex>();
+        var rightCells = new List<Vector3i>();
+        Mesh(content, material, new Vector3i(24, 8, 8), cellCount, fairing, rightVertices, new List<int>(), rightCells);
+
+        // A cell's base vertex comes before any copy of it, so the first vertex per cell is the base:
+        var rightByCell = new Dictionary<Vector3i, VoxelVertex>();
+
+        for (var index = 0; index < rightVertices.Count; index++)
+        {
+            rightByCell.TryAdd(rightCells[index], rightVertices[index]);
+        }
+
+        var shared = 0;
+        var seen = new HashSet<Vector3i>();
+
+        for (var index = 0; index < leftVertices.Count; index++)
+        {
+            if (!seen.Add(leftCells[index]) || !rightByCell.TryGetValue(leftCells[index], out var right))
+            {
+                continue;
+            }
+
+            shared++;
+
+            Assert.Equal(right.Position.X, leftVertices[index].Position.X, 5);
+            Assert.Equal(right.Position.Y, leftVertices[index].Position.Y, 5);
+            Assert.Equal(right.Position.Z, leftVertices[index].Position.Z, 5);
+            Assert.Equal(right.Normal.X, leftVertices[index].Normal.X, 5);
+            Assert.Equal(right.Normal.Y, leftVertices[index].Normal.Y, 5);
+            Assert.Equal(right.Normal.Z, leftVertices[index].Normal.Z, 5);
         }
 
         Assert.True(shared > 0, "The two chunks share no vertex, so the test proves nothing.");

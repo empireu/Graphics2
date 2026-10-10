@@ -5,6 +5,7 @@ using WinterGame.Jobs;
 using WinterGame.Utilities;
 using WinterGame.World;
 using WinterGame.World.Level.Meshing;
+using WinterGame.World.Lighting;
 
 namespace WinterGame.Simulation;
 
@@ -13,7 +14,8 @@ internal sealed class GameThread : IDisposable
     private const int WorkerCount = 4;
 
     private readonly Lock _lock = new();
-    private readonly SectionMeshChannel _meshChannel;
+    private readonly MessageChannel<SectionMeshMessage> _meshChannel;
+    private readonly MessageChannel<LightVolumeMessage> _lightChannel;
     private readonly Thread _thread;
 
     /// <summary>
@@ -33,13 +35,14 @@ internal sealed class GameThread : IDisposable
     private ExceptionDispatchInfo? _fault;
 
     /// <summary>
-    ///     Starts the game thread, whose mesh jobs reach the render thread through <paramref name="meshChannel"/>.
+    ///     Starts the game thread, whose mesh jobs reach the render thread through <paramref name="meshChannel"/> and whose light changes go through <paramref name="lightChannel"/>.
     /// </summary>
-    public GameThread(SectionMeshChannel meshChannel)
+    public GameThread(MessageChannel<SectionMeshMessage> meshChannel, MessageChannel<LightVolumeMessage> lightChannel)
     {
         WgAssert.DebugIsOnRenderThread();
 
         _meshChannel = meshChannel;
+        _lightChannel = lightChannel;
 
         // The simulation picks the spawn, so until the first tick publishes the snapshot is empty and the player is at the origin:
         _snapshot = default;
@@ -142,7 +145,7 @@ internal sealed class GameThread : IDisposable
             });
 
             // The level and the mesh publisher register their executors before the workers start, and the simulation is disposed before the scheduler so the level can still wait for its jobs:
-            using var simulation = new GameSimulation(scheduler, _meshChannel);
+            using var simulation = new GameSimulation(scheduler, _meshChannel, _lightChannel);
             scheduler.Start();
 
             var input = new TickInput();

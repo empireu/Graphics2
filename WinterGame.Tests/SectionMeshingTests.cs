@@ -81,7 +81,7 @@ public class SectionMeshingTests
 
         var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = Math.Max(2, Environment.ProcessorCount - 1) });
         var level = new WorldLevel(scheduler, LevelTests.Graph, slotCount: 32, unloadsPerUpdate: 8);
-        var channel = new SectionMeshChannel();
+        var channel = new MessageChannel<SectionMeshMessage>();
         var publisher = new SectionMeshPublisher(scheduler, Description, channel);
         var receiver = new SectionMeshReceiver(channel);
         var sink = new RecordingSink(new ReferenceMesher());
@@ -126,7 +126,7 @@ public class SectionMeshingTests
 
         var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = 2 });
         var level = new WorldLevel(scheduler, LevelTests.Graph, slotCount: 32);
-        var channel = new SectionMeshChannel();
+        var channel = new MessageChannel<SectionMeshMessage>();
         var publisher = new SectionMeshPublisher(scheduler, Description, channel);
         var receiver = new SectionMeshReceiver(channel);
         var sink = new RecordingSink(new ReferenceMesher());
@@ -183,7 +183,7 @@ public class SectionMeshingTests
 
         var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = Math.Max(2, Environment.ProcessorCount - 1) });
         var level = new WorldLevel(scheduler, LevelTests.Graph, slotCount: 32);
-        var channel = new SectionMeshChannel();
+        var channel = new MessageChannel<SectionMeshMessage>();
         var publisher = new SectionMeshPublisher(scheduler, Description, channel);
         var receiver = new SectionMeshReceiver(channel);
         var sink = new RecordingSink(new ReferenceMesher());
@@ -240,7 +240,7 @@ public class SectionMeshingTests
     {
         WgAssert.InitRenderThread();
 
-        var channel = new SectionMeshChannel();
+        var channel = new MessageChannel<SectionMeshMessage>();
         var receiver = new SectionMeshReceiver(channel);
         var sink = new RecordingSink(new ReferenceMesher());
         var settled = 0;
@@ -329,7 +329,7 @@ public class SectionMeshingTests
 
         var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = Math.Max(2, Environment.ProcessorCount - 1) });
         var level = new WorldLevel(scheduler, LevelTests.Graph, slotCount: 32);
-        var channel = new SectionMeshChannel();
+        var channel = new MessageChannel<SectionMeshMessage>();
         var publisher = new SectionMeshPublisher(scheduler, Description, channel);
         var receiver = new SectionMeshReceiver(channel);
         var sink = new LatestMeshSink();
@@ -378,7 +378,7 @@ public class SectionMeshingTests
 
         var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = Math.Max(2, Environment.ProcessorCount - 1) });
         var level = new WorldLevel(scheduler, LevelTests.Graph, slotCount: 32);
-        var channel = new SectionMeshChannel();
+        var channel = new MessageChannel<SectionMeshMessage>();
         var publisher = new SectionMeshPublisher(scheduler, Description, channel);
         var region = new HashSet<SectionPos>();
         var messages = new List<SectionMeshMessage>();
@@ -426,7 +426,7 @@ public class SectionMeshingTests
         // Never started, so a job runs only when the test drains the scheduler:
         var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = 2 });
         var level = new WorldLevel(scheduler, LevelTests.Graph, slotCount: 32);
-        var channel = new SectionMeshChannel();
+        var channel = new MessageChannel<SectionMeshMessage>();
         var publisher = new SectionMeshPublisher(scheduler, Description, channel);
         var receiver = new SectionMeshReceiver(channel);
         var sink = new LatestMeshSink();

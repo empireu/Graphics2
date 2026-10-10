@@ -34,7 +34,7 @@ The geometry is exactly SurfaceNetsMesher. The material half and the relaxation 
     The reference instead starts every vertex at its cell center and lets the relaxation move it, which is right for pure label data because a label says nothing between samples.
     We have the content field, so we use it and let the relaxation only round the result off.
 
-    The vertex normal is the central difference of the content field at each of the eight corners, blended trilinearly to the vertex and negated, because content grows toward the solid.
+    The vertex normal is the sum of the area vectors of the quads around the vertex, taken from the relaxed positions and normalized.
 
 3. Which material a quad gets
     A quad takes the material of the sample on its own generating edge: the edge joins two corners, one solid and one air, and the solid one carries the material. 
@@ -74,19 +74,21 @@ The geometry is exactly SurfaceNetsMesher. The material half and the relaxation 
     The update is Jacobi, meaning it reads the previous iteration and writes a separate buffer, not Gauss-Seidel.
     That matters for us. A Jacobi pass reaches exactly one cell further per iteration, so two units that each carry Iterations cells of vertices around the cells they emit compute identical values for the vertices they share.
     A Gauss-Seidel sweep depends on visit order, so two units would disagree and a crease would appear along every unit boundary.
-    This is why the vertex range is CellMin - 1 - Iterations through CellMin + CellCount + Iterations, and why the caller has to supply the samples for it.
+    A kept vertex's normal reads the quads around it, whose corners reach one cell past the kept range on every side, and those corners have to be relaxed exactly too.
+    This is why the vertex range is CellMin - 2 - Iterations through CellMin + CellCount + 1 + Iterations, and why the caller has to supply the samples for it.
 
-    The per-material duplicates are made after the relaxation and copy the base vertex's position, so they cannot drift away from the base they belong to.
+    The per-material duplicates are made after the relaxation and the normals and copy the base vertex, so they cannot drift away from the base they belong to.
 
 6. The passes, in order
 
         pass 1   traverse the vertex range, create one base vertex per crossing cell, and record per cell the edge mask, the material of each owned edge, the sign of corner 0, the six face types and the vertex type
         relax    move the base vertices
+        normals  sum the area vector of every quad a kept vertex touches into its four corners, then normalize
         pass 2   for every cell this call owns, emit one quad per crossing owned edge, creating a duplicate vertex for any edge whose material differs from the first
         compact  drop the relaxation's outer halo, which no quad references
 
-    The caller's content and material boxes must cover the whole vertex range plus one sample on every side, because the normal stencil reads one sample past the lowest and the highest vertex cells.
-    The margin per axis is therefore 1 + Iterations cells below the emit range and Iterations above it.
+    The caller's content and material boxes must cover the samples of the whole vertex range.
+    The margin per axis is therefore 2 + Iterations cells below the emit range and 1 + Iterations above it.
     At 32 cells per unit and 4 iterations that is a 36 to 44 sample box per axis, about 1.8x the samples, and that margin is the cost of the fairing.
 */
 
@@ -124,7 +126,7 @@ public struct ReferenceSurfaceFairingSettings
 public sealed class ReferenceMultiLabelSurfaceNetsDescription
 {
     /// <summary>
-    ///     Content field, one byte per sample, padded so that the vertex range plus the gradient stencil fits.
+    ///     Content field, one byte per sample, padded so that the whole vertex range fits.
     /// </summary>
     public required Memory3D<byte> Content { get; init; }
 
@@ -283,19 +285,19 @@ public static class ReferenceMultiLabelSurfaceNets
         ArgumentOutOfRangeException.ThrowIfLessThan(description.CellCount.Y, 1, nameof(description.CellCount));
         ArgumentOutOfRangeException.ThrowIfLessThan(description.CellCount.Z, 1, nameof(description.CellCount));
 
-        // A relaxation pass reaches one cell further, and a quad reaches one cell below the emit range, so the vertex range is that much wider.
+        // A relaxation pass reaches one cell further, a quad reaches one cell below the emit range, and a kept vertex's normal reaches one cell past the kept range, so the vertex range is that much wider.
         // Two units then compute the same value for the cells they share.
-        // The extra cells are traversal and relaxation work only. Compact drops them before the caller sees them.
+        // The extra cells are traversal, relaxation and normal work only. Compact drops them before the caller sees them.
         var relaxHalo = Math.Max(0, description.Fairing.Iterations);
-        var vertexMin = description.CellMin - new Vector3i(1 + relaxHalo);
-        var vertexMax = description.CellMin + description.CellCount + new Vector3i(relaxHalo);
+        var vertexMin = description.CellMin - new Vector3i(2 + relaxHalo);
+        var vertexMax = description.CellMin + description.CellCount + new Vector3i(1 + relaxHalo);
 
-        ArgumentOutOfRangeException.ThrowIfLessThan(vertexMin.X - 1, 0, nameof(description.CellMin));
-        ArgumentOutOfRangeException.ThrowIfLessThan(vertexMin.Y - 1, 0, nameof(description.CellMin));
-        ArgumentOutOfRangeException.ThrowIfLessThan(vertexMin.Z - 1, 0, nameof(description.CellMin));
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(vertexMax.X + 1, cells.X, nameof(description.CellCount));
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(vertexMax.Y + 1, cells.Y, nameof(description.CellCount));
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(vertexMax.Z + 1, cells.Z, nameof(description.CellCount));
+        ArgumentOutOfRangeException.ThrowIfLessThan(vertexMin.X, 0, nameof(description.CellMin));
+        ArgumentOutOfRangeException.ThrowIfLessThan(vertexMin.Y, 0, nameof(description.CellMin));
+        ArgumentOutOfRangeException.ThrowIfLessThan(vertexMin.Z, 0, nameof(description.CellMin));
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(vertexMax.X, cells.X, nameof(description.CellCount));
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(vertexMax.Y, cells.Y, nameof(description.CellCount));
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(vertexMax.Z, cells.Z, nameof(description.CellCount));
 
         var content = description.Content.Span;
         var material = description.Material.Span;
@@ -471,7 +473,6 @@ public static class ReferenceMultiLabelSurfaceNets
                     vertices.Add(new ReferenceVoxelVertex
                     {
                         Position = new Vector3(lx + local.X, ly + local.Y, lz + local.Z),
-                        Normal = VertexNormal(lx, ly, lz, local, content),
                         Material = firstMaterial
                     });
                 }
@@ -480,6 +481,7 @@ public static class ReferenceMultiLabelSurfaceNets
 
         // The base vertices are relaxed before the per-material duplicates are made, so a duplicate copies a relaxed position rather than being relaxed twice:
         Relax(vertices, cellIndices, range, vertexMin, localCells, cellCenters, vertexTypes, faceTypes, description.Fairing);
+        SetNormals(vertices, cellIndices, range, vertexMin, localCells, edgeMasks, solidBases, description.CellMin - new Vector3i(1), description.CellMin + description.CellCount + new Vector3i(1));
 
         var baseVertexCount = vertices.Count;
         Span<uint> materials = stackalloc uint[BaseEdgeCount];
@@ -900,49 +902,88 @@ public static class ReferenceMultiLabelSurfaceNets
     }
 
     /// <summary>
-    ///     Central difference of the content field at one sample point.
+    ///     Sets every base vertex's normal to the normalized sum of the area vectors of the quads around it, from the relaxed positions.
+    ///     Only the quads owned by cells in <paramref name="ownerMin"/> to <paramref name="ownerMax"/> are summed, which covers every quad of every vertex Compact keeps.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static Vector3 CornerGradient(int sx, int sy, int sz, Span3D<byte> content)
+    private static void SetNormals(
+        List<ReferenceVoxelVertex> vertices,
+        int[] cellIndices,
+        Vector3i range,
+        Vector3i vertexMin,
+        List<Vector3i> localCells,
+        List<int> edgeMasks,
+        List<bool> solidBases,
+        Vector3i ownerMin,
+        Vector3i ownerMax
+    )
     {
-        return new Vector3(
-            content[sx + 1, sy, sz] - content[sx - 1, sy, sz],
-            content[sx, sy + 1, sz] - content[sx, sy - 1, sz],
-            content[sx, sy, sz + 1] - content[sx, sy, sz - 1]
-        );
-    }
+        var normals = new Vector3[vertices.Count];
 
-    /// <summary>
-    ///     Blends the gradients of the 8 cell corners to the vertex, negated because content grows toward the solid.
-    /// </summary>
-    private static Vector3 VertexNormal(int sx, int sy, int sz, Vector3 local, Span3D<byte> content)
-    {
-        var g000 = CornerGradient(sx, sy, sz, content);
-        var g100 = CornerGradient(sx + 1, sy, sz, content);
-        var g010 = CornerGradient(sx, sy + 1, sz, content);
-        var g110 = CornerGradient(sx + 1, sy + 1, sz, content);
-        var g001 = CornerGradient(sx, sy, sz + 1, content);
-        var g101 = CornerGradient(sx + 1, sy, sz + 1, content);
-        var g011 = CornerGradient(sx, sy + 1, sz + 1, content);
-        var g111 = CornerGradient(sx + 1, sy + 1, sz + 1, content);
+        for (var cellOrder = 0; cellOrder < vertices.Count; cellOrder++)
+        {
+            var cell = localCells[cellOrder];
 
-        var g0 = Vector3.Lerp(
-            Vector3.Lerp(g000, g100, local.X),
-            Vector3.Lerp(g010, g110, local.X),
-            local.Y
-        );
+            if (cell.X < ownerMin.X || cell.Y < ownerMin.Y || cell.Z < ownerMin.Z ||
+                cell.X >= ownerMax.X || cell.Y >= ownerMax.Y || cell.Z >= ownerMax.Z)
+            {
+                continue;
+            }
 
-        var g1 = Vector3.Lerp(
-            Vector3.Lerp(g001, g101, local.X),
-            Vector3.Lerp(g011, g111, local.X),
-            local.Y
-        );
+            for (var edge = 0; edge < BaseEdgeCount; edge++)
+            {
+                if ((edgeMasks[cellOrder] & (1 << edge)) == 0)
+                {
+                    continue;
+                }
 
-        var outward = -Vector3.Lerp(g0, g1, local.Z);
+                var i1 = edge switch
+                {
+                    0 => CellIndex(cellIndices, range, vertexMin, cell.X, cell.Y - 1, cell.Z),
+                    1 => CellIndex(cellIndices, range, vertexMin, cell.X, cell.Y, cell.Z - 1),
+                    _ => CellIndex(cellIndices, range, vertexMin, cell.X - 1, cell.Y, cell.Z)
+                };
 
-        return outward.LengthSquared() > 1e-12f
-            ? Vector3.Normalize(outward)
-            : Vector3.UnitY;
+                var i2 = edge switch
+                {
+                    0 => CellIndex(cellIndices, range, vertexMin, cell.X, cell.Y - 1, cell.Z - 1),
+                    1 => CellIndex(cellIndices, range, vertexMin, cell.X - 1, cell.Y, cell.Z - 1),
+                    _ => CellIndex(cellIndices, range, vertexMin, cell.X - 1, cell.Y - 1, cell.Z)
+                };
+
+                var i3 = edge switch
+                {
+                    0 => CellIndex(cellIndices, range, vertexMin, cell.X, cell.Y, cell.Z - 1),
+                    1 => CellIndex(cellIndices, range, vertexMin, cell.X - 1, cell.Y, cell.Z),
+                    _ => CellIndex(cellIndices, range, vertexMin, cell.X, cell.Y - 1, cell.Z)
+                };
+
+                var area = Vector3.Cross(
+                    vertices[i2].Position - vertices[cellOrder].Position,
+                    vertices[i3].Position - vertices[i1].Position
+                );
+
+                if (!solidBases[cellOrder])
+                {
+                    area = -area;
+                }
+
+                normals[cellOrder] += area;
+                normals[i1] += area;
+                normals[i2] += area;
+                normals[i3] += area;
+            }
+        }
+
+        for (var index = 0; index < vertices.Count; index++)
+        {
+            var vertex = vertices[index];
+
+            vertex.Normal = normals[index].LengthSquared() > 1e-12f
+                ? Vector3.Normalize(normals[index])
+                : Vector3.UnitY;
+
+            vertices[index] = vertex;
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

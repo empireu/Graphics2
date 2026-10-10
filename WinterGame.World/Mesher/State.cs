@@ -35,9 +35,9 @@ public sealed class MultiLabelSurfaceNetsStateStorage
         ArgumentOutOfRangeException.ThrowIfLessThan(cellCount.Z, 1, nameof(cellCount));
         ArgumentOutOfRangeException.ThrowIfNegative(relaxHalo);
 
-        var vertexRangeX = cellCount.X + 2 * relaxHalo + 1;
-        var vertexRangeY = cellCount.Y + 2 * relaxHalo + 1;
-        var vertexRangeZ = cellCount.Z + 2 * relaxHalo + 1;
+        var vertexRangeX = cellCount.X + 2 * relaxHalo + 3;
+        var vertexRangeY = cellCount.Y + 2 * relaxHalo + 3;
+        var vertexRangeZ = cellCount.Z + 2 * relaxHalo + 3;
 
         var maxBaseVertices = vertexRangeX * vertexRangeY * vertexRangeZ;
         var emitCells = cellCount.X * cellCount.Y * cellCount.Z;

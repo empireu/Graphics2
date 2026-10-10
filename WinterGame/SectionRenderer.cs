@@ -40,8 +40,9 @@ internal sealed class SectionRenderer : IDisposable
     /// <summary>
     ///     Draws <paramref name="geometry"/>, prepared for this frame, into <paramref name="pass"/>, which needs a depth attachment.
     ///     <paramref name="lighting"/> holds this frame's <see cref="FrameLighting"/>, and <paramref name="shadowMap"/> has to have been rendered in this frame already.
+    ///     <paramref name="lightVolume"/> is the <see cref="LightVolume"/> that <paramref name="lighting"/> describes.
     /// </summary>
-    public void Draw(Frame frame, RenderPassEncoder pass, SectionGeometry geometry, RingAllocation lighting, VkTexture shadowMap, VkSampler shadowSampler)
+    public void Draw(Frame frame, RenderPassEncoder pass, SectionGeometry geometry, RingAllocation lighting, VkTexture shadowMap, VkSampler shadowSampler, VkTexture lightVolume, VkSampler lightSampler)
     {
         WgAssert.DebugIsOnRenderThread();
 
@@ -56,6 +57,8 @@ internal sealed class SectionRenderer : IDisposable
         pass.BindUniformBuffer("lighting", lighting);
         pass.BindTexture("shadowMap", shadowMap);
         pass.BindSampler("shadowSampler", shadowSampler);
+        pass.BindTexture("lightVolume", lightVolume);
+        pass.BindSampler("lightSampler", lightSampler);
 
         geometry.Draw(pass);
     }

@@ -8,6 +8,9 @@ struct DrawRecord {
 // SunShadow.CascadeCount in C#:
 static const uint ShadowCascadeCount = 3;
 
+// The steepest receiver plane the shadow filter follows, as depth per lateral distance in the light's view. 10 is a triangle about 6 degrees from the light's direction:
+static const float MaxReceiverSlope = 10.0;
+
 // ShadowCascade in C#, the cascade's texel size in metres in parameters.x:
 struct ShadowCascade {
     row_major float4x4 viewProj;
@@ -22,12 +25,22 @@ struct FrameLighting {
     float4 skyZenith;
     float4 skyHorizon;
     ShadowCascade shadowCascades[ShadowCascadeCount];
+    float4 lightVolumePlacement;
     float4 debugOptions;
 };
 
 [[vk::binding(1, 0)]] ConstantBuffer<FrameLighting> lighting;
 [[vk::binding(2, 0)]] Texture2D shadowMap;
 [[vk::binding(3, 0)]] SamplerComparisonState shadowSampler;
+
+// The sky visibility of each light cell, at the cell's brick coordinates modulo the texture's size:
+[[vk::binding(4, 0)]] Texture3D<float> lightVolume;
+
+// Nearest filtering with repeat addressing, so a read at a cell's centre returns that cell's texel wherever the cell lies:
+[[vk::binding(5, 0)]] SamplerState lightSampler;
+
+// LightEngine.MaxLevel in C#:
+static const float MaxLightLevel = 8.0;
 
 static const uint MaterialCount = 8;
 
@@ -91,15 +104,17 @@ VertexOutput vsMain(VertexInput input, uint recordIndex : SV_StartInstanceLocati
     return output;
 }
 
-// One comparison at a position in texels inside a cascade's tile, filtered over its four nearest texels by the sampler:
-float ShadowTap(uint cascade, float2 tileTexel, float depth, float2 mapSize) {
-    float2 uv = float2(cascade * mapSize.y + tileTexel.x, tileTexel.y) / mapSize;
-    return shadowMap.SampleCmpLevelZero(shadowSampler, uv, depth);
+// One comparison at a position in texels inside a cascade's tile, filtered over its four nearest texels by the sampler.
+// The reference depth follows the receiver's plane from the lookup at tileTexel towards the light, so the receiver does not shadow itself.
+// It never follows the plane away from the light. Past a fold the plane would run behind the neighbouring triangle and shadow the receiver in a band, which is wide on a triangle at a grazing angle to the light:
+float ShadowTap(uint cascade, float2 tapTexel, float2 tileTexel, float depth, float2 depthPerTexel, float2 mapSize) {
+    float2 uv = float2(cascade * mapSize.y + tapTexel.x, tapTexel.y) / mapSize;
+    return shadowMap.SampleCmpLevelZero(shadowSampler, uv, depth + min(dot(tapTexel - tileTexel, depthPerTexel), 0.0));
 }
 
 // A cascade's shadow at a position in texels inside its tile, filtered over 5x5 texels.
 // This is Castano's optimized PCF, as in MJP's shadow sample. Nine filtered comparisons stand in for the 25 texels, and their weights and offsets follow the lookup's position inside its texel, so the result moves smoothly instead of stepping a texel at a time.
-float FilteredShadow(uint cascade, float2 tileTexel, float depth, float2 mapSize) {
+float FilteredShadow(uint cascade, float2 tileTexel, float depth, float2 depthPerTexel, float2 mapSize) {
     float2 baseTexel = floor(tileTexel + 0.5);
     float s = tileTexel.x + 0.5 - baseTexel.x;
     float t = tileTexel.y + 0.5 - baseTexel.y;
@@ -120,24 +135,43 @@ float FilteredShadow(uint cascade, float2 tileTexel, float depth, float2 mapSize
     float v2 = t / vw2 + 2.0;
 
     float sum = 0.0;
-    sum += uw0 * vw0 * ShadowTap(cascade, baseTexel + float2(u0, v0), depth, mapSize);
-    sum += uw1 * vw0 * ShadowTap(cascade, baseTexel + float2(u1, v0), depth, mapSize);
-    sum += uw2 * vw0 * ShadowTap(cascade, baseTexel + float2(u2, v0), depth, mapSize);
+    sum += uw0 * vw0 * ShadowTap(cascade, baseTexel + float2(u0, v0), tileTexel, depth, depthPerTexel, mapSize);
+    sum += uw1 * vw0 * ShadowTap(cascade, baseTexel + float2(u1, v0), tileTexel, depth, depthPerTexel, mapSize);
+    sum += uw2 * vw0 * ShadowTap(cascade, baseTexel + float2(u2, v0), tileTexel, depth, depthPerTexel, mapSize);
 
-    sum += uw0 * vw1 * ShadowTap(cascade, baseTexel + float2(u0, v1), depth, mapSize);
-    sum += uw1 * vw1 * ShadowTap(cascade, baseTexel + float2(u1, v1), depth, mapSize);
-    sum += uw2 * vw1 * ShadowTap(cascade, baseTexel + float2(u2, v1), depth, mapSize);
+    sum += uw0 * vw1 * ShadowTap(cascade, baseTexel + float2(u0, v1), tileTexel, depth, depthPerTexel, mapSize);
+    sum += uw1 * vw1 * ShadowTap(cascade, baseTexel + float2(u1, v1), tileTexel, depth, depthPerTexel, mapSize);
+    sum += uw2 * vw1 * ShadowTap(cascade, baseTexel + float2(u2, v1), tileTexel, depth, depthPerTexel, mapSize);
 
-    sum += uw0 * vw2 * ShadowTap(cascade, baseTexel + float2(u0, v2), depth, mapSize);
-    sum += uw1 * vw2 * ShadowTap(cascade, baseTexel + float2(u1, v2), depth, mapSize);
-    sum += uw2 * vw2 * ShadowTap(cascade, baseTexel + float2(u2, v2), depth, mapSize);
+    sum += uw0 * vw2 * ShadowTap(cascade, baseTexel + float2(u0, v2), tileTexel, depth, depthPerTexel, mapSize);
+    sum += uw1 * vw2 * ShadowTap(cascade, baseTexel + float2(u1, v2), tileTexel, depth, depthPerTexel, mapSize);
+    sum += uw2 * vw2 * ShadowTap(cascade, baseTexel + float2(u2, v2), tileTexel, depth, depthPerTexel, mapSize);
 
     // The weights on each axis sum to 12, so all nine sum to 144:
     return sum / 144.0;
 }
 
+// The change in a cascade's depth per texel across the plane of a pixel's triangle, from the screen derivatives of the world position.
+// Each filter tap compares against this plane, so a sloped triangle does not shadow itself however far the filter reaches.
+// The slope is limited to MaxReceiverSlope where the triangle is nearly parallel to the light.
+float2 ReceiverDepthSlope(ShadowCascade shadowCascade, float3 positionDx, float3 positionDy, float texelSize, float cascadeSize) {
+    // Depth is measured in texels too, so the plane's slope is a tangent:
+    float depthPerMetre = length(float3(shadowCascade.viewProj[0].z, shadowCascade.viewProj[1].z, shadowCascade.viewProj[2].z));
+    float3 scale = float3(0.5 * cascadeSize, 0.5 * cascadeSize, 1.0 / (depthPerMetre * texelSize));
+
+    float3 texelsDx = mul(float4(positionDx, 0.0), shadowCascade.viewProj).xyz * scale;
+    float3 texelsDy = mul(float4(positionDy, 0.0), shadowCascade.viewProj).xyz * scale;
+    float3 planeNormal = cross(texelsDx, texelsDy);
+
+    float lateral = length(planeNormal.xy);
+    float2 slope = -planeNormal.xy / max(abs(planeNormal.z), lateral / MaxReceiverSlope + 1e-20) * sign(planeNormal.z);
+
+    return slope / scale.z;
+}
+
 // The fraction of the directional light that reaches a point, from the smallest cascade that holds it, which is ShadowCascadeCount when none does.
-float SunShadow(float3 worldPosition, float3 normal, float normalDotLight, out uint cascadeUsed) {
+// positionDx and positionDy are the screen derivatives of the world position.
+float SunShadow(float3 worldPosition, float3 positionDx, float3 positionDy, float3 normal, float normalDotLight, out uint cascadeUsed) {
     uint mapWidth;
     uint cascadeSize;
     shadowMap.GetDimensions(mapWidth, cascadeSize);
@@ -157,12 +191,62 @@ float SunShadow(float3 worldPosition, float3 normal, float normalDotLight, out u
 
         if (all(abs(clip.xy) < inside) && clip.z <= 1.0) {
             cascadeUsed = cascade;
-            return FilteredShadow(cascade, (clip.xy * 0.5 + 0.5) * cascadeSize, clip.z, float2(mapWidth, cascadeSize));
+            float2 depthPerTexel = ReceiverDepthSlope(shadowCascade, positionDx, positionDy, texelSize, cascadeSize);
+            return FilteredShadow(cascade, (clip.xy * 0.5 + 0.5) * cascadeSize, clip.z, depthPerTexel, float2(mapWidth, cascadeSize));
         }
     }
 
     cascadeUsed = ShadowCascadeCount;
     return 1.0;
+}
+
+// The fraction of the sky a point sees, from the eight cells around a lookup half a cell out along the normal, weighted as linear filtering weights them.
+// A cell's weight fades out as its centre goes behind the surface's tangent plane, so a dark cell under a thin wall does not darken the surface on top of it.
+// A cell with no air has no weight, so the rock in front of a concave surface does not darken it.
+// A texel of 0 is a cell with no air, and a cell with air runs from 1 for no sky to 255 for the whole sky, as LightEngine.TakeVolumeChanges writes them in C#.
+// A point outside the volume sees the whole sky. The eight cells stay inside the volume, because its two opposite faces lie next to each other in the texture.
+// Each cell is read through the sampler's repeat addressing. Load with an integer remainder wrap read wrong texels in the game, though the same arithmetic is right on the CPU.
+float SkyVisibility(float3 worldPosition, float3 normal) {
+    float3 surface = worldPosition / lighting.lightVolumePlacement.w;
+    float3 cell = surface + normal * 0.5;
+
+    uint3 size;
+    lightVolume.GetDimensions(size.x, size.y, size.z);
+
+    float3 low = lighting.lightVolumePlacement.xyz;
+    float3 high = low + float3(size);
+
+    if (any(cell < low) || any(cell >= high)) {
+        return 1.0;
+    }
+
+    float3 lookup = clamp(cell, low + 0.5, high - 0.5);
+    float3 first = min(floor(lookup - 0.5), high - 2.0);
+    float3 fraction = lookup - 0.5 - first;
+
+    float sum = 0.0;
+    float total = 0.0;
+    float linearSum = 0.0;
+
+    [unroll]
+    for (uint corner = 0; corner < 8; corner++) {
+        float3 offset = float3(corner & 1, (corner >> 1) & 1, corner >> 2);
+        float3 axisWeights = lerp(1.0 - fraction, fraction, offset);
+        float linearWeight = axisWeights.x * axisWeights.y * axisWeights.z;
+
+        float texel = lightVolume.SampleLevel(lightSampler, (first + offset + 0.5) / float3(size), 0.0);
+        float visibility = saturate((texel * 255.0 - 1.0) / 254.0);
+
+        // A cell is gone a quarter of a cell behind the surface and whole a quarter of a cell in front of it:
+        float weight = texel > 0.0 ? linearWeight * saturate(dot(first + offset + 0.5 - surface, normal) * 2.0 + 0.5) : 0.0;
+
+        sum += weight * visibility;
+        total += weight;
+        linearSum += linearWeight * visibility;
+    }
+
+    // When no cell with air is in front of the surface, or its weight is 0 on a cell boundary, the plain blend stands in:
+    return total > 0.0 ? sum / total : linearSum;
 }
 
 [shader("fragment")]
@@ -173,12 +257,23 @@ float4 fsMain(VertexOutput input) : SV_TARGET {
     uint material = input.material < MaterialCount ? input.material : 0;
     float3 albedo = MaterialAlbedo[material];
 
+    // A derivative needs every pixel of the quad to reach it, so these are taken before the shadow's branch:
+    float3 positionDx = ddx(input.worldPosition);
+    float3 positionDy = ddy(input.worldPosition);
+
     float normalDotLight = saturate(dot(normal, lighting.lightDirection.xyz));
     uint shadowCascade = ShadowCascadeCount;
-    float shadow = normalDotLight > 0.0 ? SunShadow(input.worldPosition, normal, normalDotLight, shadowCascade) : 0.0;
+    float mapShadow = normalDotLight > 0.0 ? SunShadow(input.worldPosition, positionDx, positionDy, normal, normalDotLight, shadowCascade) : 0.0;
+    float shadow = 1.0;
 
-    float3 sky = lerp(lighting.skyHorizon.rgb, lighting.skyZenith.rgb, saturate(normal.y));
-    float3 direct = lighting.lightRadiance.rgb * normalDotLight * shadow;
+    float volumeSkyVisibility = SkyVisibility(input.worldPosition, normal);
+    float skyVisibility = 1.0;
+
+    // A point no sky light reaches gets no sun either, which keeps the sun out of caves deeper than the shadow cascades reach:
+    float sunReach = saturate(skyVisibility * MaxLightLevel);
+
+    float3 sky = lerp(lighting.skyHorizon.rgb, lighting.skyZenith.rgb, saturate(normal.y)) * skyVisibility;
+    float3 direct = lighting.lightRadiance.rgb * normalDotLight * shadow * sunReach;
     float3 color = albedo * (sky + direct);
 
     uint debugView = uint(lighting.debugOptions.x);
@@ -190,6 +285,23 @@ float4 fsMain(VertexOutput input) : SV_TARGET {
         // A texel stretches by one over the cosine of the angle between the normal and the light, 2 at 0.5, 4 at 0.25 and 11 at 0.09:
         uint band = normalDotLight >= 0.5 ? 0 : normalDotLight >= 0.25 ? 1 : normalDotLight >= 0.09 ? 2 : 3;
         color *= LightAngleTints[band];
+    }
+    else if (debugView == 3) {
+        color = float3(volumeSkyVisibility, volumeSkyVisibility, volumeSkyVisibility);
+    }
+    else if (debugView == 4) {
+        color = float3(mapShadow, mapShadow, mapShadow);
+    }
+    else if (debugView == 5) {
+        // The triangle's own normal, turned to the side of the smooth one:
+        float3 faceNormal = normalize(cross(positionDx, positionDy));
+        faceNormal = dot(faceNormal, normal) < 0.0 ? -faceNormal : faceNormal;
+        float faceDotLight = dot(faceNormal, lighting.lightDirection.xyz);
+
+        // The sun's shadow tinted by the triangle's angle to the light, in the bands of view 2, and purple where the triangle faces away from the sun:
+        uint band = faceDotLight >= 0.5 ? 0 : faceDotLight >= 0.25 ? 1 : faceDotLight >= 0.09 ? 2 : 3;
+        float3 tint = faceDotLight > 0.0 ? LightAngleTints[band] : float3(0.6, 0.35, 1.0);
+        color = lerp(0.25, 1.0, mapShadow) * tint;
     }
 
     return float4(color, 1.0);

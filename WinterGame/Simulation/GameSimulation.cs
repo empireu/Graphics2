@@ -43,6 +43,8 @@ internal sealed class GameSimulation : IDisposable
     private readonly LightEngine _light;
     private readonly LevelTicket _playerTicket;
     private readonly SectionMeshPublisher _meshPublisher;
+    private readonly MessageChannel<LightVolumeMessage> _lightChannel;
+    private readonly List<LightVolumeMessage> _lightMessages = [];
     private readonly DebugBrush _brush = new();
     private readonly long _startTimestamp = Stopwatch.GetTimestamp();
 
@@ -56,9 +58,9 @@ internal sealed class GameSimulation : IDisposable
     /// <summary>
     ///     Creates the level and the mesh publisher, which register their executors, so <paramref name="scheduler"/> must not have started yet.
     ///     The player starts <see cref="SpawnHeight"/> above the surface at the origin column.
-    ///     The publisher sends its mesh jobs to the render thread through <paramref name="meshChannel"/>.
+    ///     The publisher sends its mesh jobs to the render thread through <paramref name="meshChannel"/>, and the light engine's volume changes go through <paramref name="lightChannel"/>.
     /// </summary>
-    public GameSimulation(JobScheduler scheduler, SectionMeshChannel meshChannel)
+    public GameSimulation(JobScheduler scheduler, MessageChannel<SectionMeshMessage> meshChannel, MessageChannel<LightVolumeMessage> lightChannel)
     {
         WgAssert.DebugIsOnGameThread();
 
@@ -71,6 +73,7 @@ internal sealed class GameSimulation : IDisposable
         _light = new LightEngine(_level, TicketHorizontalRadius, TicketVerticalRadius);
         _playerTicket = _level.AddTicket(GetSection(spawnPosition), TicketHorizontalRadius, TicketVerticalRadius);
         _meshPublisher = new SectionMeshPublisher(scheduler, meshing, meshChannel);
+        _lightChannel = lightChannel;
     }
 
     public void Tick(TickInput input)
@@ -98,6 +101,9 @@ internal sealed class GameSimulation : IDisposable
 
         _meshPublisher.Update(_level, playerSection);
         _light.Update(playerSection);
+        _light.TakeVolumeChanges(_lightMessages);
+        _lightChannel.Post(_lightMessages);
+        _lightMessages.Clear();
         _tickCount++;
 
         RecordTickTime(Stopwatch.GetElapsedTime(start).TotalMilliseconds);

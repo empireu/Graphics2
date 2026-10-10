@@ -1,4 +1,6 @@
+using System.Numerics;
 using System.Runtime.InteropServices;
+using Graphics2.Mathematics;
 using WinterGame.Utilities;
 using WinterGame.World.Level;
 using WinterGame.World.Storage;
@@ -35,6 +37,11 @@ public sealed class LightEngine
     ///     The number of the current update, stamped on each slot it builds.
     /// </summary>
     private int _stamp;
+
+    /// <summary>
+    ///     The window's lowest section as <see cref="TakeVolumeChanges"/> last sent it.
+    /// </summary>
+    private SectionPos? _volumeMin;
 
     /// <summary>
     ///     Creates an engine whose window reaches <paramref name="horizontalRadius"/> sections from its center horizontally and <paramref name="verticalRadius"/> vertically.
@@ -131,6 +138,49 @@ public sealed class LightEngine
         level = Window.Light[cell] & LightWord.LevelMask;
 
         return true;
+    }
+
+    /// <summary>
+    ///     Adds what changed for a volume that mirrors the window since the last call to <paramref name="destination"/>.
+    ///     A move of the window comes first, then the light of each slot whose light was written.
+    ///     A cell with no air is 0, and a cell with air is its level scaled from 1 at level 0 to 255 at <see cref="MaxLevel"/>.
+    /// </summary>
+    public void TakeVolumeChanges(List<LightVolumeMessage> destination)
+    {
+        WgAssert.DebugIsOnGameThread();
+
+        if (!Window.IsPlaced)
+        {
+            return;
+        }
+
+        if (_volumeMin != Window.Min)
+        {
+            destination.Add(new LightVolumeMessage(Window.Min, new Vector3i(Window.BricksX, Window.BricksY, Window.BricksZ)));
+            _volumeMin = Window.Min;
+        }
+
+        Span<byte> levels = stackalloc byte[LightWindow.CellsPerSection];
+        var changed = Window.ChangedSlots;
+
+        for (var index = 0; index < changed.Length; index++)
+        {
+            for (var bits = changed[index]; bits != 0; bits &= bits - 1)
+            {
+                var slot = (index << 6) | BitOperations.TrailingZeroCount(bits);
+                var light = Window.Light.AsSpan(slot << LightWindow.CellLog, LightWindow.CellsPerSection);
+                var air = Window.Air.AsSpan(slot << LightWindow.CellLog, LightWindow.CellsPerSection);
+
+                for (var cell = 0; cell < levels.Length; cell++)
+                {
+                    levels[cell] = air[cell] == 0 ? (byte)0 : (byte)(1 + (light[cell] & LightWord.LevelMask) * (byte.MaxValue - 1) / MaxLevel);
+                }
+
+                destination.Add(new LightVolumeMessage(slot, Window.GetSlotOrigin(slot), levels));
+            }
+
+            changed[index] = 0;
+        }
     }
 
     /// <summary>

@@ -213,6 +213,78 @@ public class LightEngineTests
     }
 
     /// <summary>
+    ///     A volume kept from nothing but the volume changes holds every cell of the window, after a fill, steps, edits and a jump.
+    ///     A sealed tunnel reaches one brick into the next section along X. A shaft into it, written into its own section column only, lights that brick by spreading alone.
+    ///     A step that drops the shaft's section leaves that brick on the trailing face, where only the face's removal darkens it. A plug in the shaft darkens it by removal alone.
+    /// </summary>
+    [Fact]
+    public void TheVolumeChanges_KeepAVolumeEqualToTheWindow()
+    {
+        using var harness = new Harness();
+
+        var level = harness.Level;
+        var light = harness.Light;
+        var volume = new VolumeMirror();
+        var start = harness.Center;
+
+        volume.TakeAndCheck(light, "After the fill");
+
+        harness.MoveTo(start with { X = start.X + 1 });
+        volume.TakeAndCheck(light, "After a step along X");
+
+        var center = harness.Center;
+        var nextSectionX = (center.X + 1) * Section.BricksPerAxis;
+        var shaftX = nextSectionX - 2;
+        var brickZ = center.Z * Section.BricksPerAxis + 3;
+
+        Assert.True(light.TryGetSkyFloor(shaftX, brickZ, out var floor, out _));
+
+        var tunnelY = floor - 10;
+
+        Assert.True(tunnelY > (center.Y - harness.VerticalRadius) * Section.BricksPerAxis, "The tunnel would lie below the loaded sections.");
+
+        var shaftLowX = shaftX * Section.BrickSize;
+        var shaftHighX = shaftLowX + Section.BrickSize - 1;
+        var lowZ = brickZ * Section.BrickSize;
+        var highZ = lowZ + Section.BrickSize - 1;
+        var skyTop = (level.LowestSkySectionY + 1) * SectionPos.SectionSize - 1;
+
+        WriteBox(level, new Vector3i(shaftLowX, tunnelY * Section.BrickSize, lowZ), new Vector3i((nextSectionX + 1) * Section.BrickSize - 1, (tunnelY + 1) * Section.BrickSize - 1, highZ), 0, SurfaceMaterial.Null);
+        light.Update(center);
+
+        Assert.Equal(0, GetLight(light, nextSectionX, tunnelY, brickZ));
+        volume.TakeAndCheck(light, "After a sealed tunnel was dug");
+
+        WriteBox(level, new Vector3i(shaftLowX, (tunnelY + 1) * Section.BrickSize, lowZ), new Vector3i(shaftHighX, skyTop, highZ), 0, SurfaceMaterial.Null);
+        light.Update(center);
+
+        Assert.Equal(LightEngine.MaxLevel - 2, GetLight(light, nextSectionX, tunnelY, brickZ));
+        volume.TakeAndCheck(light, "After a shaft opened the tunnel");
+
+        harness.MoveTo(center with { X = center.X + 3 });
+
+        Assert.Equal(0, GetLight(light, nextSectionX, tunnelY, brickZ));
+        volume.TakeAndCheck(light, "After a step that dropped the shaft's section");
+
+        harness.MoveTo(center);
+
+        Assert.Equal(LightEngine.MaxLevel - 2, GetLight(light, nextSectionX, tunnelY, brickZ));
+        volume.TakeAndCheck(light, "After a step back to the shaft");
+
+        WriteBox(level, new Vector3i(shaftLowX, (floor - 3) * Section.BrickSize, lowZ), new Vector3i(shaftHighX, floor * Section.BrickSize - 1, highZ), byte.MaxValue, SurfaceMaterial.Rock);
+        light.Update(center);
+
+        Assert.Equal(0, GetLight(light, nextSectionX, tunnelY, brickZ));
+        volume.TakeAndCheck(light, "After a plug closed the shaft");
+
+        harness.MoveTo(new SectionPos(start.X + 1, start.Y - 1, start.Z - 1));
+        volume.TakeAndCheck(light, "After a step down and along Z");
+
+        harness.MoveTo(start with { X = start.X + 40 });
+        volume.TakeAndCheck(light, "After a jump");
+    }
+
+    /// <summary>
     ///     A sealed cave in the top bricks of a section, then a shaft down to that section's top, written into the sections above it only.
     ///     The cave's section is not written, so only the floor moving into it tells the box to light it as sky.
     /// </summary>
@@ -444,6 +516,84 @@ public class LightEngineTests
         }
 
         return maximum;
+    }
+
+    /// <summary>
+    ///     A volume kept from <see cref="LightEngine.TakeVolumeChanges"/> alone, the way the render thread keeps its texture.
+    /// </summary>
+    private sealed class VolumeMirror
+    {
+        private readonly List<LightVolumeMessage> _messages = [];
+        private byte[] _cells = [];
+        private Vector3i _size;
+        private SectionPos _min;
+
+        /// <summary>
+        ///     Applies the changes since the last call and checks every cell of the window against the engine's level and air.
+        /// </summary>
+        public void TakeAndCheck(LightEngine light, string context)
+        {
+            _messages.Clear();
+            light.TakeVolumeChanges(_messages);
+
+            foreach (var message in _messages)
+            {
+                if (message.Kind == LightVolumeMessageKind.Placed)
+                {
+                    _size = message.Size;
+                    _min = message.Min;
+
+                    if (_cells.Length == 0)
+                    {
+                        _cells = new byte[_size.X * _size.Y * _size.Z];
+                    }
+
+                    continue;
+                }
+
+                ReadOnlySpan<byte> levels = message.Levels;
+
+                for (var local = 0; local < levels.Length; local++)
+                {
+                    var x = message.Origin.X + (local & Section.BricksPerAxisMask);
+                    var y = message.Origin.Y + ((local >> Section.BricksPerAxisLog) & Section.BricksPerAxisMask);
+                    var z = message.Origin.Z + (local >> (2 * Section.BricksPerAxisLog));
+
+                    _cells[x + _size.X * (y + _size.Y * z)] = levels[local];
+                }
+            }
+
+            var minX = _min.X * Section.BricksPerAxis;
+            var minY = _min.Y * Section.BricksPerAxis;
+            var minZ = _min.Z * Section.BricksPerAxis;
+
+            for (var z = minZ; z < minZ + _size.Z; z++)
+            {
+                for (var y = minY; y < minY + _size.Y; y++)
+                {
+                    for (var x = minX; x < minX + _size.X; x++)
+                    {
+                        var expected = 0;
+
+                        if (light.TryGetLight(x, y, z, out var cellLevel) && light.Window.Air[light.Window.GetCell(x - minX, y - minY, z - minZ)] != 0)
+                        {
+                            expected = 1 + cellLevel * (byte.MaxValue - 1) / LightEngine.MaxLevel;
+                        }
+
+                        var actual = _cells[Modulo(x, _size.X) + _size.X * (Modulo(y, _size.Y) + _size.Y * Modulo(z, _size.Z))];
+
+                        Assert.True(actual == expected, $"{context}: brick ({x}, {y}, {z}) is {actual} in the volume and {expected} in the window.");
+                    }
+                }
+            }
+        }
+
+        private static int Modulo(int value, int size)
+        {
+            var remainder = value % size;
+
+            return remainder < 0 ? remainder + size : remainder;
+        }
     }
 
     private static void WriteBox(WorldLevel level, Vector3i min, Vector3i max, byte content, byte material)

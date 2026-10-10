@@ -25,7 +25,12 @@ internal struct FrameLighting
     public ShadowCascades ShadowCascades;
 
     /// <summary>
-    ///     The debug view in x: 0 is none, 1 tints every sunlit pixel by the shadow cascade it read, and 2 by the angle between its surface and the light.
+    ///     The light volume's lowest cell in xyz and the size of a cell in metres in w (<see cref="WinterGame.LightVolume.ShaderParameters"/>).
+    /// </summary>
+    public Vector4 LightVolumePlacement;
+
+    /// <summary>
+    ///     The debug view in x: 0 is none, 1 tints every sunlit pixel by the shadow cascade it read, 2 by the angle between its surface and the light, 3 shows the sky light alone, 4 the sun's shadow alone, and 5 the sun's shadow tinted by the angle between each triangle's own plane and the light.
     /// </summary>
     public Vector4 DebugOptions;
 }
