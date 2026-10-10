@@ -474,7 +474,7 @@ public class MultiLabelSurfaceNetsTests
             new Vector3(1.5f, 1.29f, 0.71f)
         };
 
-        EmitQuadDirect(corners, 255, 0, true, out var vertices, out var indices);
+        EmitQuadDirect(corners, true, out var vertices, out var indices);
 
         // The fan appends one apex and every triangle provokes it, so one material per vertex still stands in for one material per quad:
         Assert.Equal(5, vertices.Count);
@@ -487,6 +487,11 @@ public class MultiLabelSurfaceNetsTests
         }
 
         Assert.True(PointInQuad(corners, vertices[4].Position), "The fan apex is not strictly inside the quad, so its triangles spill outside it.");
+
+        // The apex takes the corners' mean normal, not i0's:
+        Assert.Equal(0.0f, vertices[4].Normal.X, 5);
+        Assert.Equal(1.0f, vertices[4].Normal.Y, 5);
+        Assert.Equal(0.0f, vertices[4].Normal.Z, 5);
     }
 
     [Fact]
@@ -500,48 +505,121 @@ public class MultiLabelSurfaceNetsTests
             new Vector3(1.5f, 1.25f, 0.75f)
         };
 
-        EmitQuadDirect(corners, 255, 0, true, out var vertices, out var indices);
+        EmitQuadDirect(corners, true, out var vertices, out var indices);
 
         Assert.Equal(4, vertices.Count);
         Assert.Equal(new[] { 0, 1, 2, 0, 2, 3 }, indices);
     }
 
     /// <summary>
-    ///     Calls the emitter for one cell's edge-0 quad. The content bytes fix the crossing point on that edge, and the four cells are seeded so
-    ///     the fan can register its apex against the emitting cell the way the pass does.
+    ///     A brush sphere resting on flat ground leaves concave quads around its base. An apex on its edge's own crossing sat up to a quarter voxel below the relaxed corners, a pit in the ground.
+    /// </summary>
+    [Fact]
+    public void FanApexesStayOnTheirCorners()
+    {
+        const int size = 48;
+        const float radius = 4.0f;
+        var sphereCentre = new Vector3(24.75f, 17.0f, 24.25f);
+
+        var content = HeightField(size, size, size, (_, _) => 16.3f);
+        var material = SolidMaterial(content, SurfaceMaterial.Snow);
+        var contentSpan = content.Span;
+        var materialSpan = material.Span;
+
+        // The debug brush's fill, which writes its material only where a sample turns solid:
+        for (var z = 0; z < size; z++)
+        {
+            for (var y = 0; y < size; y++)
+            {
+                for (var x = 0; x < size; x++)
+                {
+                    var distance = ((new Vector3(x, y, z) - sphereCentre).Length() - radius) * WorldConstants.VoxelSize;
+                    var brushContent = DensitySampler.ContentFromDensity(-distance, 0);
+
+                    if (brushContent <= contentSpan[x, y, z])
+                    {
+                        continue;
+                    }
+
+                    if (contentSpan[x, y, z] <= IsoLevel && brushContent > IsoLevel)
+                    {
+                        materialSpan[x, y, z] = SurfaceMaterial.Rock;
+                    }
+
+                    contentSpan[x, y, z] = brushContent;
+                }
+            }
+        }
+
+        var vertices = new List<VoxelVertex>();
+        var indices = new List<int>();
+        var cells = new List<Vector3i>();
+
+        Mesh(content, material, new Vector3i(8), new Vector3i(32), new SectionMeshingDescription().Fairing, vertices, indices, cells);
+
+        // A cell's base vertex comes first and its material copies share its position, so a vertex of the cell elsewhere is a fan apex:
+        var baseByCell = new Dictionary<Vector3i, int>();
+
+        for (var index = 0; index < vertices.Count; index++)
+        {
+            baseByCell.TryAdd(cells[index], index);
+        }
+
+        var fanNormals = new Dictionary<int, Vector3>();
+        var cornerSums = new Dictionary<int, Vector3>();
+
+        // Every fan triangle starts at the apex, and each of the quad's corners comes second in exactly one of them:
+        for (var triangle = 0; triangle < indices.Count; triangle += 3)
+        {
+            var apex = indices[triangle];
+            var apexPosition = vertices[apex].Position;
+
+            if (vertices[baseByCell[cells[apex]]].Position == apexPosition)
+            {
+                continue;
+            }
+
+            var a = vertices[indices[triangle + 1]].Position;
+            var b = vertices[indices[triangle + 2]].Position;
+
+            fanNormals[apex] = fanNormals.GetValueOrDefault(apex) + Vector3.Cross(a - apexPosition, b - apexPosition);
+            cornerSums[apex] = cornerSums.GetValueOrDefault(apex) + a;
+        }
+
+        Assert.True(fanNormals.Count > 0, "No quad was fanned, so the test proves nothing.");
+
+        var worstDepth = 0.0f;
+
+        foreach (var (apex, normal) in fanNormals)
+        {
+            var depth = Vector3.Dot(vertices[apex].Position - cornerSums[apex] * 0.25f, Vector3.Normalize(normal));
+            worstDepth = MathF.Max(worstDepth, MathF.Abs(depth));
+        }
+
+        Assert.True(worstDepth < 0.1f, $"A fan apex lies {worstDepth} voxels off its corners.");
+    }
+
+    /// <summary>
+    ///     Calls the emitter for one cell's edge-0 quad. The four cells are seeded so the fan can register its apex against the emitting cell the way the pass does.
     /// </summary>
     private static void EmitQuadDirect(
         Vector3[] corners,
-        byte sample0,
-        byte sample1,
         bool solidBase,
         out List<VoxelVertex> vertices,
         out List<int> indices
     )
     {
         var cell = new Vector3i(1, 1, 1);
-        var content = Memory3D<byte>.Allocate(4, 4, 4);
-        var span = content.Span;
-
-        // Edge 0 leaves corner 0 along +x, so these two samples place the quad's crossing apex:
-        span[cell.X, cell.Y, cell.Z] = sample0;
-        span[cell.X + 1, cell.Y, cell.Z] = sample1;
-
-        Span<int> cornerOffsets = stackalloc int[8];
-
-        for (var corner = 0; corner < 8; corner++)
-        {
-            cornerOffsets[corner] = (corner & 1) + ((corner >> 1) & 1) * span.SizeX + ((corner >> 2) & 1) * span.SizeX * span.SizeY;
-        }
 
         vertices = new List<VoxelVertex>();
 
+        // The normals tilt apart around the vertical, so their mean points straight up:
         for (var index = 0; index < corners.Length; index++)
         {
             vertices.Add(new VoxelVertex
             {
                 Position = corners[index],
-                Normal = Vector3.UnitY,
+                Normal = Vector3.Normalize(new Vector3(index - 1.5f, 1.0f, 0.0f)),
                 Material = (uint)(SurfaceMaterial.Rock + index)
             });
         }
@@ -558,7 +636,7 @@ public class MultiLabelSurfaceNetsTests
             state.AddLocalCell(cell);
         }
 
-        MultiLabelSurfaceNets.EmitQuad(vertices, span, cornerOffsets, cell, 0, IsoLevel, 0, 1, 2, 3, solidBase, indices, vertexCells, ref state);
+        MultiLabelSurfaceNets.EmitQuad(vertices, cell, 0, 0, 1, 2, 3, solidBase, indices, vertexCells, ref state);
     }
 
     /// <summary>

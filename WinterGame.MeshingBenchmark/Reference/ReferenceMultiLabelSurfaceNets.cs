@@ -558,10 +558,8 @@ public static class ReferenceMultiLabelSurfaceNets
                 {
                     EmitQuad(
                         vertices,
-                        content,
                         cell,
                         edge,
-                        iso,
                         i0,
                         CellIndex(cellIndices, range, vertexMin, cell.X, cell.Y - 1, cell.Z),
                         CellIndex(cellIndices, range, vertexMin, cell.X, cell.Y - 1, cell.Z - 1),
@@ -576,10 +574,8 @@ public static class ReferenceMultiLabelSurfaceNets
                 {
                     EmitQuad(
                         vertices,
-                        content,
                         cell,
                         edge,
-                        iso,
                         i0,
                         CellIndex(cellIndices, range, vertexMin, cell.X, cell.Y, cell.Z - 1),
                         CellIndex(cellIndices, range, vertexMin, cell.X - 1, cell.Y, cell.Z - 1),
@@ -594,10 +590,8 @@ public static class ReferenceMultiLabelSurfaceNets
                 {
                     EmitQuad(
                         vertices,
-                        content,
                         cell,
                         edge,
-                        iso,
                         i0,
                         CellIndex(cellIndices, range, vertexMin, cell.X - 1, cell.Y, cell.Z),
                         CellIndex(cellIndices, range, vertexMin, cell.X - 1, cell.Y - 1, cell.Z),
@@ -989,10 +983,8 @@ public static class ReferenceMultiLabelSurfaceNets
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void EmitQuad(
         List<ReferenceVoxelVertex> vertices,
-        in Span3D<byte> content,
         in Vector3i cell,
         int edge,
-        byte iso,
         int i0,
         int i1,
         int i2,
@@ -1015,18 +1007,15 @@ public static class ReferenceMultiLabelSurfaceNets
             return;
         }
 
-        var other = BaseEdgeCorner[edge];
-        var value0 = content[cell.X, cell.Y, cell.Z];
-        var value1 = content[cell.X + (other & 1), cell.Y + ((other >> 1) & 1), cell.Z + ((other >> 2) & 1)];
-        var t = (iso - value0) / (float)(value1 - value0);
-        var crossing = new Vector3(cell.X, cell.Y, cell.Z) + edge switch
+        var mean = (p0 + p1 + p2 + p3) * 0.25f;
+        var edgePoint = edge switch
         {
-            0 => new Vector3(t, 0.0f, 0.0f),
-            1 => new Vector3(0.0f, t, 0.0f),
-            _ => new Vector3(0.0f, 0.0f, t)
+            0 => new Vector3(mean.X, cell.Y, cell.Z),
+            1 => new Vector3(cell.X, mean.Y, cell.Z),
+            _ => new Vector3(cell.X, cell.Y, mean.Z)
         };
 
-        var apexPosition = ApexIsInside(crossing, p0, p1, p2, p3, edge) ? crossing : InteriorApex(p0, p1, p2, p3, edge);
+        var apexPosition = ApexIsInside(edgePoint, p0, p1, p2, p3, edge) ? edgePoint : InteriorApex(p0, p1, p2, p3, edge);
 
         if (!ApexIsInside(apexPosition, p0, p1, p2, p3, edge))
         {
@@ -1036,7 +1025,9 @@ public static class ReferenceMultiLabelSurfaceNets
 
         var apex = vertices.Count;
         var vertex = vertices[i0];
+        var normalSum = vertex.Normal + vertices[i1].Normal + vertices[i2].Normal + vertices[i3].Normal;
         vertex.Position = apexPosition;
+        vertex.Normal = normalSum.LengthSquared() > 1e-12f ? Vector3.Normalize(normalSum) : vertex.Normal;
         vertices.Add(vertex);
 
         // The apex belongs to no cell of its own, so it takes the emitting cell's place in the cell-keyed lists the caller and Compact read:

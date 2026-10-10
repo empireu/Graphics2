@@ -628,11 +628,8 @@ public static class MultiLabelSurfaceNets
                 {
                     EmitQuad(
                         vertices,
-                        content,
-                        cornerOffsets,
                         cell,
                         edge,
-                        iso,
                         i0,
                         CellVertexIndex(ref state, range, vertexMin, cell.X, cell.Y - 1, cell.Z),
                         CellVertexIndex(ref state, range, vertexMin, cell.X, cell.Y - 1, cell.Z - 1),
@@ -647,11 +644,8 @@ public static class MultiLabelSurfaceNets
                 {
                     EmitQuad(
                         vertices,
-                        content,
-                        cornerOffsets,
                         cell,
                         edge,
-                        iso,
                         i0,
                         CellVertexIndex(ref state, range, vertexMin, cell.X, cell.Y, cell.Z - 1),
                         CellVertexIndex(ref state, range, vertexMin, cell.X - 1, cell.Y, cell.Z - 1),
@@ -666,11 +660,8 @@ public static class MultiLabelSurfaceNets
                 {
                     EmitQuad(
                         vertices,
-                        content,
-                        cornerOffsets,
                         cell,
                         edge,
-                        iso,
                         i0,
                         CellVertexIndex(ref state, range, vertexMin, cell.X - 1, cell.Y, cell.Z),
                         CellVertexIndex(ref state, range, vertexMin, cell.X - 1, cell.Y - 1, cell.Z),
@@ -1102,21 +1093,20 @@ public static class MultiLabelSurfaceNets
     }
 
     /// <summary>
-    ///     Records a quad as two triangles split along the diagonal from i0, or, when the smoothing has left the quad concave, as four triangles fanned around the crossing point of the quad's own lattice edge.
+    ///     Records a quad as two triangles split along the diagonal from i0, or, when the smoothing has left the quad concave, as four triangles fanned around a point on the quad's own lattice edge.
     ///     The order flips with the base corner sign so the normals face outward.
     ///     Both triangles start at i0, which makes i0 the provoking vertex for both of them.
     ///     A concave quad covers ground outside itself whichever diagonal it is split along, so the fan does not move the pivot to another cell's vertex.
-    ///     Its apex is a copy of i0, carries i0's material, and lies on the lattice edge whose crossing generated the quad, which is inside the quad as long as a vertex stays inside its own cell.
+    ///     Its apex carries i0's material and lies on the lattice edge that generated the quad, which is inside the quad as long as a vertex stays inside its own cell.
+    ///     Along that edge it sits at the mean of the four corners, because at a crease the edge's own crossing can lie well off the relaxed corners, which shows as a pit or a bump.
+    ///     Its normal is the mean of the corners' normals, because i0's own can be a crease vertex's, tilted well off the quad.
     ///     The fan tiles any simple quad and leaves the quad's four boundary edges untouched.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static void EmitQuad(
         List<VoxelVertex> vertices,
-        in Span3D<byte> content,
-        ReadOnlySpan<int> cornerOffsets,
         in Vector3i cell,
         int edge,
-        byte iso,
         int i0,
         int i1,
         int i2,
@@ -1139,16 +1129,12 @@ public static class MultiLabelSurfaceNets
             return;
         }
 
-        var strideX = content.SizeX;
-        var offset = cell.X + cell.Y * strideX + cell.Z * strideX * content.SizeY;
-        var value0 = content.GetUnsafeFlat(offset);
-        var value1 = content.GetUnsafeFlat(offset + cornerOffsets[BaseEdgeCorner[edge]]);
-        var t = (iso - value0) / (float)(value1 - value0);
-        var apexPosition = new Vector3(cell.X, cell.Y, cell.Z) + edge switch
+        var mean = (p0 + p1 + p2 + p3) * 0.25f;
+        var apexPosition = edge switch
         {
-            0 => new Vector3(t, 0.0f, 0.0f),
-            1 => new Vector3(0.0f, t, 0.0f),
-            _ => new Vector3(0.0f, 0.0f, t)
+            0 => new Vector3(mean.X, cell.Y, cell.Z),
+            1 => new Vector3(cell.X, mean.Y, cell.Z),
+            _ => new Vector3(cell.X, cell.Y, mean.Z)
         };
 
         if (!ApexIsInside(apexPosition, p0, p1, p2, p3, edge))
@@ -1166,7 +1152,9 @@ public static class MultiLabelSurfaceNets
 
         var apex = vertices.Count;
         var vertex = vertices[i0];
+        var normalSum = vertex.Normal + vertices[i1].Normal + vertices[i2].Normal + vertices[i3].Normal;
         vertex.Position = apexPosition;
+        vertex.Normal = normalSum.LengthSquared() > 1e-12f ? Vector3.Normalize(normalSum) : vertex.Normal;
         vertices.Add(vertex);
 
         // The apex belongs to no cell of its own, so it takes the emitting cell's place in the cell-keyed lists the caller and Compact read:
