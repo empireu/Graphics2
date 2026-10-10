@@ -22,6 +22,11 @@ namespace WinterGame;
 
 internal sealed class WorldLayer : IDisposable
 {
+    /// <summary>
+    ///     The world pass's colour format: linear radiance, which the tone mapper brings to the display.
+    /// </summary>
+    public const TextureFormat SceneFormat = TextureFormat.R16G16B16A16Sfloat;
+
     private readonly App _app;
 
     private readonly VkSampler _textSampler;
@@ -31,8 +36,12 @@ internal sealed class WorldLayer : IDisposable
 
     private Texture[]? _depthTextures;
 
+    /// <summary>
+    ///     The world pass's colour per frame slot, in <see cref="SceneFormat"/>.
+    /// </summary>
+    private Texture[]? _sceneTextures;
+
     private readonly QuadRenderer2D _quadRenderer2D;
-    private readonly QuadRenderer3D _overlayQuadRenderer3D;
     private readonly LineRenderer3D _lineRenderer3D;
 
     private readonly Camera3D _camera;
@@ -41,18 +50,14 @@ internal sealed class WorldLayer : IDisposable
     private readonly SectionRenderer _sections;
     private readonly SunShadow _sunShadow;
     private readonly LightVolume _lightVolume;
+    private readonly SkyRenderer _sky;
+    private readonly ExposureMeter _exposure;
+    private readonly ToneMapper _toneMapper;
 
     /// <summary>
     ///     The light the last <see cref="Render"/> used, for the panel.
     /// </summary>
     private Daylight _daylight;
-
-    /// <summary>
-    ///     How far the sun's marker is drawn from the camera, inside the far plane, and its width, both in metres.
-    /// </summary>
-    private const float SunMarkerDistance = 90.0f;
-
-    private const float SunMarkerSize = 5.0f;
 
     private static readonly string[] DebugViewNames = ["None", "Shadow cascades", "Light angle", "Sky light", "Sun shadow", "Triangle light angle"];
 
@@ -110,14 +115,6 @@ internal sealed class WorldLayer : IDisposable
             DepthFormat = TextureFormat.D32Sfloat
         });
 
-        _overlayQuadRenderer3D = new QuadRenderer3D(factory, null, null, new PrimitiveRendererDescription
-        {
-            ColorFormat = TextureFormat.B8G8R8A8Srgb,
-            DepthFormat = TextureFormat.D32Sfloat,
-            DepthTest = false,
-            DepthWrite = false
-        });
-
         _lineRenderer3D = new LineRenderer3D(factory, new PrimitiveRendererDescription
         {
             ColorFormat = TextureFormat.B8G8R8A8Srgb,
@@ -133,6 +130,9 @@ internal sealed class WorldLayer : IDisposable
         _sections = new SectionRenderer(factory);
         _sunShadow = new SunShadow(factory, framesInFlight);
         _lightVolume = new LightVolume(factory, lightChannel);
+        _sky = new SkyRenderer(factory);
+        _exposure = new ExposureMeter(factory, framesInFlight);
+        _toneMapper = new ToneMapper(factory);
     }
 
     public void OnResize(Vector2D<int> framebufferSize)
@@ -141,12 +141,13 @@ internal sealed class WorldLayer : IDisposable
 
         var factory = _app.Factory;
 
-        DisposeDepthTextures();
+        DisposeTargets();
 
-        var depthTextureCount = (int)_app.Context!.FramesInFlight;
-        _depthTextures = new Texture[depthTextureCount];
+        var slotCount = (int)_app.Context!.FramesInFlight;
+        _depthTextures = new Texture[slotCount];
+        _sceneTextures = new Texture[slotCount];
 
-        for (var slot = 0; slot < depthTextureCount; slot++)
+        for (var slot = 0; slot < slotCount; slot++)
         {
             _depthTextures[slot] = factory.CreateTexture(new TextureDescription
             {
@@ -154,6 +155,14 @@ internal sealed class WorldLayer : IDisposable
                 Height = (uint)framebufferSize.Y,
                 Format = TextureFormat.D32Sfloat,
                 Usage = TextureUsage.DepthAttachment
+            });
+
+            _sceneTextures[slot] = factory.CreateTexture(new TextureDescription
+            {
+                Width = (uint)framebufferSize.X,
+                Height = (uint)framebufferSize.Y,
+                Format = SceneFormat,
+                Usage = TextureUsage.ColorAttachment | TextureUsage.Sampled
             });
         }
 
@@ -177,15 +186,20 @@ internal sealed class WorldLayer : IDisposable
 
     /// <summary>
     ///     Draws the level lit at <paramref name="timeOfDay"/>, the fraction of a day since midnight, and a box the size of the debug brush around <paramref name="brushTarget"/> when there is one.
-    ///     The sun shadow pass comes first, and the world pass samples what it rendered.
+    ///     The sun shadow pass comes first, and the world pass samples what it rendered. The world pass renders linear colour, which is metered for the exposure and tone mapped into the swapchain, and the debug geometry is drawn over the result against the world's depth.
     /// </summary>
     public void Render(Frame frame, Vector3? brushTarget, double timeOfDay)
     {
         _daylight = Daylight.At(timeOfDay);
 
+        var viewProj = _camera.ViewProj;
+        Matrix4x4.Invert(viewProj, out var inverseViewProj);
+
         var frameLighting = new FrameLighting
         {
-            ViewProj = _camera.ViewProj,
+            ViewProj = viewProj,
+            InverseViewProj = inverseViewProj,
+            CameraPosition = new Vector4(_camera.Position, 1.0f),
             LightDirection = new Vector4(_daylight.SunDirection, 0.0f),
             LightRadiance = new Vector4(_daylight.SunRadiance, 0.0f),
             SkyZenith = new Vector4(_daylight.SkyZenith, 0.0f),
@@ -215,15 +229,8 @@ internal sealed class WorldLayer : IDisposable
         // The copy waits for every command before it, so it comes after the shadow pass, and only the world pass waits for the copy:
         _lightVolume.Upload(frame);
 
-        _overlayQuadRenderer3D.SetCamera(_camera.ViewProj);
-        _textRenderer.SetCamera(_camera.ViewProj);
-        _lineRenderer3D.SetCamera(_camera.ViewProj, _camera.Position);
-
-        // There is no sky yet, so a marker stands in for the sun. The level draws after it, so the terrain covers it:
-        if (_daylight.SunIsUp)
-        {
-            _overlayQuadRenderer3D.DrawBillboard3D(_camera.Position + _daylight.SunDirection * SunMarkerDistance, _daylight.SunDirection, new Vector2(SunMarkerSize), new Vector4(1.0f, 0.9f, 0.6f, 1.0f));
-        }
+        _textRenderer.SetCamera(viewProj);
+        _lineRenderer3D.SetCamera(viewProj, _camera.Position);
 
         if (brushTarget != null)
         {
@@ -231,22 +238,24 @@ internal sealed class WorldLayer : IDisposable
             _lineRenderer3D.DrawBoundingBox(brushTarget.Value - extent, brushTarget.Value + extent, new Vector4(1.0f, 0.5f, 0.1f, 1.0f), 0.02f);
         }
 
+        var scene = _sceneTextures![frame.SlotIndex];
+        var depth = _depthTextures![frame.SlotIndex];
+
         var worldPassDescription = new RenderPassDescription
         {
             ColorAttachments =
             [
                 new ColorAttachment
                 {
-                    Target = frame.SwapchainColorTarget,
+                    Target = scene,
                     LoadOp = LoadOp.Clear,
                     StoreOp = StoreOp.Store,
-                    ClearValue = new Vector4(_daylight.SkyHorizon, 1.0f),
-                    FinalLayout = TextureLayout.ColorAttachment
+                    FinalLayout = TextureLayout.ShaderRead
                 }
             ],
             DepthAttachment = new DepthAttachment
             {
-                Target = _depthTextures![frame.SlotIndex],
+                Target = depth,
                 LoadOp = LoadOp.Clear,
                 StoreOp = StoreOp.Store,
                 ClearDepth = 1.0f,
@@ -256,15 +265,45 @@ internal sealed class WorldLayer : IDisposable
 
         using (var worldPass = frame.BeginRenderPass(worldPassDescription))
         {
-            _lineRenderer3D.Submit(frame, worldPass);
-            _overlayQuadRenderer3D.Submit(frame, worldPass);
-            _textRenderer.Submit(frame, worldPass);
-
             // The light engine places its window on the first tick, and until then there is no volume to light the sections with:
             if (_lightVolume.Texture != null)
             {
                 _sections.Draw(frame, worldPass, _geometry, lighting, _sunShadow.GetMap(frame), _sunShadow.Sampler, _lightVolume.Texture, _lightVolume.Sampler);
             }
+
+            // The sky fills only what the level left at the far plane, so it comes last:
+            _sky.Draw(frame, worldPass, lighting);
+        }
+
+        _exposure.Measure(frame, scene);
+
+        var displayPassDescription = new RenderPassDescription
+        {
+            ColorAttachments =
+            [
+                new ColorAttachment
+                {
+                    Target = frame.SwapchainColorTarget,
+                    LoadOp = LoadOp.DontCare,
+                    StoreOp = StoreOp.Store,
+                    FinalLayout = TextureLayout.ColorAttachment
+                }
+            ],
+            DepthAttachment = new DepthAttachment
+            {
+                Target = depth,
+                LoadOp = LoadOp.Load,
+                StoreOp = StoreOp.Store,
+                FinalLayout = TextureLayout.DepthAttachment
+            }
+        };
+
+        using (var displayPass = frame.BeginRenderPass(displayPassDescription))
+        {
+            // A debug view shows its values as they are, so it is not exposed:
+            _toneMapper.Draw(frame, displayPass, scene, _debugView == 0 ? _exposure.Exposure : 1.0f);
+            _lineRenderer3D.Submit(frame, displayPass);
+            _textRenderer.Submit(frame, displayPass);
         }
     }
 
@@ -287,6 +326,7 @@ internal sealed class WorldLayer : IDisposable
             var sunBearing = MathF.Atan2(Vector3.Dot(_daylight.SunDirection, _camera.Right), Vector3.Dot(_daylight.SunDirection, Camera3D.GetForward(_camera.Yaw, 0.0f))) * 180.0f / MathF.PI;
             ImGui.Text($"Sun bearing: {MathF.Abs(sunBearing):F0} deg {(sunBearing >= 0.0f ? "right" : "left")} of the view");
 
+            _exposure.DrawPanel();
             ImGui.Combo("Debug view", ref _debugView, DebugViewNames, DebugViewNames.Length);
             ImGui.Checkbox("Freeze shadow direction", ref _freezeShadowDirection);
 
@@ -330,19 +370,27 @@ internal sealed class WorldLayer : IDisposable
         ImGui.End();
     }
 
-    private void DisposeDepthTextures()
+    private void DisposeTargets()
     {
-        if (_depthTextures == null)
+        if (_depthTextures != null)
         {
-            return;
+            foreach (var depthTexture in _depthTextures)
+            {
+                depthTexture.Dispose();
+            }
+
+            _depthTextures = null;
         }
 
-        foreach (var depthTexture in _depthTextures)
+        if (_sceneTextures != null)
         {
-            depthTexture.Dispose();
-        }
+            foreach (var sceneTexture in _sceneTextures)
+            {
+                sceneTexture.Dispose();
+            }
 
-        _depthTextures = null;
+            _sceneTextures = null;
+        }
     }
 
     public void Dispose()
@@ -350,12 +398,14 @@ internal sealed class WorldLayer : IDisposable
         _textRenderer.Dispose();
         _glyphAtlas.Dispose();
         _textSampler.Dispose();
-        DisposeDepthTextures();
+        DisposeTargets();
         _quadRenderer2D.Dispose();
-        _overlayQuadRenderer3D.Dispose();
         _lineRenderer3D.Dispose();
         _sunShadow.Dispose();
         _lightVolume.Dispose();
+        _sky.Dispose();
+        _exposure.Dispose();
+        _toneMapper.Dispose();
         _sections.Dispose();
         _geometry.Dispose();
     }

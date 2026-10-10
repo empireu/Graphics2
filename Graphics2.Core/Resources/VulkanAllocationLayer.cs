@@ -26,26 +26,43 @@ internal sealed unsafe class VulkanAllocationLayer : IAllocationLayer<VulkanMemo
         {
             MemoryUsage.GpuOnly => MemoryPropertyFlags.DeviceLocalBit,
             MemoryUsage.CpuToGpu => MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
-            MemoryUsage.GpuToCpu => MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCachedBit,
+            MemoryUsage.GpuToCpu => MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
             _ => throw new ArgumentOutOfRangeException(nameof(usage))
         };
 
-        var allFlags = new int[memoryProperties.MemoryTypeCount];
-        for (uint i = 0; i < memoryProperties.MemoryTypeCount; i++)
+        // Readback memory is read by the CPU, so cached memory is preferred, and it has to be coherent because nothing invalidates a mapped range:
+        var preferredFlags = usage == MemoryUsage.GpuToCpu
+            ? requiredFlags | MemoryPropertyFlags.HostCachedBit
+            : requiredFlags;
+
+        var typeIndex = FindMemoryType(memoryProperties, preferredFlags) ?? FindMemoryType(memoryProperties, requiredFlags);
+
+        if (typeIndex == null)
         {
-            var type = memoryProperties.MemoryTypes[(int)i];
-            
-            allFlags[i] = (int)type.PropertyFlags;
-            
-            if ((type.PropertyFlags & requiredFlags) != requiredFlags)
+            var allFlags = new int[memoryProperties.MemoryTypeCount];
+
+            for (var i = 0; i < memoryProperties.MemoryTypeCount; i++)
             {
-                continue;
+                allFlags[i] = (int)memoryProperties.MemoryTypes[i].PropertyFlags;
             }
 
-            return new VulkanAllocationLayer(device, i, usage != MemoryUsage.GpuOnly);
+            throw new VkAllocationException($"No memory type found for usage {usage} ({requiredFlags}, {string.Join(", ", allFlags)})");
         }
 
-        throw new VkAllocationException($"No memory type found for usage {usage} ({requiredFlags}, {string.Join(", ", allFlags)})");
+        return new VulkanAllocationLayer(device, typeIndex.Value, usage != MemoryUsage.GpuOnly);
+    }
+
+    private static uint? FindMemoryType(PhysicalDeviceMemoryProperties memoryProperties, MemoryPropertyFlags flags)
+    {
+        for (uint i = 0; i < memoryProperties.MemoryTypeCount; i++)
+        {
+            if ((memoryProperties.MemoryTypes[(int)i].PropertyFlags & flags) == flags)
+            {
+                return i;
+            }
+        }
+
+        return null;
     }
 
     public VulkanMemory AllocatePage(long size)

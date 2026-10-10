@@ -20,6 +20,8 @@ struct ShadowCascade {
 // FrameLighting in C#, whose members are all 16 bytes or a multiple of it, so this std140 layout matches it:
 struct FrameLighting {
     row_major float4x4 viewProj;
+    row_major float4x4 inverseViewProj;
+    float4 cameraPosition;
     float4 lightDirection;
     float4 lightRadiance;
     float4 skyZenith;
@@ -42,9 +44,12 @@ struct FrameLighting {
 // LightEngine.MaxLevel in C#:
 static const float MaxLightLevel = 8.0;
 
+// How much brighter the sun's disc is than the light it casts on a surface facing it. The real ratio is about 15000, and any value that saturates through the tonemap looks the same:
+static const float SunDiscBrightness = 50.0;
+
 static const uint MaterialCount = 8;
 
-// Linear albedo, because the swapchain is an sRGB format and the write converts it:
+// Linear albedo, because the world renders into a linear float target and the tonemap pass's sRGB write converts it:
 static const float3 MaterialAlbedo[MaterialCount] = {
     float3(0.17, 0.11, 0.06),   // rock, the generic fallback
     float3(0.30, 0.38, 0.42),   // ice
@@ -249,6 +254,22 @@ float SkyVisibility(float3 worldPosition, float3 normal) {
     return total > 0.0 ? sum / total : linearSum;
 }
 
+// The sky's radiance towards a unit direction: the horizon colour blending into the zenith colour, and the horizon colour below the horizon, where only the space past the loaded terrain shows it:
+float3 SkyRadiance(float3 direction) {
+    return lerp(lighting.skyHorizon.rgb, lighting.skyZenith.rgb, sqrt(saturate(direction.y)));
+}
+
+// The sun's disc, 0.53 degrees wide, and the glow around it, towards a unit direction. Both are zero while the sun is down, because its radiance is.
+float3 SunRadiance(float3 direction) {
+    float cosAngle = dot(direction, lighting.lightDirection.xyz);
+
+    // The disc's edge is 0.265 degrees from its centre, where the cosine is 1 - 1.07e-5:
+    float disc = smoothstep(1.0 - 1.3e-5, 1.0 - 0.9e-5, cosAngle);
+    float glow = 0.5 * pow(saturate(cosAngle), 2000.0) + 0.04 * pow(saturate(cosAngle), 16.0);
+
+    return lighting.lightRadiance.rgb * (SunDiscBrightness * disc + glow);
+}
+
 [shader("fragment")]
 float4 fsMain(VertexOutput input) : SV_TARGET {
     float3 normal = normalize(input.normal);
@@ -303,4 +324,28 @@ float4 fsMain(VertexOutput input) : SV_TARGET {
     }
 
     return float4(color, 1.0);
+}
+
+struct SkyOutput {
+    float4 position : SV_Position;
+    float2 clip : CLIP_POSITION;
+};
+
+// One triangle that covers the screen at the far plane, so a depth test of LessOrEqual draws the sky only where nothing else did:
+[shader("vertex")]
+SkyOutput vsSky(uint vertexIndex : SV_VertexID) {
+    float2 clip = float2((vertexIndex << 1) & 2, vertexIndex & 2) * 2.0 - 1.0;
+
+    SkyOutput output;
+    output.position = float4(clip, 1.0, 1.0);
+    output.clip = clip;
+    return output;
+}
+
+[shader("fragment")]
+float4 fsSky(SkyOutput input) : SV_TARGET {
+    float4 farPoint = mul(float4(input.clip, 1.0, 1.0), lighting.inverseViewProj);
+    float3 direction = normalize(farPoint.xyz / farPoint.w - lighting.cameraPosition.xyz);
+
+    return float4(SkyRadiance(direction) + SunRadiance(direction), 1.0);
 }

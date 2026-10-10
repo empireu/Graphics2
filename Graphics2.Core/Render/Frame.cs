@@ -189,6 +189,107 @@ public sealed unsafe class Frame
         PendingImageCopies.Add(dst);
     }
 
+    /// <summary>
+    ///     Copies the whole of <paramref name="src"/>, a color texture with <see cref="TextureUsage.TransferSource"/>, into the start of <paramref name="dst"/> as tightly packed rows, and makes the copy visible to the host.
+    ///     The texture is left in the copy's source layout, which a later pass or binding transitions away from.
+    ///     The CPU may read <paramref name="dst"/> once this frame's slot comes round again, because <c>BeginFrame</c> waits for the slot's previous frame, so a buffer read that way has to be owned per slot.
+    /// </summary>
+    public void CopyTextureToBuffer(Texture src, VkBuffer dst)
+    {
+        ValidateNotInRenderPass();
+
+        if (src.Aspect != ImageAspectFlags.ColorBit)
+        {
+            throw new ArgumentException("Only a color texture can be copied into a buffer.", nameof(src));
+        }
+
+        var size = (long)src.Width * src.Height * src.Depth * src.Format.TexelSize();
+
+        if (size > dst.Size)
+        {
+            throw new ArgumentException($"The texture holds {size} bytes and the buffer {dst.Size}.", nameof(dst));
+        }
+
+        var vk = Device.Instance.Vk;
+        var (srcStages, srcWrites) = CopyDestinationScope(dst.Usage);
+
+        // The image may still be written by any earlier command, and the buffer by an earlier copy, so both are ordered ahead of this one:
+        var imageBarrier = new ImageMemoryBarrier2
+        {
+            SType = StructureType.ImageMemoryBarrier2,
+            SrcStageMask = PipelineStageFlags2.AllCommandsBit,
+            SrcAccessMask = AccessFlags2.MemoryWriteBit,
+            DstStageMask = PipelineStageFlags2.CopyBit,
+            DstAccessMask = AccessFlags2.TransferReadBit,
+            OldLayout = src.CurrentLayout,
+            NewLayout = ImageLayout.TransferSrcOptimal,
+            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            Image = src.Image,
+            SubresourceRange = new ImageSubresourceRange
+            {
+                AspectMask = ImageAspectFlags.ColorBit,
+                BaseMipLevel = 0,
+                LevelCount = 1,
+                BaseArrayLayer = 0,
+                LayerCount = 1
+            }
+        };
+
+        var bufferBarrier = new BufferMemoryBarrier2
+        {
+            SType = StructureType.BufferMemoryBarrier2,
+            SrcStageMask = srcStages,
+            SrcAccessMask = srcWrites,
+            DstStageMask = PipelineStageFlags2.CopyBit,
+            DstAccessMask = AccessFlags2.TransferWriteBit,
+            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            Buffer = dst.Handle,
+            Offset = 0,
+            Size = Vk.WholeSize
+        };
+
+        var preDependencyInfo = new DependencyInfo
+        {
+            SType = StructureType.DependencyInfo,
+            ImageMemoryBarrierCount = 1,
+            PImageMemoryBarriers = &imageBarrier,
+            BufferMemoryBarrierCount = 1,
+            PBufferMemoryBarriers = &bufferBarrier
+        };
+
+        vk.CmdPipelineBarrier2(CommandBuffer, &preDependencyInfo);
+        src.CurrentLayout = ImageLayout.TransferSrcOptimal;
+
+        var region = CreateImageCopy(0, 0, 0, 0, src.Width, src.Height, src.Depth);
+        vk.CmdCopyImageToBuffer(CommandBuffer, src.Image, ImageLayout.TransferSrcOptimal, dst.Handle, 1, &region);
+
+        // A fence wait makes device writes available but not visible to the host, which takes this barrier:
+        var hostBarrier = new BufferMemoryBarrier2
+        {
+            SType = StructureType.BufferMemoryBarrier2,
+            SrcStageMask = PipelineStageFlags2.CopyBit,
+            SrcAccessMask = AccessFlags2.TransferWriteBit,
+            DstStageMask = PipelineStageFlags2.HostBit,
+            DstAccessMask = AccessFlags2.HostReadBit,
+            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            Buffer = dst.Handle,
+            Offset = 0,
+            Size = Vk.WholeSize
+        };
+
+        var postDependencyInfo = new DependencyInfo
+        {
+            SType = StructureType.DependencyInfo,
+            BufferMemoryBarrierCount = 1,
+            PBufferMemoryBarriers = &hostBarrier
+        };
+
+        vk.CmdPipelineBarrier2(CommandBuffer, &postDependencyInfo);
+    }
+
     public RenderPassEncoder BeginRenderPass(RenderPassDescription description) => RenderPassEncoder.Begin(this, description);
 
     private void ValidateNotInRenderPass()
@@ -241,7 +342,7 @@ public sealed unsafe class Frame
     }
 
     /// <summary>
-    ///     A copy of tightly packed texels into the first layer and mip level of a color image.
+    ///     A copy of tightly packed texels between a buffer and the first layer and mip level of a color image.
     /// </summary>
     private static BufferImageCopy CreateImageCopy(ulong bufferOffset, uint x, uint y, uint z, uint width, uint height, uint depth)
     {

@@ -1127,6 +1127,11 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
 
     private static MemoryUsage BufferUsageToMemoryUsage(BufferUsage usage)
     {
+        if (usage.HasFlag(BufferUsage.Readback))
+        {
+            return MemoryUsage.GpuToCpu;
+        }
+
         if (usage.HasFlag(BufferUsage.Staging) || usage.HasFlag(BufferUsage.Uniform) || usage.HasFlag(BufferUsage.IndirectHostVisible))
         {
             return MemoryUsage.CpuToGpu;
@@ -1174,7 +1179,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
             flags |= BufferUsageFlags.IndirectBufferBit;
         }
 
-        if (usage.HasFlag(BufferUsage.TransferDestination))
+        if (usage.HasFlag(BufferUsage.TransferDestination) || usage.HasFlag(BufferUsage.Readback))
         {
             flags |= BufferUsageFlags.TransferDstBit;
         }
@@ -1189,6 +1194,8 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         TextureFormat.R8G8B8A8Unorm => Format.R8G8B8A8Unorm,
         TextureFormat.R8G8B8A8Srgb => Format.R8G8B8A8Srgb,
         TextureFormat.B8G8R8A8Srgb => Format.B8G8R8A8Srgb,
+        TextureFormat.R16G16B16A16Sfloat => Format.R16G16B16A16Sfloat,
+        TextureFormat.R32Sfloat => Format.R32Sfloat,
         TextureFormat.R32G32B32A32Sfloat => Format.R32G32B32A32Sfloat,
         TextureFormat.D32Sfloat => Format.D32Sfloat,
         TextureFormat.D24UnormS8Uint => Format.D24UnormS8Uint,

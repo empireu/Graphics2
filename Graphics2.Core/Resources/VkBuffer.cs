@@ -44,7 +44,11 @@ public enum BufferUsage
     /// <summary>
     ///     Host-visible draw arguments rewritten by the CPU every frame, one command per draw.
     /// </summary>
-    IndirectHostVisible = 1 << 7
+    IndirectHostVisible = 1 << 7,
+    /// <summary>
+    ///     GPU-to-CPU host-visible copy destination, read by the CPU once the frame that wrote it has finished.
+    /// </summary>
+    Readback = 1 << 8
 }
 
 public sealed class BufferDescription

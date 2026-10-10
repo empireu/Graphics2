@@ -21,7 +21,7 @@ internal sealed class SectionRenderer : IDisposable
             Source = Helpers.GetResourceText(typeof(App).Assembly, "WinterGame.Shaders.Shader.slang"),
             VertexEntryPoint = "vsMain",
             FragmentEntryPoint = "fsMain",
-            ColorAttachments = [TextureFormat.B8G8R8A8Srgb],
+            ColorAttachments = [WorldLayer.SceneFormat],
             DepthAttachment = TextureFormat.D32Sfloat,
             DepthTest = true,
             DepthWrite = true,

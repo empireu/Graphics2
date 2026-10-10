@@ -9,6 +9,8 @@ public enum TextureFormat
     R8G8B8A8Unorm,
     R8G8B8A8Srgb,
     B8G8R8A8Srgb,
+    R16G16B16A16Sfloat,
+    R32Sfloat,
     R32G32B32A32Sfloat,
     D32Sfloat,
     D24UnormS8Uint
@@ -27,6 +29,8 @@ public static class TextureFormatExtensions
         TextureFormat.R8G8B8A8Unorm => 4,
         TextureFormat.R8G8B8A8Srgb => 4,
         TextureFormat.B8G8R8A8Srgb => 4,
+        TextureFormat.R16G16B16A16Sfloat => 8,
+        TextureFormat.R32Sfloat => 4,
         TextureFormat.R32G32B32A32Sfloat => 16,
         TextureFormat.D32Sfloat => 4,
         TextureFormat.D24UnormS8Uint => 4,

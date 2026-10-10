@@ -23,6 +23,8 @@
     <ItemGroup>
       <EmbeddedResource Include="Shaders\Shader.slang" />
       <EmbeddedResource Include="Shaders\ShadowDepth.slang" />
+      <EmbeddedResource Include="Shaders\ToneMap.slang" />
+      <EmbeddedResource Include="Shaders\ExposureMeter.slang" />
     </ItemGroup>
 
 </Project>

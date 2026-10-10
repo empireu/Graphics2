@@ -14,6 +14,16 @@ internal struct FrameLighting
     public Matrix4x4 ViewProj;
 
     /// <summary>
+    ///     Clip space back to world space, which the sky uses to turn a pixel into a view direction.
+    /// </summary>
+    public Matrix4x4 InverseViewProj;
+
+    /// <summary>
+    ///     The camera's world position in xyz.
+    /// </summary>
+    public Vector4 CameraPosition;
+
+    /// <summary>
     ///     Unit vector towards the directional light in xyz.
     /// </summary>
     public Vector4 LightDirection;
