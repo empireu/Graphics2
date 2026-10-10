@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Numerics;
 using Graphics2.Data;
 using Graphics2.Mathematics;
@@ -217,6 +218,9 @@ internal sealed class DebugBrush
             }
         }
 
-        level.WriteRange(min, maxInclusive, content, material);
+        if (level.WriteRange(min, maxInclusive, content, material))
+        {
+            Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"Brush: {(fill ? "fill" : "dig")} {center.X:F3} {center.Y:F3} {center.Z:F3}"));
+        }
     }
 }
