@@ -25,6 +25,7 @@
       <EmbeddedResource Include="Shaders\ShadowDepth.slang" />
       <EmbeddedResource Include="Shaders\ToneMap.slang" />
       <EmbeddedResource Include="Shaders\ExposureMeter.slang" />
+      <EmbeddedResource Include="Shaders\AmbientOcclusion.slang" />
     </ItemGroup>
 
 </Project>

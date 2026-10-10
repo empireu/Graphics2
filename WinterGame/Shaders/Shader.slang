@@ -42,6 +42,9 @@ struct FrameLighting {
 // Nearest filtering with repeat addressing, so a read at a cell's centre returns that cell's texel wherever the cell lies:
 [[vk::binding(5, 0)]] SamplerState lightSampler;
 
+// The fraction of the sky each pixel's surface sees past the geometry within AmbientOcclusion.Radius, read at the pixel:
+[[vk::binding(6, 0)]] Texture2D<float> ambientOcclusion;
+
 // LightEngine.MaxLevel in C#:
 static const float MaxLightLevel = 8.0;
 
@@ -93,21 +96,41 @@ struct VertexOutput {
     nointerpolation uint material : MATERIAL;
 };
 
+// A vertex's world position from its record, the indirect command's firstInstance, which is the record's own index. SV_InstanceID would be the instance within the draw, which is always 0 here because every command has one instance.
+// Positions are chunk-local voxel units, so the origin stays exact and the scale is applied once.
+// The depth prepass and the lit pass both go through this and ClipPosition, and precise keeps the compiler from fusing the arithmetic differently in each, so the lit pass meets exactly the depth the prepass wrote:
+float3 WorldPosition(float3 position, uint recordIndex) {
+    DrawRecord draw = draws[recordIndex];
+    precise float3 worldPosition = (draw.origin + position) * draw.voxelSize;
+    return worldPosition;
+}
+
+float4 ClipPosition(float3 worldPosition) {
+    precise float4 clip = mul(float4(worldPosition, 1.0), lighting.viewProj);
+    return clip;
+}
+
 [shader("vertex")]
 VertexOutput vsMain(VertexInput input, uint recordIndex : SV_StartInstanceLocation) {
     VertexOutput output;
 
-    // The indirect command's firstInstance, which is the record's own index. SV_InstanceID would be the instance within the draw, which is always 0 here because every command has one instance.
-    DrawRecord draw = draws[recordIndex];
+    float3 worldPosition = WorldPosition(input.position, recordIndex);
 
-    // Positions are chunk-local voxel units, so the origin stays exact and the scale is applied once:
-    float3 worldPosition = (draw.origin + input.position.xyz) * draw.voxelSize;
-
-    output.position = mul(float4(worldPosition, 1.0), lighting.viewProj);
+    output.position = ClipPosition(worldPosition);
     output.worldPosition = worldPosition;
     output.normal = input.normal.xyz;
     output.material = input.material;
     return output;
+}
+
+struct DepthInput {
+    float3 position;
+};
+
+// The depth prepass, which the ambient occlusion reads before the lit pass draws:
+[shader("vertex")]
+float4 vsDepth(DepthInput input, uint recordIndex : SV_StartInstanceLocation) : SV_Position {
+    return ClipPosition(WorldPosition(input.position, recordIndex));
 }
 
 // One comparison at a position in texels inside a cascade's tile, filtered over its four nearest texels by the sampler.
@@ -311,7 +334,14 @@ float4 fsMain(VertexOutput input) : SV_TARGET {
     // A point no sky light reaches gets no sun either, which keeps the sun out of caves deeper than the shadow cascades reach:
     float sunReach = saturate(skyVisibility * MaxLightLevel);
 
-    float3 sky = lerp(lighting.skyHorizon.rgb, lighting.skyZenith.rgb, saturate(normal.y)) * skyVisibility;
+    // Light bounces between bright surfaces, so a crease in snow darkens far less than the occlusion alone says. This is Jimenez's fit of that for a surface's albedo, from the GTAO paper:
+    float occlusion = ambientOcclusion.Load(int3(int2(input.position.xy), 0));
+    float3 bounceA = 2.0404 * albedo - 0.3324;
+    float3 bounceB = -4.7951 * albedo + 0.6417;
+    float3 bounceC = 2.7552 * albedo + 0.6903;
+    float3 skyOcclusion = max(occlusion, ((occlusion * bounceA + bounceB) * occlusion + bounceC) * occlusion);
+
+    float3 sky = lerp(lighting.skyHorizon.rgb, lighting.skyZenith.rgb, saturate(normal.y)) * skyVisibility * skyOcclusion;
     float3 direct = lighting.lightRadiance.rgb * normalDotLight * shadow * sunReach;
     float3 color = albedo * (sky + direct);
 
@@ -345,6 +375,9 @@ float4 fsMain(VertexOutput input) : SV_TARGET {
         uint band = faceDotLight >= 0.5 ? 0 : faceDotLight >= 0.25 ? 1 : faceDotLight >= 0.09 ? 2 : 3;
         float3 tint = faceDotLight > 0.0 ? LightAngleTints[band] : float3(0.6, 0.35, 1.0);
         color = lerp(0.25, 1.0, shadow) * tint;
+    }
+    else if (debugView == 6) {
+        color = float3(occlusion, occlusion, occlusion);
     }
 
     return float4(color, 1.0);

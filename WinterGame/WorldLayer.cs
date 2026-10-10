@@ -64,6 +64,7 @@ internal sealed class WorldLayer : IDisposable
     private readonly SunShadow _sunShadow;
     private readonly LightVolume _lightVolume;
     private readonly SkyRenderer _sky;
+    private readonly AmbientOcclusion _ambientOcclusion;
     private readonly ExposureMeter _exposure;
     private readonly ToneMapper _toneMapper;
 
@@ -72,7 +73,7 @@ internal sealed class WorldLayer : IDisposable
     /// </summary>
     private Daylight _daylight;
 
-    private static readonly string[] DebugViewNames = ["None", "Shadow cascades", "Light angle", "Sky light", "Sun shadow", "Triangle light angle"];
+    private static readonly string[] DebugViewNames = ["None", "Shadow cascades", "Light angle", "Sky light", "Sun shadow", "Triangle light angle", "Ambient occlusion"];
 
     /// <summary>
     ///     The index into <see cref="DebugViewNames"/> the world shader shows.
@@ -144,6 +145,7 @@ internal sealed class WorldLayer : IDisposable
         _sunShadow = new SunShadow(factory, framesInFlight);
         _lightVolume = new LightVolume(factory, lightChannel);
         _sky = new SkyRenderer(factory);
+        _ambientOcclusion = new AmbientOcclusion(factory);
         _exposure = new ExposureMeter(factory, framesInFlight);
         _toneMapper = new ToneMapper(factory);
     }
@@ -167,7 +169,7 @@ internal sealed class WorldLayer : IDisposable
                 Width = (uint)framebufferSize.X,
                 Height = (uint)framebufferSize.Y,
                 Format = TextureFormat.D32Sfloat,
-                Usage = TextureUsage.DepthAttachment
+                Usage = TextureUsage.DepthAttachment | TextureUsage.Sampled
             });
 
             _sceneTextures[slot] = factory.CreateTexture(new TextureDescription
@@ -178,6 +180,8 @@ internal sealed class WorldLayer : IDisposable
                 Usage = TextureUsage.ColorAttachment | TextureUsage.Sampled
             });
         }
+
+        _ambientOcclusion.OnResize(factory, framebufferSize, slotCount);
 
         _camera.SetAspect(framebufferSize);
     }
@@ -255,6 +259,32 @@ internal sealed class WorldLayer : IDisposable
         var scene = _sceneTextures![frame.SlotIndex];
         var depth = _depthTextures![frame.SlotIndex];
 
+        // The light engine places its window on the first tick, and until then there is no volume to light the sections with, so they are left out of the depth too:
+        var lightVolume = _lightVolume.Texture;
+
+        var depthPassDescription = new RenderPassDescription
+        {
+            ColorAttachments = [],
+            DepthAttachment = new DepthAttachment
+            {
+                Target = depth,
+                LoadOp = LoadOp.Clear,
+                StoreOp = StoreOp.Store,
+                ClearDepth = 1.0f,
+                FinalLayout = TextureLayout.ShaderRead
+            }
+        };
+
+        using (var depthPass = frame.BeginRenderPass(depthPassDescription))
+        {
+            if (lightVolume != null)
+            {
+                _sections.DrawDepth(frame, depthPass, _geometry, lighting);
+            }
+        }
+
+        var ambientOcclusion = _ambientOcclusion.Render(frame, depth, _camera);
+
         var worldPassDescription = new RenderPassDescription
         {
             ColorAttachments =
@@ -270,19 +300,17 @@ internal sealed class WorldLayer : IDisposable
             DepthAttachment = new DepthAttachment
             {
                 Target = depth,
-                LoadOp = LoadOp.Clear,
+                LoadOp = LoadOp.Load,
                 StoreOp = StoreOp.Store,
-                ClearDepth = 1.0f,
                 FinalLayout = TextureLayout.DepthAttachment
             }
         };
 
         using (var worldPass = frame.BeginRenderPass(worldPassDescription))
         {
-            // The light engine places its window on the first tick, and until then there is no volume to light the sections with:
-            if (_lightVolume.Texture != null)
+            if (lightVolume != null)
             {
-                _sections.Draw(frame, worldPass, _geometry, lighting, _sunShadow.GetMap(frame), _sunShadow.Sampler, _lightVolume.Texture, _lightVolume.Sampler);
+                _sections.Draw(frame, worldPass, _geometry, lighting, _sunShadow.GetMap(frame), _sunShadow.Sampler, lightVolume, _lightVolume.Sampler, ambientOcclusion);
             }
 
             // The sky fills only what the level left at the far plane, so it comes last:
@@ -418,6 +446,7 @@ internal sealed class WorldLayer : IDisposable
         _sunShadow.Dispose();
         _lightVolume.Dispose();
         _sky.Dispose();
+        _ambientOcclusion.Dispose();
         _exposure.Dispose();
         _toneMapper.Dispose();
         _sections.Dispose();

@@ -45,7 +45,7 @@ internal struct FrameLighting
     public Vector4 FogParameters;
 
     /// <summary>
-    ///     The debug view in x: 0 is none, 1 tints every sunlit pixel by the shadow cascade it read, 2 by the angle between its surface and the light, 3 shows the sky light alone, 4 the sun's shadow alone, and 5 the sun's shadow tinted by the angle between each triangle's own plane and the light.
+    ///     The debug view in x: 0 is none, 1 tints every sunlit pixel by the shadow cascade it read, 2 by the angle between its surface and the light, 3 shows the sky light alone, 4 the sun's shadow alone, 5 the sun's shadow tinted by the angle between each triangle's own plane and the light, and 6 the ambient occlusion.
     /// </summary>
     public Vector4 DebugOptions;
 }
