@@ -18,7 +18,7 @@ internal sealed class TerrainMaterials : IDisposable
     /// <summary>
     ///     The extent of a layer's largest level, which covers <see cref="MaterialMaps.TileMetres"/>.
     /// </summary>
-    public const int Size = 512;
+    public const int Size = 1024;
 
     private const TextureFormat AlbedoHeightFormat = TextureFormat.R8G8B8A8Srgb;
     private const TextureFormat NormalFormat = TextureFormat.R8G8B8A8Unorm;

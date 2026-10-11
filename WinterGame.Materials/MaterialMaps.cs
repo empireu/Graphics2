@@ -10,6 +10,11 @@ public sealed class MaterialMaps
 {
     public const float TileMetres = 4.0f;
 
+    /// <summary>
+    ///     How far the relief that shades a point from the sky reaches, in metres.
+    /// </summary>
+    public const float OcclusionRadiusMetres = 0.1f;
+
     public readonly int Size;
 
     /// <summary>
@@ -18,7 +23,8 @@ public sealed class MaterialMaps
     public readonly byte[] AlbedoHeight;
 
     /// <summary>
-    ///     The unit surface normal mapped from [-1, 1] to [0, 255], with x along increasing u (the columns), y along increasing v (the rows) and z out of the surface. Alpha is 255.
+    ///     The unit surface normal with x along increasing u (the columns), y along increasing v (the rows) and z out of the surface, each component c stored as 128 + 127 c, so that 0 is exactly 128.
+    ///     Alpha is the fraction of the sky the relief within <see cref="OcclusionRadiusMetres"/> leaves the point, from 0 to 255.
     /// </summary>
     public readonly byte[] Normal;
 
@@ -30,7 +36,7 @@ public sealed class MaterialMaps
     }
 
     /// <summary>
-    ///     Packs the albedo, in linear light, and the height in metres. The normals are the height's slopes by central differences.
+    ///     Packs the albedo, in linear light, and the height in metres. The normals are the height's slopes by central differences, and the sky the relief leaves is <see cref="TileOps.HorizonVisibility"/>.
     /// </summary>
     public static MaterialMaps Pack(TileImage red, TileImage green, TileImage blue, TileImage height)
     {
@@ -52,6 +58,7 @@ public sealed class MaterialMaps
 
         var heightScale = highest > lowest ? 255.0f / (highest - lowest) : 0.0f;
         var slopeScale = size / (2.0f * TileMetres);
+        var visibility = TileOps.HorizonVisibility(height, OcclusionRadiusMetres);
         var albedoHeight = new byte[4 * size * size];
         var normal = new byte[4 * size * size];
 
@@ -74,7 +81,7 @@ public sealed class MaterialMaps
                 normal[texel] = EncodeSigned(-slopeX * inverseLength);
                 normal[texel + 1] = EncodeSigned(-slopeY * inverseLength);
                 normal[texel + 2] = EncodeSigned(inverseLength);
-                normal[texel + 3] = 255;
+                normal[texel + 3] = (byte)(Math.Clamp(visibility.Pixels[index], 0.0f, 1.0f) * 255.0f + 0.5f);
             }
         }
 
@@ -124,6 +131,6 @@ public sealed class MaterialMaps
 
     private static byte EncodeSigned(float value)
     {
-        return (byte)(Math.Clamp(0.5f * value + 0.5f, 0.0f, 1.0f) * 255.0f + 0.5f);
+        return (byte)(128.0f + MathF.Round(127.0f * Math.Clamp(value, -1.0f, 1.0f)));
     }
 }

@@ -45,7 +45,8 @@ internal struct FrameLighting
     public Vector4 FogParameters;
 
     /// <summary>
-    ///     The debug view in x: 0 is none, 1 tints every sunlit pixel by the shadow cascade it read, 2 by the angle between its surface and the light, 3 shows the sky light alone, 4 the sun's shadow alone, 5 the sun's shadow tinted by the angle between each triangle's own plane and the light, and 6 the ambient occlusion.
+    ///     The debug view in x: 0 is none, 1 tints every sunlit pixel by the shadow cascade it read, 2 by the angle between its surface and the light, 3 shows the sky light alone, 4 the sun's shadow alone, 5 the sun's shadow tinted by the angle between each triangle's own plane and the light, 6 the ambient occlusion, 7 the albedo and 8 the detailed normal.
+    ///     The terrain uses its normal map's normals while y is 1 and its occlusion while z is 1.
     /// </summary>
     public Vector4 DebugOptions;
 }

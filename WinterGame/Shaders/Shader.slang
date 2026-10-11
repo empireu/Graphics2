@@ -48,8 +48,11 @@ struct FrameLighting {
 // The terrain's albedo in sRGB with its height in alpha, one layer per SurfaceMaterial id, as TerrainMaterials uploads it:
 [[vk::binding(7, 0)]] Texture2DArray materialAlbedo;
 
+// The terrain's normal maps in the layers of materialAlbedo, with x along the texture's u, y along its v and z out of the surface, each component c stored as the byte 128 + 127 c, and in alpha the fraction of the sky the relief leaves a point:
+[[vk::binding(8, 0)]] Texture2DArray materialNormal;
+
 // Trilinear and anisotropic with repeat addressing:
-[[vk::binding(8, 0)]] SamplerState materialSampler;
+[[vk::binding(9, 0)]] SamplerState materialSampler;
 
 // LightEngine.MaxLevel in C#:
 static const float MaxLightLevel = 8.0;
@@ -59,6 +62,23 @@ static const float SunDiscBrightness = 50.0;
 
 // SurfaceMaterial.Count in C#, the layers of the material arrays:
 static const uint MaterialCount = 8;
+
+// MaterialMaps.TileMetres in C#, the extent one tile of the material maps covers:
+static const float TileMetres = 4.0;
+
+// How far the projection axes' weights outweigh the layer's height in their blend. A height runs from 0 to 1, so an axis shows only where its weight is within (1 + HeightBlendRange) / HeightBlendScale of the largest:
+static const float HeightBlendScale = 3.0;
+
+// How far below the highest axis in the blend another axis still shows, which softens the edges where one projection gives way to another:
+static const float HeightBlendRange = 0.2;
+
+// Each projection's maps are shifted by their own offset in tiles, so the features of two projections that share an axis do not line up where they blend:
+static const float2 ProjectionOffsetX = float2(0.0, 0.0);
+static const float2 ProjectionOffsetY = float2(0.5, 0.25);
+static const float2 ProjectionOffsetZ = float2(0.25, 0.5);
+
+// A surface facing the negative side of an axis shifts that axis's projection further, so the opposite walls of a narrow cut do not show the same features mirrored. The shift changes only where the axis has no weight:
+static const float2 OppositeSideShift = float2(0.5, 0.375);
 
 // The debug view's colour for each shadow cascade, red, green and blue from the smallest:
 static const float3 ShadowCascadeTints[ShadowCascadeCount] = {
@@ -88,6 +108,9 @@ struct VertexOutput {
     float3 worldPosition : WORLD_POSITION;
     float3 normal : NORMAL;
 
+    // The position in tiles of the material maps from a tile corner near the section, as TilePosition gives it:
+    float3 tilePosition : TILE_POSITION;
+
     nointerpolation uint material : MATERIAL;
 };
 
@@ -105,6 +128,16 @@ float4 ClipPosition(float3 worldPosition) {
     return clip;
 }
 
+// A vertex's position in tiles of the material maps, counted from the tile corner at or below the record's origin, so it stays small and exact anywhere in the world.
+// The origin is a whole number of voxels and a tile a power of two of them, so its remainder by a tile is exact. Two sections' positions for one point differ by whole tiles, which the sampler's repeat hides:
+float3 TilePosition(float3 position, uint recordIndex) {
+    DrawRecord draw = draws[recordIndex];
+    float tileVoxels = TileMetres / draw.voxelSize;
+    float3 tileOrigin = draw.origin - tileVoxels * floor(draw.origin / tileVoxels);
+
+    return (tileOrigin + position) / tileVoxels;
+}
+
 [shader("vertex")]
 VertexOutput vsMain(VertexInput input, uint recordIndex : SV_StartInstanceLocation) {
     VertexOutput output;
@@ -114,6 +147,7 @@ VertexOutput vsMain(VertexInput input, uint recordIndex : SV_StartInstanceLocati
     output.position = ClipPosition(worldPosition);
     output.worldPosition = worldPosition;
     output.normal = input.normal.xyz;
+    output.tilePosition = TilePosition(input.position, recordIndex);
     output.material = input.material;
     return output;
 }
@@ -324,6 +358,77 @@ float3 ApplyFog(float3 color, float3 worldPosition) {
     return lerp(color, SkyRadiance(direction) + SunGlow(direction), FogAmount(distance, length(toPoint.xz)));
 }
 
+struct SurfaceDetail {
+    float3 albedo;
+    float3 normal;
+
+    // The fraction of the sky the texture's relief leaves the point:
+    float occlusion;
+};
+
+// One projection's normal map read at uv, its x and y along the projection's u and v, and in w the fraction of the sky the relief leaves:
+float4 ProjectedNormal(float layer, float2 uv, float2 uvDx, float2 uvDy) {
+    float4 texel = materialNormal.SampleGrad(materialSampler, float3(uv, layer), uvDx, uvDy);
+    return float4(texel.xyz * (255.0 / 127.0) - 128.0 / 127.0, texel.w);
+}
+
+// A material layer's albedo and detailed normal at a point, from three projections along the world axes, blended by the unit geometric normal and the layer's height.
+// The projection along x maps z and y to the texture's u and v, the one along y maps x and z, and the one along z maps x and y. Golus's whiteout blend turns each projection's normal into world space.
+// An axis that cannot reach the height blend's top anywhere is not read. Every read takes gradients from before the branches, because an implicit derivative in divergent control flow is undefined:
+SurfaceDetail MaterialDetail(uint material, float3 tilePosition, float3 normal) {
+    float3 squared = normal * normal;
+    float3 axisWeights = squared * squared;
+    axisWeights /= axisWeights.x + axisWeights.y + axisWeights.z;
+
+    float3 positionDx = ddx(tilePosition);
+    float3 positionDy = ddy(tilePosition);
+    float layer = material;
+
+    float2 uvX = tilePosition.zy + ProjectionOffsetX + (normal.x < 0.0 ? OppositeSideShift : 0.0);
+    float2 uvY = tilePosition.xz + ProjectionOffsetY + (normal.y < 0.0 ? OppositeSideShift : 0.0);
+    float2 uvZ = tilePosition.xy + ProjectionOffsetZ + (normal.z < 0.0 ? OppositeSideShift : 0.0);
+
+    // An axis at its highest point has 1 + its weighted term, and the strongest axis has at least its own weighted term:
+    float largest = max(axisWeights.x, max(axisWeights.y, axisWeights.z));
+    bool3 reaches = axisWeights * HeightBlendScale + 1.0 > largest * HeightBlendScale - HeightBlendRange;
+
+    float4 albedoX = reaches.x ? materialAlbedo.SampleGrad(materialSampler, float3(uvX, layer), positionDx.zy, positionDy.zy) : 0.0;
+    float4 albedoY = reaches.y ? materialAlbedo.SampleGrad(materialSampler, float3(uvY, layer), positionDx.xz, positionDy.xz) : 0.0;
+    float4 albedoZ = reaches.z ? materialAlbedo.SampleGrad(materialSampler, float3(uvZ, layer), positionDx.xy, positionDy.xy) : 0.0;
+
+    // Each axis's height lifted by its weight, and the axes within HeightBlendRange of the highest share the point:
+    float3 heights = float3(albedoX.a, albedoY.a, albedoZ.a) + axisWeights * HeightBlendScale;
+    float3 lift = max(heights - (max(heights.x, max(heights.y, heights.z)) - HeightBlendRange), 0.0);
+    float3 weights = lift / (lift.x + lift.y + lift.z);
+
+    SurfaceDetail detail;
+    detail.albedo = albedoX.rgb * weights.x + albedoY.rgb * weights.y + albedoZ.rgb * weights.z;
+
+    float3 blended = 0.0;
+    detail.occlusion = 0.0;
+
+    if (weights.x > 0.0) {
+        float4 projected = ProjectedNormal(layer, uvX, positionDx.zy, positionDy.zy);
+        blended += weights.x * float3(abs(projected.z) * normal.x, projected.y + normal.y, projected.x + normal.z);
+        detail.occlusion += weights.x * projected.w;
+    }
+
+    if (weights.y > 0.0) {
+        float4 projected = ProjectedNormal(layer, uvY, positionDx.xz, positionDy.xz);
+        blended += weights.y * float3(projected.x + normal.x, abs(projected.z) * normal.y, projected.y + normal.z);
+        detail.occlusion += weights.y * projected.w;
+    }
+
+    if (weights.z > 0.0) {
+        float4 projected = ProjectedNormal(layer, uvZ, positionDx.xy, positionDy.xy);
+        blended += weights.z * float3(projected.x + normal.x, projected.y + normal.y, abs(projected.z) * normal.z);
+        detail.occlusion += weights.z * projected.w;
+    }
+
+    detail.normal = normalize(blended);
+    return detail;
+}
+
 [shader("fragment")]
 float4 fsMain(VertexOutput input) : SV_TARGET {
     float3 normal = normalize(input.normal);
@@ -331,14 +436,18 @@ float4 fsMain(VertexOutput input) : SV_TARGET {
     // The air id is out of the palette, and a cell with no solid corner falls back to rock:
     uint material = input.material < MaterialCount ? input.material : 0;
 
-    uint albedoWidth;
-    uint albedoHeight;
-    uint albedoLayers;
-    uint albedoLevels;
-    materialAlbedo.GetDimensions(0, albedoWidth, albedoHeight, albedoLayers, albedoLevels);
+    // The sun and the sky shade the detailed normal, while the shadow and the sky visibility keep the geometric one, which their filters are built around:
+    SurfaceDetail detail = MaterialDetail(material, input.tilePosition, normal);
+    float3 albedo = detail.albedo;
 
-    // A layer's last level is one texel, its mean albedo, in linear light because the sRGB format decodes it:
-    float3 albedo = materialAlbedo.SampleLevel(materialSampler, float3(0.5, 0.5, material), albedoLevels - 1).rgb;
+    // The World panel can turn off the normal map's normals and its occlusion:
+    if (lighting.debugOptions.y == 0.0) {
+        detail.normal = normal;
+    }
+
+    if (lighting.debugOptions.z == 0.0) {
+        detail.occlusion = 1.0;
+    }
 
     // A derivative needs every pixel of the quad to reach it, so these are taken before the shadow's branch:
     float3 positionDx = ddx(input.worldPosition);
@@ -354,14 +463,15 @@ float4 fsMain(VertexOutput input) : SV_TARGET {
     float sunReach = saturate(skyVisibility * MaxLightLevel);
 
     // Light bounces between bright surfaces, so a crease in snow darkens far less than the occlusion alone says. This is Jimenez's fit of that for a surface's albedo, from the GTAO paper:
-    float occlusion = ambientOcclusion.Load(int3(int2(input.position.xy), 0));
+    // The ambient occlusion sees the mesh and the texture's own occlusion its relief, so both take their share of the sky:
+    float occlusion = ambientOcclusion.Load(int3(int2(input.position.xy), 0)) * detail.occlusion;
     float3 bounceA = 2.0404 * albedo - 0.3324;
     float3 bounceB = -4.7951 * albedo + 0.6417;
     float3 bounceC = 2.7552 * albedo + 0.6903;
     float3 skyOcclusion = max(occlusion, ((occlusion * bounceA + bounceB) * occlusion + bounceC) * occlusion);
 
-    float3 sky = lerp(lighting.skyHorizon.rgb, lighting.skyZenith.rgb, saturate(normal.y)) * skyVisibility * skyOcclusion;
-    float3 direct = lighting.lightRadiance.rgb * normalDotLight * shadow * sunReach;
+    float3 sky = lerp(lighting.skyHorizon.rgb, lighting.skyZenith.rgb, saturate(detail.normal.y)) * skyVisibility * skyOcclusion;
+    float3 direct = lighting.lightRadiance.rgb * saturate(dot(detail.normal, lighting.lightDirection.xyz)) * shadow * sunReach;
     float3 color = albedo * (sky + direct);
 
     uint debugView = uint(lighting.debugOptions.x);
@@ -397,6 +507,12 @@ float4 fsMain(VertexOutput input) : SV_TARGET {
     }
     else if (debugView == 6) {
         color = float3(occlusion, occlusion, occlusion);
+    }
+    else if (debugView == 7) {
+        color = albedo;
+    }
+    else if (debugView == 8) {
+        color = detail.normal * 0.5 + 0.5;
     }
 
     return float4(color, 1.0);

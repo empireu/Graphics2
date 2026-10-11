@@ -7,7 +7,7 @@ var recipes = new Dictionary<string, Func<int, MaterialMaps>>(StringComparer.Ord
     ["limestone"] = MaterialRecipes.Limestone
 };
 
-var size = 512;
+var size = 1024;
 var output = "material-preview";
 var names = new List<string>();
 
@@ -65,12 +65,18 @@ internal static class Preview
     private const float SunIrradiance = 1.6f;
     private const float SkyIrradiance = 0.35f;
 
+    /// <summary>
+    ///     The sky alone in the shade view, brought up as the game's exposure brings up a shaded scene.
+    /// </summary>
+    private const float ShadeSkyIrradiance = 1.6f;
+
     public static void WriteAll(MaterialMaps maps, string prefix)
     {
         var size = maps.Size;
         var albedo = new byte[3 * size * size];
         var height = new byte[size * size];
         var normal = new byte[3 * size * size];
+        var occlusion = new byte[size * size];
 
         for (var index = 0; index < size * size; index++)
         {
@@ -81,34 +87,38 @@ internal static class Preview
             }
 
             height[index] = maps.AlbedoHeight[4 * index + 3];
+            occlusion[index] = maps.Normal[4 * index + 3];
         }
 
         PngWriter.Write(prefix + "-albedo.png", size, size, 3, albedo);
         PngWriter.Write(prefix + "-height.png", size, size, 1, height);
         PngWriter.Write(prefix + "-normal.png", size, size, 3, normal);
+        PngWriter.Write(prefix + "-occlusion.png", size, size, 1, occlusion);
 
-        var lit = Shade(maps);
+        var lit = Shade(maps, SunIrradiance, SkyIrradiance);
         WriteTiled(prefix + "-lit.png", lit, size, 2, 1);
         WriteTiled(prefix + "-far.png", lit, size, 8, 4);
+        WriteTiled(prefix + "-shade.png", Shade(maps, 0.0f, ShadeSkyIrradiance), size, 2, 1);
     }
 
     /// <summary>
-    ///     The tile lit by a sun and a sky with plain Lambert shading, in linear light.
+    ///     The tile lit by a sun and a sky with plain Lambert shading, in linear light. The relief's occlusion darkens the sky.
     /// </summary>
-    private static float[] Shade(MaterialMaps maps)
+    private static float[] Shade(MaterialMaps maps, float sunIrradiance, float skyIrradiance)
     {
         var size = maps.Size;
         var lit = new float[3 * size * size];
 
         for (var index = 0; index < size * size; index++)
         {
-            var normalX = maps.Normal[4 * index] / 127.5f - 1.0f;
-            var normalY = maps.Normal[4 * index + 1] / 127.5f - 1.0f;
-            var normalZ = maps.Normal[4 * index + 2] / 127.5f - 1.0f;
+            var normalX = (maps.Normal[4 * index] - 128.0f) / 127.0f;
+            var normalY = (maps.Normal[4 * index + 1] - 128.0f) / 127.0f;
+            var normalZ = (maps.Normal[4 * index + 2] - 128.0f) / 127.0f;
             var inverseLength = 1.0f / MathF.Sqrt(normalX * normalX + normalY * normalY + normalZ * normalZ);
 
             var facing = MathF.Max(0.0f, (normalX * Light.X + normalY * Light.Y + normalZ * Light.Z) * inverseLength);
-            var irradiance = SunIrradiance * facing + SkyIrradiance * (0.5f + 0.5f * normalZ * inverseLength);
+            var skyVisible = maps.Normal[4 * index + 3] / 255.0f;
+            var irradiance = sunIrradiance * facing + skyIrradiance * skyVisible * (0.5f + 0.5f * normalZ * inverseLength);
 
             for (var channel = 0; channel < 3; channel++)
             {

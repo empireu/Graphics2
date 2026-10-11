@@ -30,6 +30,51 @@ public static class TileOps
         return result;
     }
 
+    /// <summary>
+    ///     The cosine-weighted fraction of the sky each pixel of a height field in metres sees past the relief within <paramref name="radiusMetres"/>, from the highest horizon along eight directions.
+    ///     A direction whose horizon rises at an angle e leaves 1 - sin^2(e) of its slice of the sky, and the slices are averaged.
+    /// </summary>
+    public static TileImage HorizonVisibility(TileImage height, float radiusMetres)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(radiusMetres);
+
+        var size = height.Size;
+        var pixelMetres = MaterialMaps.TileMetres / size;
+        var visibility = new TileImage(size);
+
+        Parallel.For(0, size, y =>
+        {
+            ReadOnlySpan<int> stepsX = [1, 1, 0, -1, -1, -1, 0, 1];
+            ReadOnlySpan<int> stepsY = [0, 1, 1, 1, 0, -1, -1, -1];
+
+            for (var x = 0; x < size; x++)
+            {
+                var centre = height[x, y];
+                var sum = 0.0f;
+
+                for (var direction = 0; direction < stepsX.Length; direction++)
+                {
+                    var stepX = stepsX[direction];
+                    var stepY = stepsY[direction];
+                    var stepMetres = stepX != 0 && stepY != 0 ? MathF.Sqrt(2.0f) * pixelMetres : pixelMetres;
+                    var stepCount = Math.Max(1, (int)MathF.Round(radiusMetres / stepMetres));
+                    var steepest = 0.0f;
+
+                    for (var step = 1; step <= stepCount; step++)
+                    {
+                        steepest = MathF.Max(steepest, (height[x + step * stepX, y + step * stepY] - centre) / (step * stepMetres));
+                    }
+
+                    sum += 1.0f / (1.0f + steepest * steepest);
+                }
+
+                visibility[x, y] = sum / stepsX.Length;
+            }
+        });
+
+        return visibility;
+    }
+
     private static void BoxRows(float[] source, float[] target, int size, int radius, float weight)
     {
         var mask = size - 1;

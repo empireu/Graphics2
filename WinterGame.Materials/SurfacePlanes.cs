@@ -21,12 +21,13 @@ public sealed class SurfacePlanes
     /// <summary>
     ///     Fills each pixel from <paramref name="surface"/> at the pixel's centre, in tile coordinates.
     ///     The planes tile only if the surface repeats with a period of 1 in both coordinates.
+    ///     The rows are filled on the thread pool, so <paramref name="surface"/> is called from several threads at once and must not change any state.
     /// </summary>
     public static SurfacePlanes Evaluate(int size, Func<float, float, SurfacePoint> surface)
     {
         var planes = new SurfacePlanes(size);
 
-        for (var y = 0; y < size; y++)
+        Parallel.For(0, size, y =>
         {
             var v = (y + 0.5f) / size;
 
@@ -40,7 +41,7 @@ public sealed class SurfacePlanes
                 planes.Green.Pixels[index] = point.Green;
                 planes.Blue.Pixels[index] = point.Blue;
             }
-        }
+        });
 
         return planes;
     }

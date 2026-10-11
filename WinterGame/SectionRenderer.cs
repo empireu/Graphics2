@@ -119,6 +119,7 @@ internal sealed class SectionRenderer : IDisposable
         pass.BindSampler("lightSampler", lightSampler);
         pass.BindTexture("ambientOcclusion", ambientOcclusion);
         pass.BindTexture("materialAlbedo", materials.AlbedoHeight);
+        pass.BindTexture("materialNormal", materials.Normal);
         pass.BindSampler("materialSampler", materials.Sampler);
 
         geometry.Draw(pass);

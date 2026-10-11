@@ -83,7 +83,7 @@ internal sealed class WorldLayer : IDisposable
     /// </summary>
     private Daylight _daylight;
 
-    private static readonly string[] DebugViewNames = ["None", "Shadow cascades", "Light angle", "Sky light", "Sun shadow", "Triangle light angle", "Ambient occlusion"];
+    private static readonly string[] DebugViewNames = ["None", "Shadow cascades", "Light angle", "Sky light", "Sun shadow", "Triangle light angle", "Ambient occlusion", "Albedo", "Surface normal"];
 
     /// <summary>
     ///     The index into <see cref="DebugViewNames"/> the world shader shows.
@@ -91,6 +91,10 @@ internal sealed class WorldLayer : IDisposable
     private int _debugView;
 
     private bool _freezeShadowDirection;
+
+    private bool _normalMapNormals = true;
+
+    private bool _normalMapOcclusion = true;
 
     /// <summary>
     ///     The light direction the shadow cascades are rendered for, which follows the sun unless <see cref="_freezeShadowDirection"/> holds it.
@@ -242,7 +246,7 @@ internal sealed class WorldLayer : IDisposable
             SkyHorizon = new Vector4(_daylight.SkyHorizon, 0.0f),
             LightVolumePlacement = _lightVolume.ShaderParameters,
             FogParameters = new Vector4(HazeDensity, FogStart, FogEnd, 0.0f),
-            DebugOptions = new Vector4(_debugView, 0.0f, 0.0f, 0.0f)
+            DebugOptions = new Vector4(_debugView, _normalMapNormals ? 1.0f : 0.0f, _normalMapOcclusion ? 1.0f : 0.0f, 0.0f)
         };
 
         if (!_freezeShadowDirection)
@@ -412,6 +416,8 @@ internal sealed class WorldLayer : IDisposable
             _exposure.DrawPanel();
             ImGui.Combo("Debug view", ref _debugView, DebugViewNames, DebugViewNames.Length);
             ImGui.Checkbox("Freeze shadow direction", ref _freezeShadowDirection);
+            ImGui.Checkbox("Normal map normals", ref _normalMapNormals);
+            ImGui.Checkbox("Normal map occlusion", ref _normalMapOcclusion);
 
             for (var cascade = 0; cascade < SunShadow.CascadeCount; cascade++)
             {

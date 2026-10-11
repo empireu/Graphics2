@@ -118,6 +118,37 @@ public class MaterialBakeTests
     }
 
     [Fact]
+    public void HorizonVisibilityDarkensHollowsOnly()
+    {
+        const int size = 256;
+        const float pixelMetres = MaterialMaps.TileMetres / size;
+        var height = new TileImage(size);
+
+        // A dish at (128, 128) and a dome at (64, 64), each 6 cm deep and 20 cm across:
+        for (var y = 0; y < size; y++)
+        {
+            for (var x = 0; x < size; x++)
+            {
+                var dish = Profile(x - 128, y - 128);
+                var dome = Profile(x - 64, y - 64);
+                height[x, y] = 0.06f * (dome - dish);
+            }
+        }
+
+        var visibility = TileOps.HorizonVisibility(height, MaterialMaps.OcclusionRadiusMetres);
+
+        Assert.True(visibility[128, 128] < 0.8f, $"{visibility[128, 128]} at the dish's bottom");
+        Assert.Equal(1.0f, visibility[64, 64]);
+        Assert.Equal(1.0f, visibility[200, 40]);
+
+        static float Profile(int x, int y)
+        {
+            var distance = MathF.Sqrt(x * x + y * y) * pixelMetres;
+            return MathF.Max(0.0f, 1.0f - distance * distance / 0.01f);
+        }
+    }
+
+    [Fact]
     public void FlatMapsAreThePackedMapsOfUniformPlanes()
     {
         const int size = 16;
@@ -136,6 +167,9 @@ public class MaterialBakeTests
 
         Assert.Equal(packed.AlbedoHeight, flat.AlbedoHeight);
         Assert.Equal(packed.Normal, flat.Normal);
+
+        // A component c is stored as 128 + 127 c, so the shader decodes a flat normal exactly:
+        Assert.Equal(new byte[] { 128, 128, 255, 255 }, flat.Normal[..4]);
     }
 
     [Fact]
