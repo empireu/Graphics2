@@ -66,7 +66,8 @@ public sealed unsafe class VkSampler : IDeviceResource
             CompareOp = description.Compare != null
                 ? VulkanResourceFactory.CompareOpToVk(description.Compare.Value)
                 : Silk.NET.Vulkan.CompareOp.Never,
-            MipmapMode = SamplerMipmapMode.Linear
+            MipmapMode = SamplerMipmapMode.Linear,
+            MaxLod = Vk.LodClampNone
         };
 
         if (vk.CreateSampler(device.Device, in createInfo, null, out var handle) != Result.Success)

@@ -173,7 +173,7 @@ public sealed unsafe class Frame
 
         foreach (var region in regions)
         {
-            region.Validate(dst.Width, dst.Height, dst.Depth, dst.Format, src.Offset, src.Size);
+            region.Validate(dst.Width, dst.Height, dst.Depth, dst.MipLevels, dst.ArrayLayers, dst.Format, src.Offset, src.Size);
         }
 
         RecordImageCopyBarrier(dst);
@@ -184,7 +184,7 @@ public sealed unsafe class Frame
         {
             var region = regions[index];
 
-            copies[index] = CreateImageCopy(src.Offset + region.SourceOffset, region.X, region.Y, region.Z, region.Width, region.Height, region.Depth);
+            copies[index] = CreateImageCopy(src.Offset + region.SourceOffset, region.X, region.Y, region.Z, region.Width, region.Height, region.Depth, region.MipLevel, region.ArrayLayer);
         }
 
         fixed (BufferImageCopy* first = copies)
@@ -210,6 +210,11 @@ public sealed unsafe class Frame
             throw new ArgumentException("Only a color texture can be copied into a buffer.", nameof(src));
         }
 
+        if (src.MipLevels != 1 || src.ArrayLayers != 1)
+        {
+            throw new ArgumentException($"Only a texture of one level and one layer can be copied whole, but this one has {src.MipLevels} levels and {src.ArrayLayers} layers.", nameof(src));
+        }
+
         var size = (long)src.Width * src.Height * src.Depth * src.Format.TexelSize();
 
         if (size > dst.Size)
@@ -233,14 +238,7 @@ public sealed unsafe class Frame
             SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
             DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
             Image = src.Image,
-            SubresourceRange = new ImageSubresourceRange
-            {
-                AspectMask = ImageAspectFlags.ColorBit,
-                BaseMipLevel = 0,
-                LevelCount = 1,
-                BaseArrayLayer = 0,
-                LayerCount = 1
-            }
+            SubresourceRange = VkTexture.AllSubresources(ImageAspectFlags.ColorBit)
         };
 
         var bufferBarrier = new BufferMemoryBarrier2
@@ -344,14 +342,7 @@ public sealed unsafe class Frame
             SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
             DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
             Image = dst.Image,
-            SubresourceRange = new ImageSubresourceRange
-            {
-                AspectMask = ImageAspectFlags.ColorBit,
-                BaseMipLevel = 0,
-                LevelCount = 1,
-                BaseArrayLayer = 0,
-                LayerCount = 1
-            }
+            SubresourceRange = VkTexture.AllSubresources(ImageAspectFlags.ColorBit)
         };
 
         var preDependencyInfo = new DependencyInfo
@@ -366,9 +357,9 @@ public sealed unsafe class Frame
     }
 
     /// <summary>
-    ///     A copy of tightly packed texels between a buffer and the first layer and mip level of a color image.
+    ///     A copy of tightly packed texels between a buffer and one mip level of one layer of a color image.
     /// </summary>
-    private static BufferImageCopy CreateImageCopy(ulong bufferOffset, uint x, uint y, uint z, uint width, uint height, uint depth)
+    private static BufferImageCopy CreateImageCopy(ulong bufferOffset, uint x, uint y, uint z, uint width, uint height, uint depth, uint mipLevel = 0, uint arrayLayer = 0)
     {
         return new BufferImageCopy
         {
@@ -378,8 +369,8 @@ public sealed unsafe class Frame
             ImageSubresource = new ImageSubresourceLayers
             {
                 AspectMask = ImageAspectFlags.ColorBit,
-                MipLevel = 0,
-                BaseArrayLayer = 0,
+                MipLevel = mipLevel,
+                BaseArrayLayer = arrayLayer,
                 LayerCount = 1
             },
             ImageOffset = new Offset3D((int)x, (int)y, (int)z),

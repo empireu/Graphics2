@@ -281,7 +281,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
             throw new VkAllocationException("Failed to create image view.");
         }
 
-        return new Texture(_device, _gpuOnly, imageHandle, viewHandle, allocation, description.Width, description.Height, description.Depth, description.Format, description.Usage, description.Type, FormatToAspectMask(format));
+        return new Texture(_device, _gpuOnly, imageHandle, viewHandle, allocation, description.Width, description.Height, description.Depth, description.MipLevels, arrayLayers, description.Format, description.Usage, description.Type, FormatToAspectMask(format));
     }
 
     public VkSampler CreateSampler(SamplerDescription description)
@@ -368,6 +368,10 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         staging.Dispose();
     }
 
+    /// <summary>
+    ///     Writes every texel of <paramref name="dst"/> and waits for the copy, leaving the texture in the shader read layout.
+    ///     <paramref name="data"/> holds each array layer's mip chain, layer after layer, in the layout <see cref="MipChain"/> describes.
+    /// </summary>
     public void UpdateTexture(Texture dst, ReadOnlySpan<byte> data)
     {
         if (data.Length == 0)
@@ -375,11 +379,11 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
             return;
         }
 
-        var pixelSize = dst.Format.TexelSize();
-        var expectedSize = (long)dst.Width * dst.Height * dst.Depth * pixelSize;
+        var layerSize = MipChain.LayerSize(dst.Width, dst.Height, dst.Depth, dst.MipLevels, dst.Format);
+        var expectedSize = layerSize * dst.ArrayLayers;
         if (data.Length != expectedSize)
         {
-            throw new ArgumentException($"Data ({data.Length} bytes) does not match texture size ({expectedSize} bytes: {dst.Width}x{dst.Height}x{dst.Depth}x{pixelSize}).", nameof(data));
+            throw new ArgumentException($"Data ({data.Length} bytes) does not match texture size ({expectedSize} bytes: {dst.ArrayLayers} layers of {dst.MipLevels} levels from {dst.Width}x{dst.Height}x{dst.Depth} {dst.Format}).", nameof(data));
         }
 
         var staging = CreateBuffer(new BufferDescription
@@ -409,14 +413,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
                 SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
                 DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
                 Image = dst.Image,
-                SubresourceRange = new ImageSubresourceRange
-                {
-                    AspectMask = aspectMask,
-                    BaseMipLevel = 0,
-                    LevelCount = 1,
-                    BaseArrayLayer = 0,
-                    LayerCount = 1
-                }
+                SubresourceRange = VkTexture.AllSubresources(aspectMask)
             };
 
             var dependencyInfo = new DependencyInfo
@@ -429,23 +426,39 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
             vk.CmdPipelineBarrier2(cmd, &dependencyInfo);
         }
 
-        var region = new BufferImageCopy
-        {
-            BufferOffset = 0,
-            BufferRowLength = 0,
-            BufferImageHeight = 0,
-            ImageSubresource = new ImageSubresourceLayers
-            {
-                AspectMask = aspectMask,
-                MipLevel = 0,
-                BaseArrayLayer = 0,
-                LayerCount = 1
-            },
-            ImageOffset = new Offset3D(0, 0, 0),
-            ImageExtent = new Extent3D(dst.Width, dst.Height, dst.Depth)
-        };
+        var regions = new BufferImageCopy[dst.ArrayLayers * dst.MipLevels];
+        var bufferOffset = 0UL;
 
-        vk.CmdCopyBufferToImage(cmd, staging.Handle, dst.Image, ImageLayout.TransferDstOptimal, 1, &region);
+        for (var layer = 0u; layer < dst.ArrayLayers; layer++)
+        {
+            for (var level = 0u; level < dst.MipLevels; level++)
+            {
+                var extent = new Extent3D(MipChain.LevelExtent(dst.Width, level), MipChain.LevelExtent(dst.Height, level), MipChain.LevelExtent(dst.Depth, level));
+
+                regions[layer * dst.MipLevels + level] = new BufferImageCopy
+                {
+                    BufferOffset = bufferOffset,
+                    BufferRowLength = 0,
+                    BufferImageHeight = 0,
+                    ImageSubresource = new ImageSubresourceLayers
+                    {
+                        AspectMask = aspectMask,
+                        MipLevel = level,
+                        BaseArrayLayer = layer,
+                        LayerCount = 1
+                    },
+                    ImageOffset = new Offset3D(0, 0, 0),
+                    ImageExtent = extent
+                };
+
+                bufferOffset += (ulong)extent.Width * extent.Height * extent.Depth * (ulong)dst.Format.TexelSize();
+            }
+        }
+
+        fixed (BufferImageCopy* first = regions)
+        {
+            vk.CmdCopyBufferToImage(cmd, staging.Handle, dst.Image, ImageLayout.TransferDstOptimal, (uint)regions.Length, first);
+        }
 
         {
             var barrier = new ImageMemoryBarrier2
@@ -460,14 +473,7 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
                 SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
                 DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
                 Image = dst.Image,
-                SubresourceRange = new ImageSubresourceRange
-                {
-                    AspectMask = aspectMask,
-                    BaseMipLevel = 0,
-                    LevelCount = 1,
-                    BaseArrayLayer = 0,
-                    LayerCount = 1
-                }
+                SubresourceRange = VkTexture.AllSubresources(aspectMask)
             };
 
             var dependencyInfo = new DependencyInfo

@@ -70,6 +70,21 @@ public class VkTexture
         Aspect = aspect;
         CurrentLayout = initialLayout;
     }
+
+    /// <summary>
+    ///     Every mip level and array layer of an image, which is what a barrier names, because a texture tracks one layout for all of them.
+    /// </summary>
+    internal static ImageSubresourceRange AllSubresources(ImageAspectFlags aspect)
+    {
+        return new ImageSubresourceRange
+        {
+            AspectMask = aspect,
+            BaseMipLevel = 0,
+            LevelCount = Vk.RemainingMipLevels,
+            BaseArrayLayer = 0,
+            LayerCount = Vk.RemainingArrayLayers
+        };
+    }
 }
 
 public sealed unsafe class Texture : VkTexture, IDeviceResource
@@ -82,6 +97,8 @@ public sealed unsafe class Texture : VkTexture, IDeviceResource
     public readonly uint Width;
     public readonly uint Height;
     public readonly uint Depth;
+    public readonly uint MipLevels;
+    public readonly uint ArrayLayers;
     public readonly TextureFormat Format;
     public readonly TextureUsage Usage;
 
@@ -94,6 +111,8 @@ public sealed unsafe class Texture : VkTexture, IDeviceResource
         uint width,
         uint height,
         uint depth,
+        uint mipLevels,
+        uint arrayLayers,
         TextureFormat format,
         TextureUsage usage,
         TextureType type,
@@ -106,6 +125,8 @@ public sealed unsafe class Texture : VkTexture, IDeviceResource
         Width = width;
         Height = height;
         Depth = depth;
+        MipLevels = mipLevels;
+        ArrayLayers = arrayLayers;
         Format = format;
         Usage = usage;
     }

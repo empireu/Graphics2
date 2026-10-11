@@ -122,14 +122,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
                 SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
                 DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
                 Image = colorAttachment.Target.Image,
-                SubresourceRange = new ImageSubresourceRange
-                {
-                    AspectMask = ImageAspectFlags.ColorBit,
-                    BaseMipLevel = 0,
-                    LevelCount = 1,
-                    BaseArrayLayer = 0,
-                    LayerCount = 1
-                }
+                SubresourceRange = VkTexture.AllSubresources(ImageAspectFlags.ColorBit)
             };
         }
 
@@ -161,14 +154,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
                     SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
                     DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
                     Image = depth.Target.Image,
-                    SubresourceRange = new ImageSubresourceRange
-                    {
-                        AspectMask = ImageAspectFlags.DepthBit,
-                        BaseMipLevel = 0,
-                        LevelCount = 1,
-                        BaseArrayLayer = 0,
-                        LayerCount = 1
-                    }
+                    SubresourceRange = VkTexture.AllSubresources(ImageAspectFlags.DepthBit)
                 };
             }
         }
@@ -786,14 +772,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
                 SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
                 DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
                 Image = colorAttachment.Target.Image,
-                SubresourceRange = new ImageSubresourceRange
-                {
-                    AspectMask = ImageAspectFlags.ColorBit,
-                    BaseMipLevel = 0,
-                    LevelCount = 1,
-                    BaseArrayLayer = 0,
-                    LayerCount = 1
-                }
+                SubresourceRange = VkTexture.AllSubresources(ImageAspectFlags.ColorBit)
             };
         }
 
@@ -823,14 +802,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
                     SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
                     DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
                     Image = depth.Target.Image,
-                    SubresourceRange = new ImageSubresourceRange
-                    {
-                        AspectMask = ImageAspectFlags.DepthBit,
-                        BaseMipLevel = 0,
-                        LevelCount = 1,
-                        BaseArrayLayer = 0,
-                        LayerCount = 1
-                    }
+                    SubresourceRange = VkTexture.AllSubresources(ImageAspectFlags.DepthBit)
                 };
             }
         }
@@ -1078,14 +1050,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
                 SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
                 DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
                 Image = tex.Image,
-                SubresourceRange = new ImageSubresourceRange
-                {
-                    AspectMask = ImageAspectFlags.ColorBit,
-                    BaseMipLevel = 0,
-                    LevelCount = 1,
-                    BaseArrayLayer = 0,
-                    LayerCount = 1
-                }
+                SubresourceRange = VkTexture.AllSubresources(ImageAspectFlags.ColorBit)
             };
             tex.CurrentLayout = ImageLayout.ShaderReadOnlyOptimal;
             j++;
@@ -1241,14 +1206,7 @@ public sealed unsafe class RenderPassEncoder : IDisposable
                 SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
                 DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
                 Image = texture.Image,
-                SubresourceRange = new ImageSubresourceRange
-                {
-                    AspectMask = texture.Aspect,
-                    BaseMipLevel = 0,
-                    LevelCount = 1,
-                    BaseArrayLayer = 0,
-                    LayerCount = 1
-                }
+                SubresourceRange = VkTexture.AllSubresources(texture.Aspect)
             };
 
             var dependencyInfo = new DependencyInfo

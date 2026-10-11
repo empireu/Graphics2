@@ -4,7 +4,7 @@ namespace Graphics2.Tests;
 
 public class TextureDescriptionTests
 {
-    private static TextureDescription Create(TextureType type, uint depth, uint arrayLayers, uint width = 32, uint height = 32, uint mipLevels = 1)
+    private static TextureDescription Create(TextureType type, uint depth, uint arrayLayers, uint width = 32, uint height = 32, uint mipLevels = 1, TextureUsage usage = TextureUsage.Sampled | TextureUsage.TransferDestination)
     {
         return new TextureDescription
         {
@@ -15,7 +15,7 @@ public class TextureDescriptionTests
             ArrayLayers = arrayLayers,
             Type = type,
             Format = TextureFormat.R8Uint,
-            Usage = TextureUsage.Sampled | TextureUsage.TransferDestination
+            Usage = usage
         };
     }
 
@@ -60,5 +60,23 @@ public class TextureDescriptionTests
     public void Validate_RejectsZeroMipLevels()
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => Create(TextureType.Texture2D, 1, 1, mipLevels: 0).Validate());
+    }
+
+    [Fact]
+    public void Validate_AcceptsACompleteChainAndRejectsALongerOne()
+    {
+        Create(TextureType.Texture2D, 1, 6, width: 64, height: 16, mipLevels: 7).Validate();
+        Create(TextureType.Texture3D, 128, 1, width: 4, height: 4, mipLevels: 8).Validate();
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => Create(TextureType.Texture2D, 1, 6, width: 64, height: 16, mipLevels: 8).Validate());
+    }
+
+    [Fact]
+    public void Validate_RejectsARenderTargetWithMipLevels()
+    {
+        Create(TextureType.Texture2D, 1, 1, usage: TextureUsage.ColorAttachment | TextureUsage.Sampled).Validate();
+
+        Assert.Throws<ArgumentException>(() => Create(TextureType.Texture2D, 1, 1, mipLevels: 2, usage: TextureUsage.ColorAttachment | TextureUsage.Sampled).Validate());
+        Assert.Throws<ArgumentException>(() => Create(TextureType.Texture2D, 1, 1, mipLevels: 2, usage: TextureUsage.DepthAttachment).Validate());
     }
 }
