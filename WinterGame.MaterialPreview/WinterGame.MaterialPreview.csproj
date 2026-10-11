@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net11.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <AssemblyName>WinterGame.MaterialPreview</AssemblyName>
+        <RootNamespace>WinterGame.MaterialPreview</RootNamespace>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\WinterGame.Materials\WinterGame.Materials.csproj" />
+    </ItemGroup>
+
+</Project>

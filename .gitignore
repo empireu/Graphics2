@@ -482,3 +482,6 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# WinterGame.MaterialPreview's default output
+material-preview/

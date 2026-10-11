@@ -21,6 +21,7 @@
     <ItemGroup>
       <ProjectReference Include="..\WinterGame.World\WinterGame.World.csproj" />
       <ProjectReference Include="..\WinterGame.Jobs\WinterGame.Jobs.csproj" />
+      <ProjectReference Include="..\WinterGame.Materials\WinterGame.Materials.csproj" />
     </ItemGroup>
 
 </Project>
