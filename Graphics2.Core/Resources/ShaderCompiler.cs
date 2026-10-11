@@ -283,9 +283,10 @@ public sealed class ShaderCompiler : IDisposable
                 ? ShaderParameterKind.StorageImage
                 : ShaderParameterKind.SampledImage;
 
-            // Only the 2D and 3D shapes map onto our two image types, so those are the ones a bind can be checked against:
+            // Only the 2D, 2D array and 3D shapes map onto our image types, so those are the ones a bind can be checked against:
             var textureType = shape switch
             {
+                SlangResourceShape.Texture2D when (type.ResourceShape & SlangResourceShape.TextureArrayFlag) != 0 => TextureType.Texture2DArray,
                 SlangResourceShape.Texture2D => TextureType.Texture2D,
                 SlangResourceShape.Texture3D => TextureType.Texture3D,
                 _ => (TextureType?)null

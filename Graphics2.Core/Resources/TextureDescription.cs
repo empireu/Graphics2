@@ -1,11 +1,16 @@
 namespace Graphics2.Core.Resources;
 
 /// <summary>
-///     How many axes a texture has, which selects the image and view type.
+///     How many axes a texture has and whether it is a set of layers, which selects the image and view type.
 /// </summary>
 public enum TextureType
 {
     Texture2D,
+
+    /// <summary>
+    ///     A set of 2D layers, which a shader reads as a <c>Texture2DArray</c> whatever the number of layers, one included.
+    /// </summary>
+    Texture2DArray,
     Texture3D
 }
 
@@ -17,7 +22,7 @@ public sealed class TextureDescription
 
     /// <summary>
     ///     Number of texels on the third axis of a <see cref="TextureType.Texture3D"/> image.
-    ///     It is 1 for a <see cref="TextureType.Texture2D" /> image, where the third axis is a set of array layers instead.
+    ///     It is 1 for a 2D image or array, where the third axis is a set of array layers instead.
     /// </summary>
     public uint Depth { get; init; } = 1;
 
@@ -36,7 +41,8 @@ public sealed class TextureDescription
 
     /// <summary>
     ///     Throws when the description cannot describe a Vulkan image.
-    ///     A 2D image has a depth of 1 and a 3D image has one array layer, because the third axis is either the volume's extent or a set of 2D layers, never both.
+    ///     A 2D image or array has a depth of 1 and a 3D image has one array layer, because the third axis is either the volume's extent or a set of 2D layers, never both.
+    ///     A 2D image has one layer, because its view is not an array, and a shader's <c>Texture2DArray</c> cannot read it.
     ///     A render target has one mip level, because the texture's one view covers every level and a pass renders into one.
     /// </summary>
     public void Validate()
@@ -59,11 +65,19 @@ public sealed class TextureDescription
             throw new ArgumentException($"A render target has one mip level, but the description has {MipLevels}.", nameof(MipLevels));
         }
 
-        if (Type == TextureType.Texture2D && Depth != 1)
+        if (Type != TextureType.Texture3D && Depth != 1)
         {
             throw new ArgumentException(
                 $"A 2D image has a depth of 1, but the description has {Depth}. Use ArrayLayers for a set of 2D images.",
                 nameof(Depth)
+            );
+        }
+
+        if (Type == TextureType.Texture2D && ArrayLayers != 1)
+        {
+            throw new ArgumentException(
+                $"A 2D image has one array layer, but the description has {ArrayLayers}. Use Texture2DArray for a set of 2D images.",
+                nameof(ArrayLayers)
             );
         }
 

@@ -195,11 +195,12 @@ public sealed unsafe class VulkanResourceFactory : IDisposable
         // A 3D image is one layer of depth slices, so its array layer count is always 1 and its third extent carries the depth:
         var isVolume = description.Type == TextureType.Texture3D;
         var arrayLayers = isVolume ? 1u : description.ArrayLayers;
-        var viewType = isVolume
-            ? ImageViewType.Type3D
-            : arrayLayers > 1
-                ? ImageViewType.Type2DArray
-                : ImageViewType.Type2D;
+        var viewType = description.Type switch
+        {
+            TextureType.Texture3D => ImageViewType.Type3D,
+            TextureType.Texture2DArray => ImageViewType.Type2DArray,
+            _ => ImageViewType.Type2D
+        };
 
         var createInfo = new ImageCreateInfo
         {

@@ -49,6 +49,11 @@ internal sealed class App(ApplicationDescription description) : Application(desc
     public GameSession? Session { get; private set; }
 
     /// <summary>
+    ///     Baked from the start of the process, and uploaded by the first frame after the bake.
+    /// </summary>
+    public TerrainMaterials Materials { get; } = new();
+
+    /// <summary>
     ///     Starts a session at the next frame and replaces every screen with the loading screen.
     /// </summary>
     public void StartSession()
@@ -98,6 +103,7 @@ internal sealed class App(ApplicationDescription description) : Application(desc
     protected override void OnFrame(double deltaTime, Frame frame, InputSnapshot input)
     {
         ApplyRequests();
+        Materials.TryUpload(Factory);
 
         var session = Session;
         var sessionHasFocus = session is { IsLoaded: true } && Screens.Count == 0;
@@ -129,6 +135,7 @@ internal sealed class App(ApplicationDescription description) : Application(desc
     {
         Session?.Dispose();
         Session = null;
+        Materials.Dispose();
         _imGui?.Dispose();
     }
 

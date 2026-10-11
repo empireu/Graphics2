@@ -4,7 +4,7 @@ using ImGuiNET;
 namespace WinterGame.Screens;
 
 /// <summary>
-///     Hides the session until its first build has finished, then closes itself.
+///     Hides the session until its first build and the terrain materials' bake have finished, then closes itself.
 /// </summary>
 internal sealed class LoadingScreen(App app) : Screen
 {
@@ -12,7 +12,7 @@ internal sealed class LoadingScreen(App app) : Screen
 
     public override void Update(double deltaTime)
     {
-        if (app.Session is { IsLoaded: true })
+        if (app.Session is { IsLoaded: true } && app.Materials.IsUploaded)
         {
             app.Screens.Remove(this);
         }

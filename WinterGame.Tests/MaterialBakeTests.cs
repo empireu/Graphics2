@@ -118,6 +118,27 @@ public class MaterialBakeTests
     }
 
     [Fact]
+    public void FlatMapsAreThePackedMapsOfUniformPlanes()
+    {
+        const int size = 16;
+        var red = new TileImage(size);
+        var green = new TileImage(size);
+        var blue = new TileImage(size);
+        var height = new TileImage(size);
+
+        Array.Fill(red.Pixels, 0.47f);
+        Array.Fill(green.Pixels, 0.11f);
+        Array.Fill(blue.Pixels, 0.88f);
+        Array.Fill(height.Pixels, 0.3f);
+
+        var packed = MaterialMaps.Pack(red, green, blue, height);
+        var flat = MaterialMaps.Flat(size, 0.47f, 0.11f, 0.88f);
+
+        Assert.Equal(packed.AlbedoHeight, flat.AlbedoHeight);
+        Assert.Equal(packed.Normal, flat.Normal);
+    }
+
+    [Fact]
     public void LimestoneRepeatsEveryTile()
     {
         var random = new Random(3);

@@ -138,6 +138,42 @@ public class ShaderCompilerTests
     }
 
     [Fact]
+    public void ShaderCompiler_ReflectsA2DArrayApartFromA2DImage()
+    {
+        const string arrayShader = """
+        struct VertexInput {
+            float3 position : POSITION;
+        };
+
+        struct VertexOutput {
+            float4 position : SV_POSITION;
+        };
+
+        Texture2DArray layers;
+        Texture2D plain;
+        SamplerState samp;
+
+        [shader("vertex")]
+        VertexOutput vsMain(VertexInput input) {
+            VertexOutput output;
+            output.position = float4(input.position, 1.0);
+            return output;
+        }
+
+        [shader("fragment")]
+        float4 fsMain(VertexOutput input) : SV_TARGET {
+            return layers.Sample(samp, float3(0.5, 0.5, 1.0)) + plain.Sample(samp, float2(0.5, 0.5));
+        }
+        """;
+
+        using var compiler = new ShaderCompiler();
+        var compiled = compiler.Compile(arrayShader, "vsMain", "fsMain");
+
+        Assert.Equal(TextureType.Texture2DArray, compiled.Reflection.Parameters.Single(parameter => parameter.Name == "layers").TextureType);
+        Assert.Equal(TextureType.Texture2D, compiled.Reflection.Parameters.Single(parameter => parameter.Name == "plain").TextureType);
+    }
+
+    [Fact]
     public void ShaderCompiler_ReflectsFragmentEntryPoint()
     {
         using var compiler = new ShaderCompiler();

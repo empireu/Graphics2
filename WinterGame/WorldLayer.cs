@@ -282,8 +282,9 @@ internal sealed class WorldLayer : IDisposable
         var depth = _depthTextures![frame.SlotIndex];
         var normals = _normalTextures![frame.SlotIndex];
 
-        // The light engine places its window on the first tick, and until then there is no volume to light the sections with, so they are left out of the depth too:
+        // The light engine places its window on the first tick, and until then there is no volume to light the sections with, so they are left out of the depth too. The same holds for the terrain materials until their bake is uploaded:
         var lightVolume = _lightVolume.Texture;
+        var materials = _app.Materials;
 
         // A pixel the prepass leaves uncovered keeps the cleared depth, and the ambient occlusion reads no normal there, so the normals need no clear:
         var depthPassDescription = new RenderPassDescription
@@ -310,7 +311,7 @@ internal sealed class WorldLayer : IDisposable
 
         using (var depthPass = frame.BeginRenderPass(depthPassDescription))
         {
-            if (lightVolume != null)
+            if (lightVolume != null && materials.IsUploaded)
             {
                 _sections.DrawDepth(frame, depthPass, _geometry, lighting);
             }
@@ -343,9 +344,9 @@ internal sealed class WorldLayer : IDisposable
 
         using (var worldPass = frame.BeginRenderPass(worldPassDescription))
         {
-            if (lightVolume != null)
+            if (lightVolume != null && materials.IsUploaded)
             {
-                _sections.Draw(frame, worldPass, _geometry, lighting, _sunShadow.GetMap(frame), _sunShadow.Sampler, lightVolume, _lightVolume.Sampler, ambientOcclusion);
+                _sections.Draw(frame, worldPass, _geometry, lighting, _sunShadow.GetMap(frame), _sunShadow.Sampler, lightVolume, _lightVolume.Sampler, ambientOcclusion, materials);
             }
 
             // The sky fills only what the level left at the far plane, so it comes last:

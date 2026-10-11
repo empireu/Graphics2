@@ -98,8 +98,9 @@ internal sealed class SectionRenderer : IDisposable
     ///     Draws <paramref name="geometry"/>, prepared for this frame, into <paramref name="pass"/>, whose depth attachment holds <see cref="DrawDepth"/>'s depth of the same geometry and camera.
     ///     <paramref name="lighting"/> holds this frame's <see cref="FrameLighting"/>, and <paramref name="shadowMap"/> has to have been rendered in this frame already.
     ///     <paramref name="lightVolume"/> is the <see cref="LightVolume"/> that <paramref name="lighting"/> describes, and <paramref name="ambientOcclusion"/> is this frame's <see cref="AmbientOcclusion"/>.
+    ///     <paramref name="materials"/> has to be uploaded.
     /// </summary>
-    public void Draw(Frame frame, RenderPassEncoder pass, SectionGeometry geometry, RingAllocation lighting, VkTexture shadowMap, VkSampler shadowSampler, VkTexture lightVolume, VkSampler lightSampler, VkTexture ambientOcclusion)
+    public void Draw(Frame frame, RenderPassEncoder pass, SectionGeometry geometry, RingAllocation lighting, VkTexture shadowMap, VkSampler shadowSampler, VkTexture lightVolume, VkSampler lightSampler, VkTexture ambientOcclusion, TerrainMaterials materials)
     {
         WgAssert.DebugIsOnRenderThread();
 
@@ -117,6 +118,8 @@ internal sealed class SectionRenderer : IDisposable
         pass.BindTexture("lightVolume", lightVolume);
         pass.BindSampler("lightSampler", lightSampler);
         pass.BindTexture("ambientOcclusion", ambientOcclusion);
+        pass.BindTexture("materialAlbedo", materials.AlbedoHeight);
+        pass.BindSampler("materialSampler", materials.Sampler);
 
         geometry.Draw(pass);
     }

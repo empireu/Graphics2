@@ -1,3 +1,5 @@
+using Graphics2.Mathematics;
+
 namespace WinterGame.Materials;
 
 /// <summary>
@@ -74,6 +76,39 @@ public sealed class MaterialMaps
                 normal[texel + 2] = EncodeSigned(inverseLength);
                 normal[texel + 3] = 255;
             }
+        }
+
+        return new MaterialMaps(size, albedoHeight, normal);
+    }
+
+    /// <summary>
+    ///     A material of one colour with no relief, the maps <see cref="Pack"/> gives for planes of one albedo, in linear light, and one height.
+    /// </summary>
+    public static MaterialMaps Flat(int size, float red, float green, float blue)
+    {
+        if (!MathX.IsPowerOfTwo(size))
+        {
+            throw new ArgumentOutOfRangeException(nameof(size), size, "A material's size is a power of two.");
+        }
+
+        var albedoHeight = new byte[4 * size * size];
+        var normal = new byte[4 * size * size];
+        var redCode = EncodeSrgb(red);
+        var greenCode = EncodeSrgb(green);
+        var blueCode = EncodeSrgb(blue);
+        var level = EncodeSigned(0.0f);
+        var up = EncodeSigned(1.0f);
+
+        for (var texel = 0; texel < albedoHeight.Length; texel += 4)
+        {
+            albedoHeight[texel] = redCode;
+            albedoHeight[texel + 1] = greenCode;
+            albedoHeight[texel + 2] = blueCode;
+
+            normal[texel] = level;
+            normal[texel + 1] = level;
+            normal[texel + 2] = up;
+            normal[texel + 3] = 255;
         }
 
         return new MaterialMaps(size, albedoHeight, normal);

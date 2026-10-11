@@ -28,7 +28,20 @@ public class TextureDescriptionTests
     [Fact]
     public void Validate_AcceptsA2DArray()
     {
-        Create(TextureType.Texture2D, 1, 6).Validate();
+        Create(TextureType.Texture2DArray, 1, 6).Validate();
+        Create(TextureType.Texture2DArray, 1, 1).Validate();
+    }
+
+    [Fact]
+    public void Validate_RejectsA2DImageWithArrayLayers()
+    {
+        Assert.Throws<ArgumentException>(() => Create(TextureType.Texture2D, 1, 6).Validate());
+    }
+
+    [Fact]
+    public void Validate_RejectsA2DArrayWithDepth()
+    {
+        Assert.Throws<ArgumentException>(() => Create(TextureType.Texture2DArray, 36, 6).Validate());
     }
 
     [Fact]
@@ -65,10 +78,10 @@ public class TextureDescriptionTests
     [Fact]
     public void Validate_AcceptsACompleteChainAndRejectsALongerOne()
     {
-        Create(TextureType.Texture2D, 1, 6, width: 64, height: 16, mipLevels: 7).Validate();
+        Create(TextureType.Texture2DArray, 1, 6, width: 64, height: 16, mipLevels: 7).Validate();
         Create(TextureType.Texture3D, 128, 1, width: 4, height: 4, mipLevels: 8).Validate();
 
-        Assert.Throws<ArgumentOutOfRangeException>(() => Create(TextureType.Texture2D, 1, 6, width: 64, height: 16, mipLevels: 8).Validate());
+        Assert.Throws<ArgumentOutOfRangeException>(() => Create(TextureType.Texture2DArray, 1, 6, width: 64, height: 16, mipLevels: 8).Validate());
     }
 
     [Fact]

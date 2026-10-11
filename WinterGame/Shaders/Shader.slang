@@ -45,25 +45,20 @@ struct FrameLighting {
 // The fraction of the sky each pixel's surface sees past the geometry within AmbientOcclusion.Radius, read at the pixel:
 [[vk::binding(6, 0)]] Texture2D<float> ambientOcclusion;
 
+// The terrain's albedo in sRGB with its height in alpha, one layer per SurfaceMaterial id, as TerrainMaterials uploads it:
+[[vk::binding(7, 0)]] Texture2DArray materialAlbedo;
+
+// Trilinear and anisotropic with repeat addressing:
+[[vk::binding(8, 0)]] SamplerState materialSampler;
+
 // LightEngine.MaxLevel in C#:
 static const float MaxLightLevel = 8.0;
 
 // How much brighter the sun's disc is than the light it casts on a surface facing it. The real ratio is about 15000, and any value that saturates through the tonemap looks the same:
 static const float SunDiscBrightness = 50.0;
 
+// SurfaceMaterial.Count in C#, the layers of the material arrays:
 static const uint MaterialCount = 8;
-
-// Linear albedo, because the world renders into a linear float target and the tonemap pass's sRGB write converts it:
-static const float3 MaterialAlbedo[MaterialCount] = {
-    float3(0.17, 0.11, 0.06),   // rock, the generic fallback
-    float3(0.30, 0.38, 0.42),   // ice
-    float3(0.78, 0.82, 0.88),   // snow
-    float3(0.42, 0.31, 0.19),   // sandstone
-    float3(0.16, 0.18, 0.21),   // shale
-    float3(0.47, 0.46, 0.42),   // limestone
-    float3(0.10, 0.10, 0.12),   // basalt
-    float3(0.22, 0.20, 0.21)    // gneiss
-};
 
 // The debug view's colour for each shadow cascade, red, green and blue from the smallest:
 static const float3 ShadowCascadeTints[ShadowCascadeCount] = {
@@ -335,7 +330,15 @@ float4 fsMain(VertexOutput input) : SV_TARGET {
 
     // The air id is out of the palette, and a cell with no solid corner falls back to rock:
     uint material = input.material < MaterialCount ? input.material : 0;
-    float3 albedo = MaterialAlbedo[material];
+
+    uint albedoWidth;
+    uint albedoHeight;
+    uint albedoLayers;
+    uint albedoLevels;
+    materialAlbedo.GetDimensions(0, albedoWidth, albedoHeight, albedoLayers, albedoLevels);
+
+    // A layer's last level is one texel, its mean albedo, in linear light because the sRGB format decodes it:
+    float3 albedo = materialAlbedo.SampleLevel(materialSampler, float3(0.5, 0.5, material), albedoLevels - 1).rgb;
 
     // A derivative needs every pixel of the quad to reach it, so these are taken before the shadow's branch:
     float3 positionDx = ddx(input.worldPosition);
