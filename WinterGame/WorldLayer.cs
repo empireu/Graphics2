@@ -259,12 +259,15 @@ internal sealed class WorldLayer : IDisposable
         MemoryMarshal.Write(lighting.Data, frameLighting);
 
         _geometry.Prepare(frame);
+        frame.WriteTimestamp("Mesh uploads");
 
         // At night the sun lights nothing, so its map is only cleared:
         _sunShadow.Render(frame, _daylight.SunIsUp ? _geometry : null, frameLighting.ShadowCascades);
+        frame.WriteTimestamp("Sun shadow");
 
         // The copy waits for every command before it, so it comes after the shadow pass, and only the world pass waits for the copy:
         _lightVolume.Upload(frame);
+        frame.WriteTimestamp("Light volume");
 
         _textRenderer.SetCamera(viewProj);
         _lineRenderer3D.SetCamera(viewProj, _camera.Position);
@@ -313,6 +316,8 @@ internal sealed class WorldLayer : IDisposable
             }
         }
 
+        frame.WriteTimestamp("Depth prepass");
+
         var ambientOcclusion = _ambientOcclusion.Render(frame, depth, normals, _camera);
 
         var worldPassDescription = new RenderPassDescription
@@ -347,7 +352,10 @@ internal sealed class WorldLayer : IDisposable
             _sky.Draw(frame, worldPass, lighting);
         }
 
+        frame.WriteTimestamp("World");
+
         _exposure.Measure(frame, scene);
+        frame.WriteTimestamp("Exposure meter");
 
         var displayPassDescription = new RenderPassDescription
         {
@@ -377,6 +385,8 @@ internal sealed class WorldLayer : IDisposable
             _lineRenderer3D.Submit(frame, displayPass);
             _textRenderer.Submit(frame, displayPass);
         }
+
+        frame.WriteTimestamp("Tone map and debug");
     }
 
     public void DrawPanel()

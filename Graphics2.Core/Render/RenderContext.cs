@@ -13,6 +13,9 @@ public sealed unsafe class RenderContext : IDisposable
     private VkTexture[] _swapchainTargets = [];
     private readonly DescriptorPool[] _descriptorPools;
     private readonly List<IDisposable>[] _deferredDisposals;
+    private readonly FrameTimestamps?[] _timestamps;
+    private readonly GpuTiming[] _gpuTimings = new GpuTiming[Frame.MaxTimestamps];
+    private int _gpuTimingCount;
 
     /// <summary>
     ///     Pending copy barriers live here rather than on the frame.
@@ -41,11 +44,13 @@ public sealed unsafe class RenderContext : IDisposable
 
         _descriptorPools = new DescriptorPool[framesInFlight];
         _deferredDisposals = new List<IDisposable>[framesInFlight];
+        _timestamps = new FrameTimestamps?[framesInFlight];
 
         for (var i = 0; i < framesInFlight; i++)
         {
             _descriptorPools[i] = CreateDescriptorPool(device);
             _deferredDisposals[i] = [];
+            _timestamps[i] = FrameTimestamps.Create(device);
         }
     }
 
@@ -54,6 +59,12 @@ public sealed unsafe class RenderContext : IDisposable
     public Extent2D Extent { get; private set; }
     
     public readonly uint FramesInFlight;
+
+    /// <summary>
+    ///     The GPU time of each stretch the newest finished frame marked with <see cref="Frame.WriteTimestamp"/>, in the order written. That frame is <see cref="FramesInFlight"/> frames old.
+    ///     Empty when the device's queue writes no timestamps.
+    /// </summary>
+    public ReadOnlySpan<GpuTiming> GpuTimings => _gpuTimings.AsSpan(0, _gpuTimingCount);
 
     private const long RingCapacity = 16 * 1024 * 1024;
 
@@ -132,6 +143,18 @@ public sealed unsafe class RenderContext : IDisposable
 
         RunDisposalsForFrame(frameIndex);
 
+        var timestamps = _timestamps[frameIndex];
+
+        if (timestamps != null)
+        {
+            var timingCount = timestamps.Read(_gpuTimings);
+
+            if (timingCount >= 0)
+            {
+                _gpuTimingCount = timingCount;
+            }
+        }
+
         slot.Reset();
         slot.UniformRing.Reset();
         slot.StorageRing.Reset();
@@ -164,7 +187,9 @@ public sealed unsafe class RenderContext : IDisposable
             throw new VkBootstrapException("Failed to begin command buffer");
         }
 
-        return new Frame(_device, descriptorPool, slot.CommandBuffer, imageIndex, frameIndex, _swapchainTargets[imageIndex], Swapchain.Extent, slot.UniformRing, slot.StorageRing, slot.GeometryRing, _deferredDisposals[frameIndex], _pendingCopies, _pendingImageCopies);
+        timestamps?.Begin(slot.CommandBuffer);
+
+        return new Frame(_device, descriptorPool, slot.CommandBuffer, imageIndex, frameIndex, _swapchainTargets[imageIndex], Swapchain.Extent, slot.UniformRing, slot.StorageRing, slot.GeometryRing, _deferredDisposals[frameIndex], _pendingCopies, _pendingImageCopies, timestamps);
     }
 
     /// <summary>
@@ -238,6 +263,11 @@ public sealed unsafe class RenderContext : IDisposable
         foreach (var pool in _descriptorPools)
         {
             vk.DestroyDescriptorPool(_device.Device, pool, null);
+        }
+
+        foreach (var timestamps in _timestamps)
+        {
+            timestamps?.Dispose();
         }
 
         foreach (var sem in _renderFinishedSemaphores)

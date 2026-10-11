@@ -98,6 +98,8 @@ internal sealed class AmbientOcclusion : IDisposable
             pass.Draw(3);
         }
 
+        frame.WriteTimestamp("GTAO");
+
         using (var pass = BeginPass(frame, _filtered![slot]))
         {
             pass.SetPipeline(_filter);
@@ -107,6 +109,8 @@ internal sealed class AmbientOcclusion : IDisposable
             pass.PushConstants(constants);
             pass.Draw(3);
         }
+
+        frame.WriteTimestamp("AO filter");
 
         return _filtered[slot];
     }

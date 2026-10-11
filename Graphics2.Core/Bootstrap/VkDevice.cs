@@ -222,9 +222,19 @@ public sealed unsafe class VkDevice : IDisposable
         public ulong MinUniformBufferOffsetAlignment { get; init; }
 
         public ulong MinStorageBufferOffsetAlignment { get; init; }
-        
+
         public float[] LineWidthRange { get; init; }
-    }    
+
+        /// <summary>
+        ///     Nanoseconds per tick of a timestamp.
+        /// </summary>
+        public float TimestampPeriod { get; init; }
+
+        /// <summary>
+        ///     The bits a timestamp written on <see cref="ChosenGraphicsPresentFamily"/> holds, 0 where its queues write none.
+        /// </summary>
+        public uint TimestampValidBits { get; init; }
+    }
     // ReSharper restore UnusedAutoPropertyAccessor.Global
 
     private static bool TryFindDevice(
@@ -338,7 +348,9 @@ public sealed unsafe class VkDevice : IDisposable
                 DeviceLocalMemory = DeviceLocalMemoryBytes(instance.Vk, device),
                 MinUniformBufferOffsetAlignment = properties.Limits.MinUniformBufferOffsetAlignment,
                 MinStorageBufferOffsetAlignment = properties.Limits.MinStorageBufferOffsetAlignment,
-                LineWidthRange = [properties.Limits.LineWidthRange[0], properties.Limits.LineWidthRange[1]]
+                LineWidthRange = [properties.Limits.LineWidthRange[0], properties.Limits.LineWidthRange[1]],
+                TimestampPeriod = properties.Limits.TimestampPeriod,
+                TimestampValidBits = GetTimestampValidBits(instance.Vk, device, intersection[0])
             };
         }).Where(x => x.HasValue).Select(x => x!.Value).ToList();
 
@@ -368,7 +380,18 @@ public sealed unsafe class VkDevice : IDisposable
         
         return total;
     }
-    
+
+    private static uint GetTimestampValidBits(Vk vk, PhysicalDevice device, uint family)
+    {
+        uint familyCount = 0;
+        vk.GetPhysicalDeviceQueueFamilyProperties(device, &familyCount, null);
+
+        Span<QueueFamilyProperties> families = stackalloc QueueFamilyProperties[(int)familyCount];
+        vk.GetPhysicalDeviceQueueFamilyProperties(device, ref familyCount, out families.GetPinnableReference());
+
+        return families[(int)family].TimestampValidBits;
+    }
+
     private readonly struct SurfaceTarget(KhrSurface khrSurface, SurfaceKHR surface)
     {
         public readonly KhrSurface KhrSurface = khrSurface;

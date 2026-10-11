@@ -18,6 +18,12 @@ public sealed unsafe class Frame
     internal readonly HashSet<ulong> PendingCopies;
     internal readonly HashSet<VkTexture> PendingImageCopies;
     private readonly List<IDisposable> _deferredDisposals;
+    private readonly FrameTimestamps? _timestamps;
+
+    /// <summary>
+    ///     The most timestamps one frame can write with <see cref="WriteTimestamp"/>.
+    /// </summary>
+    public const int MaxTimestamps = 64;
 
     public VkTexture SwapchainColorTarget { get; }
 
@@ -34,7 +40,7 @@ public sealed unsafe class Frame
     /// </summary>
     internal bool PassOpen { get; set; }
 
-    internal Frame(VkDevice device, DescriptorPool descriptorPool, CommandBuffer commandBuffer, uint imageIndex, uint slotIndex, VkTexture swapchainColorTarget, Extent2D extent, UploadRing uniformRing, UploadRing storageRing, UploadRing geometryRing, List<IDisposable> deferredDisposals, HashSet<ulong> pendingCopies, HashSet<VkTexture> pendingImageCopies)
+    internal Frame(VkDevice device, DescriptorPool descriptorPool, CommandBuffer commandBuffer, uint imageIndex, uint slotIndex, VkTexture swapchainColorTarget, Extent2D extent, UploadRing uniformRing, UploadRing storageRing, UploadRing geometryRing, List<IDisposable> deferredDisposals, HashSet<ulong> pendingCopies, HashSet<VkTexture> pendingImageCopies, FrameTimestamps? timestamps)
     {
         Device = device;
         DescriptorPool = descriptorPool;
@@ -49,6 +55,7 @@ public sealed unsafe class Frame
         PendingCopies = pendingCopies;
         PendingImageCopies = pendingImageCopies;
         _deferredDisposals = deferredDisposals;
+        _timestamps = timestamps;
     }
 
     /// <summary>
@@ -291,6 +298,23 @@ public sealed unsafe class Frame
     }
 
     public RenderPassEncoder BeginRenderPass(RenderPassDescription description) => RenderPassEncoder.Begin(this, description);
+
+    /// <summary>
+    ///     Marks the time at which the GPU has finished every command recorded before this call. The frame keeps <paramref name="label"/>, so it should be a constant.
+    ///     <see cref="RenderContext.GpuTimings"/> reports the time from the mark before, or from the frame's start, once this frame's slot comes round again.
+    ///     Does nothing on a device whose queue writes no timestamps. No pass may be open.
+    /// </summary>
+    public void WriteTimestamp(string label)
+    {
+        ArgumentNullException.ThrowIfNull(label);
+
+        if (PassOpen)
+        {
+            throw new InvalidOperationException("A timestamp marks the end of a pass, so it cannot be written while a render pass is open.");
+        }
+
+        _timestamps?.Write(CommandBuffer, label);
+    }
 
     private void ValidateNotInRenderPass()
     {

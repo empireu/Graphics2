@@ -26,7 +26,20 @@ internal sealed class App(ApplicationDescription description) : Application(desc
 
     private static readonly Vector4 ClearColor = new(0.1f, 0.1f, 0.1f, 1.0f);
 
+    /// <summary>
+    ///     The weight of each frame's GPU timing in its running average, which settles in about a third of a second at 60 Hz.
+    /// </summary>
+    private const double GpuTimingWeight = 0.05;
+
     private readonly FrameTimeTracker _tracker = new(4000 * 5);
+
+    /// <summary>
+    ///     The running average of each GPU timing by its place in the frame, restarted when the label at that place changes.
+    /// </summary>
+    private readonly string?[] _gpuLabels = new string?[Frame.MaxTimestamps];
+    private readonly double[] _gpuMilliseconds = new double[Frame.MaxTimestamps];
+    private int _gpuTimingCount;
+
     private ImGuiRenderer? _imGui;
     private Vector2D<int> _framebufferSize;
     private SessionRequest _sessionRequest;
@@ -93,6 +106,7 @@ internal sealed class App(ApplicationDescription description) : Application(desc
         SetImGuiMouseEnabled(!sessionHasFocus);
         _imGui!.Update((float)deltaTime, input, G2Wnd.Window.FramebufferSize);
         _tracker.Update();
+        AverageGpuTimings();
 
         HandleEscape(input);
 
@@ -200,9 +214,43 @@ internal sealed class App(ApplicationDescription description) : Application(desc
             ImGui.Text($"  P50: {_tracker.MedianMilliseconds * 1000:F2}us");
             ImGui.Text($"  P95: {_tracker.P95Milliseconds * 1000:F2}us");
             ImGui.Text($"  P99: {_tracker.P99Milliseconds * 1000:F2}us");
+            ImGui.Separator();
+            ImGui.Text("GPU (averaged):");
+
+            var total = 0.0;
+
+            for (var index = 0; index < _gpuTimingCount; index++)
+            {
+                ImGui.Text($"  {_gpuLabels[index]}: {_gpuMilliseconds[index] * 1000:F0}us");
+                total += _gpuMilliseconds[index];
+            }
+
+            ImGui.Text($"  Total: {total * 1000:F0}us");
         }
 
         ImGui.End();
+    }
+
+    private void AverageGpuTimings()
+    {
+        var timings = Context!.GpuTimings;
+
+        for (var index = 0; index < timings.Length; index++)
+        {
+            var timing = timings[index];
+
+            if (_gpuLabels[index] != timing.Label)
+            {
+                _gpuLabels[index] = timing.Label;
+                _gpuMilliseconds[index] = timing.Milliseconds;
+            }
+            else
+            {
+                _gpuMilliseconds[index] += (timing.Milliseconds - _gpuMilliseconds[index]) * GpuTimingWeight;
+            }
+        }
+
+        _gpuTimingCount = timings.Length;
     }
 
     /// <summary>
@@ -210,7 +258,7 @@ internal sealed class App(ApplicationDescription description) : Application(desc
     /// </summary>
     private void SubmitUi(Frame frame, bool clear)
     {
-        using var pass = frame.BeginRenderPass(new RenderPassDescription
+        using (var pass = frame.BeginRenderPass(new RenderPassDescription
         {
             ColorAttachments =
             [
@@ -223,8 +271,11 @@ internal sealed class App(ApplicationDescription description) : Application(desc
                     FinalLayout = TextureLayout.Present
                 }
             ]
-        });
+        }))
+        {
+            _imGui!.Submit(frame, pass);
+        }
 
-        _imGui!.Submit(frame, pass);
+        frame.WriteTimestamp("UI");
     }
 }
