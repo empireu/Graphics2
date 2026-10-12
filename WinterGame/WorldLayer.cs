@@ -96,6 +96,8 @@ internal sealed class WorldLayer : IDisposable
 
     private bool _normalMapOcclusion = true;
 
+    private bool _materialVariants = true;
+
     /// <summary>
     ///     The light direction the shadow cascades are rendered for, which follows the sun unless <see cref="_freezeShadowDirection"/> holds it.
     /// </summary>
@@ -246,7 +248,7 @@ internal sealed class WorldLayer : IDisposable
             SkyHorizon = new Vector4(_daylight.SkyHorizon, 0.0f),
             LightVolumePlacement = _lightVolume.ShaderParameters,
             FogParameters = new Vector4(HazeDensity, FogStart, FogEnd, 0.0f),
-            DebugOptions = new Vector4(_debugView, _normalMapNormals ? 1.0f : 0.0f, _normalMapOcclusion ? 1.0f : 0.0f, 0.0f)
+            DebugOptions = new Vector4(_debugView, _normalMapNormals ? 1.0f : 0.0f, _normalMapOcclusion ? 1.0f : 0.0f, _materialVariants ? 1.0f : 0.0f)
         };
 
         if (!_freezeShadowDirection)
@@ -418,6 +420,7 @@ internal sealed class WorldLayer : IDisposable
             ImGui.Checkbox("Freeze shadow direction", ref _freezeShadowDirection);
             ImGui.Checkbox("Normal map normals", ref _normalMapNormals);
             ImGui.Checkbox("Normal map occlusion", ref _normalMapOcclusion);
+            ImGui.Checkbox("Material variants", ref _materialVariants);
 
             for (var cascade = 0; cascade < SunShadow.CascadeCount; cascade++)
             {

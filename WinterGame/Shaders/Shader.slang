@@ -80,6 +80,17 @@ static const float2 ProjectionOffsetZ = float2(0.25, 0.5);
 // A surface facing the negative side of an axis shifts that axis's projection further, so the opposite walls of a narrow cut do not show the same features mirrored. The shift changes only where the axis has no weight:
 static const float2 OppositeSideShift = float2(0.5, 0.375);
 
+// The material maps have this many variants, each the tile shifted by its own amount, and a slow noise over the world picks one per point, so the tile does not repeat every TileMetres:
+static const uint VariantCount = 8;
+
+// The sizes in metres of the two octaves of that noise. A variant holds for a few metres:
+static const float VariantNoiseMetres = 20.0;
+static const float VariantDetailMetres = 7.0;
+
+// Where two variants meet, the one whose maps are higher shows, as between the projection axes. A variant can outgrow the other only within (1 + VariantBlendRange) / (2 * VariantBlendScale) of a band's edge, measured in bands:
+static const float VariantBlendScale = 10.0;
+static const float VariantBlendRange = 0.2;
+
 // The debug view's colour for each shadow cascade, red, green and blue from the smallest:
 static const float3 ShadowCascadeTints[ShadowCascadeCount] = {
     float3(1.0, 0.45, 0.45),
@@ -358,12 +369,46 @@ float3 ApplyFog(float3 color, float3 worldPosition) {
     return lerp(color, SkyRadiance(direction) + SunGlow(direction), FogAmount(distance, length(toPoint.xz)));
 }
 
+// A random value in [0, 1) for a lattice cell, from MurmurHash3's finalizer over the combined coordinates:
+float CellValue(int3 cell) {
+    uint hash = uint(cell.x) * 0x85EBCA77u ^ uint(cell.y) * 0xC2B2AE3Du ^ uint(cell.z) * 0x27D4EB2Fu;
+    hash ^= hash >> 16;
+    hash *= 0x7FEB352Du;
+    hash ^= hash >> 15;
+    hash *= 0x846CA68Bu;
+    hash ^= hash >> 16;
+    return float(hash >> 8) * (1.0 / 16777216.0);
+}
+
+// Value noise in [0, 1) over a lattice of unit cells, smoothed by the quintic fade:
+float ValueNoise(float3 position) {
+    float3 floored = floor(position);
+    float3 fraction = position - floored;
+    float3 fade = fraction * fraction * fraction * (fraction * (fraction * 6.0 - 15.0) + 10.0);
+    int3 cell = int3(floored);
+
+    float4 low = float4(CellValue(cell), CellValue(cell + int3(1, 0, 0)), CellValue(cell + int3(0, 1, 0)), CellValue(cell + int3(1, 1, 0)));
+    float4 high = float4(CellValue(cell + int3(0, 0, 1)), CellValue(cell + int3(1, 0, 1)), CellValue(cell + int3(0, 1, 1)), CellValue(cell + int3(1, 1, 1)));
+    float4 corners = lerp(low, high, fade.z);
+    float2 rows = lerp(corners.xz, corners.yw, fade.x);
+    return lerp(rows.x, rows.y, fade.y);
+}
+
+// Which variant of the material maps a world position reads, as a position in [0, VariantCount) along the variants, so a variant holds between two whole numbers:
+float VariantPosition(float3 worldPosition) {
+    float noise = 0.7 * ValueNoise(worldPosition / VariantNoiseMetres) + 0.3 * ValueNoise(worldPosition / VariantDetailMetres + 17.0);
+    return noise * VariantCount;
+}
+
 struct SurfaceDetail {
     float3 albedo;
     float3 normal;
 
     // The fraction of the sky the texture's relief leaves the point:
     float occlusion;
+
+    // The maps' height at the point, in [0, 1]:
+    float height;
 };
 
 // One projection's normal map read at uv, its x and y along the projection's u and v, and in w the fraction of the sky the relief leaves:
@@ -374,19 +419,21 @@ float4 ProjectedNormal(float layer, float2 uv, float2 uvDx, float2 uvDy) {
 
 // A material layer's albedo and detailed normal at a point, from three projections along the world axes, blended by the unit geometric normal and the layer's height.
 // The projection along x maps z and y to the texture's u and v, the one along y maps x and z, and the one along z maps x and y. Golus's whiteout blend turns each projection's normal into world space.
-// An axis that cannot reach the height blend's top anywhere is not read. Every read takes gradients from before the branches, because an implicit derivative in divergent control flow is undefined:
-SurfaceDetail MaterialDetail(uint material, float3 tilePosition, float3 normal) {
+// A variant shifts the projections from above in both directions and the others only along u, so a structure along the rows stays level on a wall.
+// An axis that cannot reach the height blend's top anywhere is not read. Every read takes its gradients from the caller, because an implicit derivative in divergent control flow is undefined:
+SurfaceDetail MaterialDetail(uint material, uint variant, float3 tilePosition, float3 positionDx, float3 positionDy, float3 normal) {
     float3 squared = normal * normal;
     float3 axisWeights = squared * squared;
     axisWeights /= axisWeights.x + axisWeights.y + axisWeights.z;
 
-    float3 positionDx = ddx(tilePosition);
-    float3 positionDy = ddy(tilePosition);
     float layer = material;
 
-    float2 uvX = tilePosition.zy + ProjectionOffsetX + (normal.x < 0.0 ? OppositeSideShift : 0.0);
-    float2 uvY = tilePosition.xz + ProjectionOffsetY + (normal.y < 0.0 ? OppositeSideShift : 0.0);
-    float2 uvZ = tilePosition.xy + ProjectionOffsetZ + (normal.z < 0.0 ? OppositeSideShift : 0.0);
+    // The fractions of the golden ratio spread the variants' shifts evenly over the tile:
+    float2 variantShift = frac(float(variant) * float2(0.618034, 0.381966));
+
+    float2 uvX = tilePosition.zy + ProjectionOffsetX + (normal.x < 0.0 ? OppositeSideShift : 0.0) + float2(variantShift.x, 0.0);
+    float2 uvY = tilePosition.xz + ProjectionOffsetY + (normal.y < 0.0 ? OppositeSideShift : 0.0) + variantShift;
+    float2 uvZ = tilePosition.xy + ProjectionOffsetZ + (normal.z < 0.0 ? OppositeSideShift : 0.0) + float2(variantShift.y, 0.0);
 
     // An axis at its highest point has 1 + its weighted term, and the strongest axis has at least its own weighted term:
     float largest = max(axisWeights.x, max(axisWeights.y, axisWeights.z));
@@ -403,6 +450,7 @@ SurfaceDetail MaterialDetail(uint material, float3 tilePosition, float3 normal) 
 
     SurfaceDetail detail;
     detail.albedo = albedoX.rgb * weights.x + albedoY.rgb * weights.y + albedoZ.rgb * weights.z;
+    detail.height = albedoX.a * weights.x + albedoY.a * weights.y + albedoZ.a * weights.z;
 
     float3 blended = 0.0;
     detail.occlusion = 0.0;
@@ -429,6 +477,37 @@ SurfaceDetail MaterialDetail(uint material, float3 tilePosition, float3 normal) 
     return detail;
 }
 
+// The material's detail where the world's noise picks a variant, two variants blended by their heights near the edge between them.
+// The variant the point lies in is favoured by its distance from the edge, so the other is read only where it can still show:
+SurfaceDetail VariedMaterialDetail(uint material, float3 worldPosition, float3 tilePosition, float3 positionDx, float3 positionDy, float3 normal) {
+    float variantPosition = VariantPosition(worldPosition);
+    float edge = round(variantPosition);
+    float fromEdge = variantPosition - edge;
+
+    // Either side of an edge at a whole number e lie the variants e - 1 and e:
+    uint below = uint(edge + VariantCount - 1.0) % VariantCount;
+    uint above = uint(edge) % VariantCount;
+
+    SurfaceDetail detail = MaterialDetail(material, fromEdge < 0.0 ? below : above, tilePosition, positionDx, positionDy, normal);
+
+    float bias = abs(fromEdge) * VariantBlendScale;
+
+    if (2.0 * bias < 1.0 + VariantBlendRange) {
+        SurfaceDetail other = MaterialDetail(material, fromEdge < 0.0 ? above : below, tilePosition, positionDx, positionDy, normal);
+
+        float2 heights = float2(detail.height + bias, other.height - bias);
+        float2 lift = max(heights - (max(heights.x, heights.y) - VariantBlendRange), 0.0);
+        float otherWeight = lift.y / (lift.x + lift.y);
+
+        detail.albedo = lerp(detail.albedo, other.albedo, otherWeight);
+        detail.normal = normalize(lerp(detail.normal, other.normal, otherWeight));
+        detail.occlusion = lerp(detail.occlusion, other.occlusion, otherWeight);
+        detail.height = lerp(detail.height, other.height, otherWeight);
+    }
+
+    return detail;
+}
+
 [shader("fragment")]
 float4 fsMain(VertexOutput input) : SV_TARGET {
     float3 normal = normalize(input.normal);
@@ -436,8 +515,20 @@ float4 fsMain(VertexOutput input) : SV_TARGET {
     // The air id is out of the palette, and a cell with no solid corner falls back to rock:
     uint material = input.material < MaterialCount ? input.material : 0;
 
-    // The sun and the sky shade the detailed normal, while the shadow and the sky visibility keep the geometric one, which their filters are built around:
-    SurfaceDetail detail = MaterialDetail(material, input.tilePosition, normal);
+    float3 tileDx = ddx(input.tilePosition);
+    float3 tileDy = ddy(input.tilePosition);
+
+    // The sun and the sky shade the detailed normal, while the shadow and the sky visibility keep the geometric one, which their filters are built around.
+    // The World panel can turn off the variants, so every point reads the first:
+    SurfaceDetail detail;
+
+    if (lighting.debugOptions.w != 0.0) {
+        detail = VariedMaterialDetail(material, input.worldPosition, input.tilePosition, tileDx, tileDy, normal);
+    }
+    else {
+        detail = MaterialDetail(material, 0, input.tilePosition, tileDx, tileDy, normal);
+    }
+
     float3 albedo = detail.albedo;
 
     // The World panel can turn off the normal map's normals and its occlusion:
