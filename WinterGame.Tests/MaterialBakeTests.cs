@@ -175,20 +175,19 @@ public class MaterialBakeTests
     [Fact]
     public void LimestoneRepeatsEveryTile()
     {
-        var random = new Random(3);
+        AssertRepeatsEveryTile(MaterialRecipes.LimestoneAt, 3);
+    }
 
-        for (var sample = 0; sample < 200; sample++)
-        {
-            var u = random.NextSingle();
-            var v = random.NextSingle();
-            var point = MaterialRecipes.LimestoneAt(u, v);
-            var shifted = MaterialRecipes.LimestoneAt(u + 1.0f, v - 1.0f);
+    [Fact]
+    public void SnowRepeatsEveryTile()
+    {
+        AssertRepeatsEveryTile(MaterialRecipes.SnowAt, 4);
+    }
 
-            Assert.Equal(point.Height, shifted.Height, 1e-4f);
-            Assert.Equal(point.Red, shifted.Red, 1e-3f);
-            Assert.Equal(point.Green, shifted.Green, 1e-3f);
-            Assert.Equal(point.Blue, shifted.Blue, 1e-3f);
-        }
+    [Fact]
+    public void IceRepeatsEveryTile()
+    {
+        AssertRepeatsEveryTile(MaterialRecipes.IceAt, 5);
     }
 
     [Fact]
@@ -204,6 +203,27 @@ public class MaterialBakeTests
         for (var channel = 0; channel < 3; channel++)
         {
             AssertSeamless(maps.Normal, maps.Size, channel);
+        }
+    }
+
+    /// <summary>
+    ///     Compares a surface function at random points with the same points shifted by whole tiles.
+    /// </summary>
+    private static void AssertRepeatsEveryTile(Func<float, float, SurfacePoint> surface, int seed)
+    {
+        var random = new Random(seed);
+
+        for (var sample = 0; sample < 200; sample++)
+        {
+            var u = random.NextSingle();
+            var v = random.NextSingle();
+            var point = surface(u, v);
+            var shifted = surface(u + 1.0f, v - 1.0f);
+
+            Assert.Equal(point.Height, shifted.Height, 1e-4f);
+            Assert.Equal(point.Red, shifted.Red, 1e-3f);
+            Assert.Equal(point.Green, shifted.Green, 1e-3f);
+            Assert.Equal(point.Blue, shifted.Blue, 1e-3f);
         }
     }
 

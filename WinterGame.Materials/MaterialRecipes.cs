@@ -79,6 +79,85 @@ public static class MaterialRecipes
         );
     }
 
+    /// <summary>
+    ///     Wind-packed snow: ripples the wind left, stronger in some places than in others, over a fine crust, with almost no change in colour.
+    /// </summary>
+    public static MaterialMaps Snow(int size)
+    {
+        return SurfacePlanes.Evaluate(size, SnowAt).Pack();
+    }
+
+    /// <summary>
+    ///     Snow at one point of the tile.
+    /// </summary>
+    internal static SurfacePoint SnowAt(float u, float v)
+    {
+        // The ripples run across the wind about 24 cm apart, rising slowly on the windward side and falling steeply on the lee:
+        var phase = Fraction(16.0f * u + 5.0f * v + 0.8f * TileNoise.Fractal(u, v, 2, 2, 0.5f, 201));
+        var ripple = phase < 0.65f ? SmoothStep(0.0f, 0.65f, phase) : 1.0f - SmoothStep(0.65f, 1.0f, phase);
+        var strength = 0.6f + 0.4f * SmoothStep(-0.5f, 0.5f, TileNoise.Fractal(u, v, 4, 2, 0.5f, 202));
+
+        // The swells are left to the terrain. Lumps of noise under the ripples, even 0.9 m ones, drew a grid with them in a low sun:
+        var height = 0.012f * strength * ripple + 0.0015f * TileNoise.Fractal(u, v, 64, 3, 0.5f, 206);
+
+        var tone = 1.0f + 0.025f * TileNoise.Fractal(u, v, 6, 3, 0.5f, 207) + 0.01f * TileNoise.Gradient(u, v, 64, 208);
+
+        return new SurfacePoint(height, 0.785f * tone, 0.825f * tone, 0.885f * tone);
+    }
+
+    /// <summary>
+    ///     Glacier ice: dark clear ice with pale layers of trapped bubbles along the rows, scattered bubbles, a few white fractures, and a surface scalloped by melting.
+    /// </summary>
+    public static MaterialMaps Ice(int size)
+    {
+        return SurfacePlanes.Evaluate(size, IceAt).Pack();
+    }
+
+    /// <summary>
+    ///     Ice at one point of the tile.
+    /// </summary>
+    internal static SurfacePoint IceAt(float u, float v)
+    {
+        var warpU = u + 0.03f * TileNoise.Fractal(u, v, 4, 3, 0.5f, 301);
+        var warpV = v + 0.03f * TileNoise.Fractal(u, v, 4, 3, 0.5f, 302);
+
+        // The bubble layers follow the zero lines of a noise six times longer along u than across it, and fade out in places:
+        var layerNoise = TileNoise.Fractal(warpU, 6.0f * warpV, 2, 3, 0.5f, 303);
+        var layers = (1.0f - SmoothStep(0.0f, 0.12f, MathF.Abs(layerNoise))) * SmoothStep(-0.3f, 0.3f, TileNoise.Fractal(u, v, 5, 2, 0.5f, 311));
+
+        // Bubbles 6 to 15 mm in radius, more of them in the layers:
+        var bubbles = TileNoise.Cellular(warpU, warpV, 40, 0.9f, 304);
+        var bubbleRadius = 0.06f + 0.09f * bubbles.RegionValue;
+        var bubble = bubbles.RegionValue < 0.1f + 0.4f * layers ? 1.0f - SmoothStep(0.6f * bubbleRadius, bubbleRadius, bubbles.Distance) : 0.0f;
+
+        var fractures = TileNoise.Cellular(warpU, warpV, 3, 1.0f, 305);
+        var fractureOpenness = SmoothStep(0.1f, 0.35f, TileNoise.Fractal(u, v, 4, 3, 0.5f, 306));
+        var fracture = fractureOpenness * (1.0f - SmoothStep(0.0f, 0.005f, fractures.EdgeDistance * (MaterialMaps.TileMetres / 3)));
+
+        // Melting leaves shallow dishes with ridges between them:
+        var scallops = TileNoise.Cellular(warpU, warpV, 14, 1.0f, 307);
+
+        var height = 0.02f * Square(scallops.Distance)
+                     + 0.02f * TileNoise.Fractal(u, v, 4, 3, 0.5f, 308)
+                     + 0.002f * TileNoise.Fractal(u, v, 48, 2, 0.5f, 309)
+                     - 0.002f * fracture;
+
+        var whiteness = Math.Clamp(0.45f * layers + 0.8f * bubble + 0.7f * fracture, 0.0f, 1.0f);
+        var tone = 1.0f + 0.04f * TileNoise.Fractal(u, v, 8, 3, 0.5f, 310);
+
+        return new SurfacePoint(
+            height,
+            tone * MathX.Lerp(0.27f, 0.58f, whiteness),
+            tone * MathX.Lerp(0.36f, 0.66f, whiteness),
+            tone * MathX.Lerp(0.41f, 0.70f, whiteness)
+        );
+    }
+
+    private static float Fraction(float value)
+    {
+        return value - MathF.Floor(value);
+    }
+
     private static float SmoothStep(float edge0, float edge1, float value)
     {
         return MathX.CheckedMapSmoothStepNonsingular(edge0, edge1, value);

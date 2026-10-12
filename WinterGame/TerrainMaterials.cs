@@ -132,8 +132,8 @@ internal sealed class TerrainMaterials : IDisposable
         var layers = new LayerSource[SurfaceMaterial.Count];
 
         layers[SurfaceMaterial.Rock] = new LayerSource(new Vector3(0.17f, 0.11f, 0.06f));
-        layers[SurfaceMaterial.Ice] = new LayerSource(new Vector3(0.30f, 0.38f, 0.42f));
-        layers[SurfaceMaterial.Snow] = new LayerSource(new Vector3(0.78f, 0.82f, 0.88f));
+        layers[SurfaceMaterial.Ice] = new LayerSource(new Vector3(0.30f, 0.38f, 0.42f), MaterialRecipes.Ice);
+        layers[SurfaceMaterial.Snow] = new LayerSource(new Vector3(0.78f, 0.82f, 0.88f), MaterialRecipes.Snow);
         layers[SurfaceMaterial.Sandstone] = new LayerSource(new Vector3(0.42f, 0.31f, 0.19f));
         layers[SurfaceMaterial.Shale] = new LayerSource(new Vector3(0.16f, 0.18f, 0.21f));
         layers[SurfaceMaterial.Limestone] = new LayerSource(new Vector3(0.47f, 0.46f, 0.42f), MaterialRecipes.Limestone);

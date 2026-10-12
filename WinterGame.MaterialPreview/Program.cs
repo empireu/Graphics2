@@ -1,10 +1,13 @@
 using System.Diagnostics;
+using Graphics2.Mathematics;
 using WinterGame.MaterialPreview;
 using WinterGame.Materials;
 
 var recipes = new Dictionary<string, Func<int, MaterialMaps>>(StringComparer.OrdinalIgnoreCase)
 {
-    ["limestone"] = MaterialRecipes.Limestone
+    ["limestone"] = MaterialRecipes.Limestone,
+    ["snow"] = MaterialRecipes.Snow,
+    ["ice"] = MaterialRecipes.Ice
 };
 
 var size = 1024;
@@ -51,7 +54,8 @@ foreach (var name in names)
     maps = recipe(size);
     var warm = stopwatch.Elapsed.TotalMilliseconds;
 
-    Console.WriteLine($"  {name}: first bake {first:F0} ms, warm {warm:F0} ms");
+    var meanAlbedo = Preview.MeanAlbedo(maps);
+    Console.WriteLine($"  {name}: first bake {first:F0} ms, warm {warm:F0} ms, mean linear albedo {meanAlbedo.Red:F3} {meanAlbedo.Green:F3} {meanAlbedo.Blue:F3}");
     Preview.WriteAll(maps, Path.Combine(output, name.ToLowerInvariant()));
 }
 
@@ -62,13 +66,37 @@ internal static class Preview
     /// </summary>
     private static readonly (float X, float Y, float Z) Light = (-0.579f, -0.579f, 0.574f);
 
-    private const float SunIrradiance = 1.6f;
-    private const float SkyIrradiance = 0.35f;
+    /// <summary>
+    ///     About the game's noon: the sun's radiance and the sky's mean between its zenith and horizon.
+    /// </summary>
+    private const float SunRadiance = 0.72f;
+    private const float SkyIrradiance = 0.37f;
 
     /// <summary>
-    ///     The sky alone in the shade view, brought up as the game's exposure brings up a shaded scene.
+    ///     The game's exposure: an image is brought half of the way from its mean log2 luminance to this key, in stops.
     /// </summary>
-    private const float ShadeSkyIrradiance = 1.6f;
+    private const float KeyEv = -1.3f;
+    private const float Compensation = 0.5f;
+
+    /// <summary>
+    ///     The mean of the albedo in linear light, which a recipe aims near its palette colour.
+    /// </summary>
+    public static (float Red, float Green, float Blue) MeanAlbedo(MaterialMaps maps)
+    {
+        var sums = new double[3];
+
+        for (var texel = 0; texel < maps.AlbedoHeight.Length; texel += 4)
+        {
+            for (var channel = 0; channel < 3; channel++)
+            {
+                sums[channel] += DecodeSrgb(maps.AlbedoHeight[texel + channel]);
+            }
+        }
+
+        var count = maps.AlbedoHeight.Length / 4;
+
+        return ((float)(sums[0] / count), (float)(sums[1] / count), (float)(sums[2] / count));
+    }
 
     public static void WriteAll(MaterialMaps maps, string prefix)
     {
@@ -95,16 +123,16 @@ internal static class Preview
         PngWriter.Write(prefix + "-normal.png", size, size, 3, normal);
         PngWriter.Write(prefix + "-occlusion.png", size, size, 1, occlusion);
 
-        var lit = Shade(maps, SunIrradiance, SkyIrradiance);
+        var lit = Shade(maps, SunRadiance, SkyIrradiance);
         WriteTiled(prefix + "-lit.png", lit, size, 2, 1);
         WriteTiled(prefix + "-far.png", lit, size, 8, 4);
-        WriteTiled(prefix + "-shade.png", Shade(maps, 0.0f, ShadeSkyIrradiance), size, 2, 1);
+        WriteTiled(prefix + "-shade.png", Shade(maps, 0.0f, SkyIrradiance), size, 2, 1);
     }
 
     /// <summary>
-    ///     The tile lit by a sun and a sky with plain Lambert shading, in linear light. The relief's occlusion darkens the sky.
+    ///     The tile lit by a sun and a sky with plain Lambert shading, then exposed as the game exposes a scene of it, in linear light. The relief's occlusion darkens the sky.
     /// </summary>
-    private static float[] Shade(MaterialMaps maps, float sunIrradiance, float skyIrradiance)
+    private static float[] Shade(MaterialMaps maps, float sunRadiance, float skyIrradiance)
     {
         var size = maps.Size;
         var lit = new float[3 * size * size];
@@ -118,7 +146,7 @@ internal static class Preview
 
             var facing = MathF.Max(0.0f, (normalX * Light.X + normalY * Light.Y + normalZ * Light.Z) * inverseLength);
             var skyVisible = maps.Normal[4 * index + 3] / 255.0f;
-            var irradiance = sunIrradiance * facing + skyIrradiance * skyVisible * (0.5f + 0.5f * normalZ * inverseLength);
+            var irradiance = sunRadiance * facing + skyIrradiance * skyVisible * (0.5f + 0.5f * normalZ * inverseLength);
 
             for (var channel = 0; channel < 3; channel++)
             {
@@ -126,17 +154,33 @@ internal static class Preview
             }
         }
 
+        var logSum = 0.0;
+
+        for (var index = 0; index < size * size; index++)
+        {
+            var luminance = 0.2126f * lit[3 * index] + 0.7152f * lit[3 * index + 1] + 0.0722f * lit[3 * index + 2];
+            logSum += MathF.Log2(MathF.Max(luminance, 1e-5f));
+        }
+
+        var exposure = MathF.Pow(2.0f, Compensation * (KeyEv - (float)(logSum / (size * size))));
+
+        for (var index = 0; index < lit.Length; index++)
+        {
+            lit[index] *= exposure;
+        }
+
         return lit;
     }
 
     /// <summary>
-    ///     Writes <paramref name="tiles"/> by <paramref name="tiles"/> copies of the tile, averaged down by <paramref name="reduction"/> on each axis.
+    ///     Writes <paramref name="tiles"/> by <paramref name="tiles"/> copies of the tile, averaged down by <paramref name="reduction"/> on each axis and tone mapped as the game does.
     /// </summary>
     private static void WriteTiled(string path, float[] lit, int size, int tiles, int reduction)
     {
         var extent = size * tiles / reduction;
         var pixels = new byte[3 * extent * extent];
         var weight = 1.0f / (reduction * reduction);
+        Span<float> color = stackalloc float[3];
 
         for (var y = 0; y < extent; y++)
         {
@@ -156,12 +200,52 @@ internal static class Preview
                         }
                     }
 
-                    pixels[3 * (y * extent + x) + channel] = EncodeSrgb(sum * weight);
+                    color[channel] = sum * weight;
+                }
+
+                PbrNeutral(color);
+
+                for (var channel = 0; channel < 3; channel++)
+                {
+                    pixels[3 * (y * extent + x) + channel] = EncodeSrgb(color[channel]);
                 }
             }
         }
 
         PngWriter.Write(path, extent, extent, 3, pixels);
+    }
+
+    /// <summary>
+    ///     Khronos PBR Neutral, as the game's tone mapper applies it.
+    /// </summary>
+    private static void PbrNeutral(Span<float> color)
+    {
+        const float startCompression = 0.8f - 0.04f;
+        const float desaturation = 0.15f;
+
+        var darkest = MathF.Min(color[0], MathF.Min(color[1], color[2]));
+        var offset = darkest < 0.08f ? darkest - 6.25f * darkest * darkest : 0.04f;
+
+        for (var channel = 0; channel < 3; channel++)
+        {
+            color[channel] -= offset;
+        }
+
+        var peak = MathF.Max(color[0], MathF.Max(color[1], color[2]));
+
+        if (peak < startCompression)
+        {
+            return;
+        }
+
+        const float d = 1.0f - startCompression;
+        var newPeak = 1.0f - d * d / (peak + d - startCompression);
+        var whiteness = 1.0f - 1.0f / (desaturation * (peak - newPeak) + 1.0f);
+
+        for (var channel = 0; channel < 3; channel++)
+        {
+            color[channel] = MathX.Lerp(color[channel] * newPeak / peak, newPeak, whiteness);
+        }
     }
 
     private static float DecodeSrgb(byte encoded)
