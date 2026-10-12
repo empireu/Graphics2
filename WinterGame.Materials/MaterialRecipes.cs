@@ -80,7 +80,7 @@ public static class MaterialRecipes
     }
 
     /// <summary>
-    ///     Wind-packed snow: ripples the wind left, stronger in some places than in others, over a fine crust, with almost no change in colour.
+    ///     Wind-packed snow: soft hummocks under a fine crust, which the wind polished smooth in places, with almost no change in colour.
     /// </summary>
     public static MaterialMaps Snow(int size)
     {
@@ -92,15 +92,13 @@ public static class MaterialRecipes
     /// </summary>
     internal static SurfacePoint SnowAt(float u, float v)
     {
-        // The ripples run across the wind about 24 cm apart, rising slowly on the windward side and falling steeply on the lee:
-        var phase = Fraction(16.0f * u + 5.0f * v + 0.8f * TileNoise.Fractal(u, v, 2, 2, 0.5f, 201));
-        var ripple = phase < 0.65f ? SmoothStep(0.0f, 0.65f, phase) : 1.0f - SmoothStep(0.65f, 1.0f, phase);
-        var strength = 0.6f + 0.4f * SmoothStep(-0.5f, 0.5f, TileNoise.Fractal(u, v, 4, 2, 0.5f, 202));
+        // The wind turns over a winter, so nothing runs in one direction. The noise is rotated, because the aligned octaves of a plain fractal crust drew a grid in a low sun:
+        var hummocks = TileNoise.RotatedFractal(u, v, 5, 3, 0.5f, 210);
+        var polish = SmoothStep(-0.3f, 0.3f, TileNoise.RotatedFractal(u, v, 4, 2, 0.5f, 211));
+        var crust = TileNoise.RotatedFractal(u, v, 32, 3, 0.5f, 206);
+        var height = 0.008f * hummocks + (0.0018f - 0.0012f * polish) * crust;
 
-        // The swells are left to the terrain. Lumps of noise under the ripples, even 0.9 m ones, drew a grid with them in a low sun:
-        var height = 0.012f * strength * ripple + 0.0015f * TileNoise.Fractal(u, v, 64, 3, 0.5f, 206);
-
-        var tone = 1.0f + 0.025f * TileNoise.Fractal(u, v, 6, 3, 0.5f, 207) + 0.01f * TileNoise.Gradient(u, v, 64, 208);
+        var tone = 1.0f + 0.025f * TileNoise.RotatedFractal(u, v, 6, 3, 0.5f, 207) + 0.01f * TileNoise.Gradient(u, v, 64, 208);
 
         return new SurfacePoint(height, 0.785f * tone, 0.825f * tone, 0.885f * tone);
     }

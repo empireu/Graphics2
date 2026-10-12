@@ -10,11 +10,16 @@ namespace WinterGame.Materials;
 /// </summary>
 public static class TileNoise
 {
+    public const int MaxRotatedOctaves = 6;
+
     private const int GradientCount = 256;
     private const float Sqrt2 = 1.41421356f;
 
     private static readonly float[] GradientX = CreateGradients(MathF.Cos);
     private static readonly float[] GradientY = CreateGradients(MathF.Sin);
+
+    // A rotation by whole numbers keeps the noise repeating every tile. Each scales by close to a power of two, at angles of 0, 27, 14, 40, 22 and 7 degrees:
+    private static readonly (int Along, int Across)[] OctaveTurns = [(1, 0), (2, 1), (4, 1), (6, 5), (15, 6), (32, 4)];
 
     /// <summary>
     ///     Perlin gradient noise with <paramref name="period"/> cells across the tile, in [-1, 1].
@@ -62,6 +67,33 @@ public static class TileNoise
         for (var octave = 0; octave < octaves; octave++)
         {
             sum += amplitude * Gradient(u, v, period << octave, MathX.MixSeed(seed, octave));
+            total += amplitude;
+            amplitude *= gain;
+        }
+
+        return sum / total;
+    }
+
+    /// <summary>
+    ///     Like <see cref="Fractal"/>, but each octave's lattice is turned to its own angle and shifted, so the features every gradient noise lines up with its lattice do not add up to a grid.
+    ///     An octave's period is close to twice the one before rather than exactly twice. At most <see cref="MaxRotatedOctaves"/> octaves.
+    /// </summary>
+    public static float RotatedFractal(float u, float v, int period, int octaves, float gain, int seed)
+    {
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(octaves, MaxRotatedOctaves);
+
+        var sum = 0.0f;
+        var amplitude = 1.0f;
+        var total = 0.0f;
+
+        for (var octave = 0; octave < octaves; octave++)
+        {
+            var (along, across) = OctaveTurns[octave];
+            var shift = 0.618034f * octave / period;
+            var x = along * u + across * v + shift;
+            var y = along * v - across * u + 0.5f * shift;
+
+            sum += amplitude * Gradient(x, y, period, MathX.MixSeed(seed, octave));
             total += amplitude;
             amplitude *= gain;
         }

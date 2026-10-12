@@ -16,6 +16,10 @@ public class MaterialBakeTests
 
             Assert.Equal(TileNoise.Gradient(u, v, 5, 7), TileNoise.Gradient(u + 1.0f, v - 1.0f, 5, 7), 1e-4f);
             Assert.Equal(TileNoise.Fractal(u, v, 3, 4, 0.5f, 7), TileNoise.Fractal(u - 1.0f, v + 1.0f, 3, 4, 0.5f, 7), 1e-4f);
+            Assert.Equal(
+                TileNoise.RotatedFractal(u, v, 3, TileNoise.MaxRotatedOctaves, 0.7f, 7),
+                TileNoise.RotatedFractal(u + 1.0f, v - 1.0f, 3, TileNoise.MaxRotatedOctaves, 0.7f, 7),
+                1e-4f);
 
             var cellular = TileNoise.Cellular(u, v, 6, 1.0f, 7);
             var shifted = TileNoise.Cellular(u + 1.0f, v + 1.0f, 6, 1.0f, 7);
