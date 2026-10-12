@@ -7,7 +7,11 @@ var recipes = new Dictionary<string, Func<int, MaterialMaps>>(StringComparer.Ord
 {
     ["limestone"] = MaterialRecipes.Limestone,
     ["snow"] = MaterialRecipes.Snow,
-    ["ice"] = MaterialRecipes.Ice
+    ["ice"] = MaterialRecipes.Ice,
+    ["sandstone"] = MaterialRecipes.Sandstone,
+    ["shale"] = MaterialRecipes.Shale,
+    ["basalt"] = MaterialRecipes.Basalt,
+    ["gneiss"] = MaterialRecipes.Gneiss
 };
 
 var size = 1024;

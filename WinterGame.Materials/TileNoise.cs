@@ -148,6 +148,14 @@ public static class TileNoise
         return new CellularSample(MathF.Sqrt(nearestDistanceSquared), edgeDistance, ToUnit(cellHash));
     }
 
+    /// <summary>
+    ///     A random value in [0, 1) for the cell (<paramref name="x"/>, <paramref name="y"/>) of a lattice with <paramref name="period"/> cells across the tile, the same for every cell index that wraps to it.
+    /// </summary>
+    public static float CellValue(int x, int y, int period, int seed)
+    {
+        return ToUnit(Hash(Wrap(x, period), Wrap(y, period), seed));
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void FeaturePoint(int cellX, int cellY, int period, float jitter, int seed, out float x, out float y)
     {

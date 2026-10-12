@@ -24,6 +24,9 @@ public class MaterialBakeTests
             Assert.Equal(cellular.EdgeDistance, shifted.EdgeDistance, 1e-4f);
             Assert.Equal(cellular.RegionValue, shifted.RegionValue);
         }
+
+        Assert.Equal(TileNoise.CellValue(3, -2, 7, 9), TileNoise.CellValue(10, 5, 7, 9));
+        Assert.NotEqual(TileNoise.CellValue(3, -2, 7, 9), TileNoise.CellValue(4, -2, 7, 9));
     }
 
     [Fact]
@@ -188,6 +191,30 @@ public class MaterialBakeTests
     public void IceRepeatsEveryTile()
     {
         AssertRepeatsEveryTile(MaterialRecipes.IceAt, 5);
+    }
+
+    [Fact]
+    public void SandstoneRepeatsEveryTile()
+    {
+        AssertRepeatsEveryTile(MaterialRecipes.SandstoneAt, 6);
+    }
+
+    [Fact]
+    public void ShaleRepeatsEveryTile()
+    {
+        AssertRepeatsEveryTile(MaterialRecipes.ShaleAt, 7);
+    }
+
+    [Fact]
+    public void BasaltRepeatsEveryTile()
+    {
+        AssertRepeatsEveryTile(MaterialRecipes.BasaltAt, 8);
+    }
+
+    [Fact]
+    public void GneissRepeatsEveryTile()
+    {
+        AssertRepeatsEveryTile(MaterialRecipes.GneissAt, 9);
     }
 
     [Fact]

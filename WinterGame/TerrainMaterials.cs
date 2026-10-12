@@ -131,14 +131,15 @@ internal sealed class TerrainMaterials : IDisposable
     {
         var layers = new LayerSource[SurfaceMaterial.Count];
 
-        layers[SurfaceMaterial.Rock] = new LayerSource(new Vector3(0.17f, 0.11f, 0.06f));
+        // Rock is only the shader's fallback for an id outside the palette, so it borrows the gneiss:
+        layers[SurfaceMaterial.Rock] = new LayerSource(new Vector3(0.22f, 0.20f, 0.21f), MaterialRecipes.Gneiss);
         layers[SurfaceMaterial.Ice] = new LayerSource(new Vector3(0.30f, 0.38f, 0.42f), MaterialRecipes.Ice);
         layers[SurfaceMaterial.Snow] = new LayerSource(new Vector3(0.78f, 0.82f, 0.88f), MaterialRecipes.Snow);
-        layers[SurfaceMaterial.Sandstone] = new LayerSource(new Vector3(0.42f, 0.31f, 0.19f));
-        layers[SurfaceMaterial.Shale] = new LayerSource(new Vector3(0.16f, 0.18f, 0.21f));
+        layers[SurfaceMaterial.Sandstone] = new LayerSource(new Vector3(0.42f, 0.31f, 0.19f), MaterialRecipes.Sandstone);
+        layers[SurfaceMaterial.Shale] = new LayerSource(new Vector3(0.16f, 0.18f, 0.21f), MaterialRecipes.Shale);
         layers[SurfaceMaterial.Limestone] = new LayerSource(new Vector3(0.47f, 0.46f, 0.42f), MaterialRecipes.Limestone);
-        layers[SurfaceMaterial.Basalt] = new LayerSource(new Vector3(0.10f, 0.10f, 0.12f));
-        layers[SurfaceMaterial.Gneiss] = new LayerSource(new Vector3(0.22f, 0.20f, 0.21f));
+        layers[SurfaceMaterial.Basalt] = new LayerSource(new Vector3(0.10f, 0.10f, 0.12f), MaterialRecipes.Basalt);
+        layers[SurfaceMaterial.Gneiss] = new LayerSource(new Vector3(0.22f, 0.20f, 0.21f), MaterialRecipes.Gneiss);
 
         return layers;
     }
