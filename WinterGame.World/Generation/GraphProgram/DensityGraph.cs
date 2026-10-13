@@ -6,7 +6,7 @@ namespace WinterGame.World.Generation.GraphProgram;
 ///     A compiled density graph.
 ///     Has two instruction programs over slot buffers, the side tables they index, and one root per value the author asked for.
 ///     Every program's slots 0 to 2 are the position in meters, which the sampler writes before each evaluation.
-///     With a cell boundary, the sample program also reserves the three fractions and the eight corner values.
+///     With cell boundaries, the sample program also reserves the three fractions, the cell's inverse lengths and eight corner values per boundary.
 ///     Each program starts with the instructions that do not depend on the height, so a range fill runs them once per column.
 ///     The graph is immutable data, so it is safe to share, but a <see cref="DensitySampler"/> holds the buffers that evaluation needs.
 /// </summary>
@@ -20,10 +20,16 @@ public sealed class DensityGraph
     public const int FractionSlotY = 4;
     public const int FractionSlotZ = 5;
 
+    // One over the cell's size in meters on each axis, which turns a gradient over the fractions into one over meters:
+    public const int InverseCellLengthSlotX = 6;
+    public const int InverseCellLengthSlotY = 7;
+    public const int InverseCellLengthSlotZ = 8;
+
     /// <summary>
-    ///     The first of the eight cell corner values, packed with x in bit 0, y in bit 1 and z in bit 2, the same packing the mesher uses.
+    ///     The first of each boundary's eight cell corner values, packed with x in bit 0, y in bit 1 and z in bit 2, the same packing the mesher uses.
+    ///     Boundary k's corners start at <c>CornerSlotBase + k * CornerCount</c>.
     /// </summary>
-    public const int CornerSlotBase = 6;
+    public const int CornerSlotBase = 9;
     public const int CornerCount = 8;
 
     /// <summary>
@@ -32,9 +38,9 @@ public sealed class DensityGraph
     public const int FirstProgramSlot = PositionSlotZ + 1;
 
     /// <summary>
-    ///     The first slot the sample program allocates when a cell boundary reserved the fraction and corner slots.
+    ///     The length of the gradient <see cref="DensityOp.SurfaceDistance"/> divides by when the real one is shorter, and below which <see cref="DensityOp.SlopeCosine"/> calls the surface flat.
     /// </summary>
-    public const int FirstInterpolatedSampleSlot = CornerSlotBase + CornerCount;
+    public const float MinimumGradientLength = 1.0e-3f;
 
     public readonly DensityInstruction[] CornerProgram;
     public readonly DensityInstruction[] SampleProgram;
@@ -44,9 +50,10 @@ public sealed class DensityGraph
     public readonly int SampleColumnLength;
 
     /// <summary>
-    ///     The slot the corner program writes for the value the cell boundary interpolates, or <see cref="DensityInstruction.NoSlot" /> when the graph has no boundary.
+    ///     The slot the corner program writes for each boundary's value, in boundary order, which is the order the boundaries were authored in.
+    ///     Empty when the graph has no boundary.
     /// </summary>
-    public readonly int BoundaryRoot;
+    public readonly int[] BoundaryRoots;
 
     /// <summary>
     ///     The slot of each requested root in the corner program, or <see cref="DensityInstruction.NoSlot" /> when that root is evaluated per sample.
@@ -74,7 +81,7 @@ public sealed class DensityGraph
     public readonly bool HasInterpolation;
 
     /// <summary>
-    ///     True when at least one sample-side root reads the boundary, which is what makes filling the fraction and corner slots necessary.
+    ///     True when at least one sample-side root reads a boundary, which is what makes filling the fraction and corner slots necessary.
     /// </summary>
     public readonly bool UsesBoundary;
 
@@ -94,7 +101,7 @@ public sealed class DensityGraph
         DensityInstruction[] sampleProgram,
         int cornerColumnLength,
         int sampleColumnLength,
-        int boundaryRoot,
+        int[] boundaryRoots,
         int[] cornerRoots,
         int[] sampleRoots,
         bool[] rootIsCorner,
@@ -115,7 +122,7 @@ public sealed class DensityGraph
         SampleProgram = sampleProgram;
         CornerColumnLength = cornerColumnLength;
         SampleColumnLength = sampleColumnLength;
-        BoundaryRoot = boundaryRoot;
+        BoundaryRoots = boundaryRoots;
         CornerRoots = cornerRoots;
         SampleRoots = sampleRoots;
         RootIsCorner = rootIsCorner;
@@ -135,24 +142,32 @@ public sealed class DensityGraph
 
     public int RootCount => RootIsCorner.Length;
 
+    public int BoundaryCount => BoundaryRoots.Length;
+
     /// <summary>
-    ///     Whether a root's per-sample value is the interpolated boundary itself, which is a weighted mean of its cell's corners and so never leaves their range.
+    ///     The first slot a sample program allocates for its own instructions when it reserves the cell slots of <paramref name="boundaryCount"/> boundaries.
     /// </summary>
-    public bool IsBoundaryRoot(int rootIndex)
+    public static int FirstInterpolatedSampleSlot(int boundaryCount) => CornerSlotBase + boundaryCount * CornerCount;
+
+    /// <summary>
+    ///     The boundary whose interpolated value is a root's per-sample value, or <see cref="DensityInstruction.NoSlot" /> when the root is anything else.
+    ///     That value is a weighted mean of its cell's corners and so never leaves their range.
+    /// </summary>
+    public int RootBoundary(int rootIndex)
     {
         if (RootIsCorner[rootIndex] || !UsesBoundary)
         {
-            return false;
+            return DensityInstruction.NoSlot;
         }
 
         foreach (var instruction in SampleProgram)
         {
             if (instruction.Output == SampleRoots[rootIndex])
             {
-                return instruction.Op == DensityOp.Interpolated;
+                return instruction.Op == DensityOp.Interpolated ? instruction.Payload : DensityInstruction.NoSlot;
             }
         }
 
-        return false;
+        return DensityInstruction.NoSlot;
     }
 }

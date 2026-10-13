@@ -329,13 +329,13 @@ public class DensitySamplerTests
         var sampler = new DensitySampler(graph, scratch);
 
         // The surface stays below 13.5 m and the box's lowest corners are at 24 m, so every corner is at least 10.5 m out of the ground:
-        Assert.False(sampler.SampleRangeIfAbove(0, new Vector3i(-8, 100, -8), new Vector3i(7, 115, 7), -10.0f));
-        Assert.True(sampler.SampleRangeIfAbove(0, new Vector3i(-8, 100, -8), new Vector3i(7, 115, 7), -30.0f));
+        Assert.False(sampler.SampleRangeIfAbove(0, new Vector3i(-8, 100, -8), new Vector3i(7, 115, 7), 0, -10.0f));
+        Assert.True(sampler.SampleRangeIfAbove(0, new Vector3i(-8, 100, -8), new Vector3i(7, 115, 7), 0, -30.0f));
 
         var min = new Vector3i(-8, 0, -8);
         var max = new Vector3i(7, 31, 7);
 
-        Assert.True(sampler.SampleRangeIfAbove(0, min, max, -11.0f));
+        Assert.True(sampler.SampleRangeIfAbove(0, min, max, 0, -11.0f));
 
         var filled = scratch.RangeOutput(0).ToArray();
         var index = 0;
@@ -349,6 +349,179 @@ public class DensitySamplerTests
                     Assert.Equal(sampler.Sample(new Vector3i(x, y, z), 0), filled[index++]);
                 }
             }
+        }
+    }
+
+    [Fact]
+    public void Sampler_SkipsOnTheNamedBoundaryOnly()
+    {
+        var builder = new DensityGraphBuilder(1);
+        var high = builder.Interpolated(builder.Add(builder.Constant(100.0f), builder.Mul(builder.Y, builder.Constant(-1.0f))));
+        var low = builder.Interpolated(builder.Add(builder.Constant(-100.0f), builder.Mul(builder.Y, builder.Constant(-1.0f))));
+        var sampler = new DensitySampler(builder.Compile([high, low]));
+
+        var min = new Vector3i(-4, 0, -4);
+        var max = new Vector3i(3, 15, 3);
+
+        Assert.True(sampler.SampleRangeIfAbove(0, min, max, 0, -10.0f));
+        Assert.False(sampler.SampleRangeIfAbove(0, min, max, 1, -10.0f));
+        Assert.Throws<ArgumentOutOfRangeException>(() => sampler.SampleRangeIfAbove(0, min, max, 2, -10.0f));
+    }
+
+    [Fact]
+    public void Sampler_SeveralBoundariesMatchPointSamplesOverARange()
+    {
+        var graph = TwoBoundaryGraph(BoundarySet.Both);
+        var scratch = new DensityScratch(graph);
+        var sampler = new DensitySampler(graph, scratch);
+
+        // Each boundary compiled alone has to give the same bits:
+        var groundAlone = new DensitySampler(TwoBoundaryGraph(BoundarySet.Ground));
+        var levelAlone = new DensitySampler(TwoBoundaryGraph(BoundarySet.Level));
+
+        var min = new Vector3i(-7, -9, 3);
+        var max = new Vector3i(6, 12, 12);
+        var roots = new float[graph.RootCount];
+
+        sampler.SampleRange(0, min, max);
+
+        var index = 0;
+
+        for (var z = min.Z; z <= max.Z; z++)
+        {
+            for (var y = min.Y; y <= max.Y; y++)
+            {
+                for (var x = min.X; x <= max.X; x++)
+                {
+                    var position = new Vector3i(x, y, z);
+
+                    sampler.Sample(position, 0, roots);
+
+                    for (var root = 0; root < roots.Length; root++)
+                    {
+                        Assert.Equal(roots[root], scratch.RangeOutput(root)[index]);
+                    }
+
+                    Assert.Equal(groundAlone.Sample(position, 0), roots[0]);
+                    Assert.Equal(levelAlone.Sample(position, 0), roots[5]);
+                    index++;
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public void Sampler_GradientOpsMatchFiniteDifferencesOfTheBlend()
+    {
+        var sampler = new DensitySampler(TwoBoundaryGraph(BoundarySet.Both));
+        var graph = sampler.Graph;
+        var spacing = DensitySampler.SampleSpacing(0);
+        var roots = new float[graph.RootCount];
+        var checkedCount = 0;
+
+        for (var z = -4; z < 4; z++)
+        {
+            for (var y = -8; y < 8; y++)
+            {
+                for (var x = -4; x < 4; x++)
+                {
+                    // The blend is linear along each axis inside a cell, so a forward difference that stays in the cell is its exact derivative:
+                    if (IsLastInCell(x, graph.CellX) || IsLastInCell(y, graph.CellY) || IsLastInCell(z, graph.CellZ))
+                    {
+                        continue;
+                    }
+
+                    var position = new Vector3i(x, y, z);
+                    var value = sampler.Sample(position, 0);
+                    var gradientX = (sampler.Sample(position + new Vector3i(1, 0, 0), 0) - value) / spacing;
+                    var gradientY = (sampler.Sample(position + new Vector3i(0, 1, 0), 0) - value) / spacing;
+                    var gradientZ = (sampler.Sample(position + new Vector3i(0, 0, 1), 0) - value) / spacing;
+                    var length = MathF.Sqrt(gradientX * gradientX + gradientY * gradientY + gradientZ * gradientZ);
+
+                    sampler.Sample(position, 0, roots);
+
+                    Assert.Equal(-gradientY / length, roots[3], 1.0e-4f);
+                    Assert.Equal(value / length, roots[4], 1.0e-4f);
+                    checkedCount++;
+                }
+            }
+        }
+
+        Assert.True(checkedCount > 100);
+    }
+
+    [Fact]
+    public void Sampler_GradientOpsOnPlanes()
+    {
+        var builder = new DensityGraphBuilder(1);
+        var minusY = builder.Mul(builder.Y, builder.Constant(-1.0f));
+        var floor = builder.Interpolated(builder.Add(builder.Constant(2.0f), minusY));
+        var wall = builder.Interpolated(builder.Add(builder.X, builder.Constant(-1.0f)));
+        var ceiling = builder.Interpolated(builder.Add(builder.Y, builder.Constant(-2.0f)));
+        var slope = builder.Interpolated(builder.Add(builder.X, minusY));
+        var flat = builder.Interpolated(builder.Constant(1.0f));
+
+        var sampler = new DensitySampler(
+            builder.Compile(
+                [
+                    builder.SlopeCosine(floor), builder.SurfaceDistance(floor),
+                    builder.SlopeCosine(wall), builder.SurfaceDistance(wall),
+                    builder.SlopeCosine(ceiling), builder.SlopeCosine(slope), builder.SurfaceDistance(slope),
+                    builder.SlopeCosine(flat), builder.SurfaceDistance(flat)
+                ]
+            )
+        );
+
+        var roots = new float[9];
+
+        for (var index = -9; index <= 9; index += 3)
+        {
+            var position = new Vector3i(index, index * 2 + 1, -index);
+            var x = position.X * WorldConstants.VoxelSize;
+            var y = position.Y * WorldConstants.VoxelSize;
+
+            sampler.Sample(position, 0, roots);
+
+            Assert.Equal(1.0f, roots[0], 1.0e-5f);
+            Assert.Equal(2.0f - y, roots[1], 1.0e-4f);
+            Assert.Equal(0.0f, roots[2], 1.0e-5f);
+            Assert.Equal(x - 1.0f, roots[3], 1.0e-4f);
+            Assert.Equal(-1.0f, roots[4], 1.0e-5f);
+            Assert.Equal(MathF.Sqrt(0.5f), roots[5], 1.0e-5f);
+            Assert.Equal((x - y) * MathF.Sqrt(0.5f), roots[6], 1.0e-4f);
+
+            // A field with no gradient counts as flat, and its distance divides by the floor:
+            Assert.Equal(1.0f, roots[7]);
+            Assert.Equal(1.0f / DensityGraph.MinimumGradientLength, roots[8], 1.0e-2f);
+        }
+    }
+
+    [Fact]
+    public void Sampler_ArithmeticOpsComputeWhatTheyClaim()
+    {
+        var builder = new DensityGraphBuilder(1);
+        var left = builder.Add(builder.X, builder.Constant(-1.0f));
+        var right = builder.Add(builder.Mul(builder.X, builder.Constant(-1.0f)), builder.Constant(0.3f));
+
+        var sampler = new DensitySampler(
+            builder.Compile([builder.Min(left, right), builder.Max(left, right), builder.Abs(left), builder.Div(left, right), builder.Sqrt(left)])
+        );
+
+        var roots = new float[5];
+
+        for (var index = -12; index <= 12; index++)
+        {
+            var x = index * WorldConstants.VoxelSize;
+            var leftValue = x + -1.0f;
+            var rightValue = -x + 0.3f;
+
+            sampler.Sample(new Vector3i(index, 0, 0), 0, roots);
+
+            Assert.Equal(Math.Min(leftValue, rightValue), roots[0]);
+            Assert.Equal(Math.Max(leftValue, rightValue), roots[1]);
+            Assert.Equal(Math.Abs(leftValue), roots[2]);
+            Assert.Equal(leftValue / rightValue, roots[3]);
+            Assert.Equal(leftValue > 0.0f ? MathF.Sqrt(leftValue) : 0.0f, roots[4]);
         }
     }
 
@@ -399,6 +572,52 @@ public class DensitySamplerTests
 
         return builder.Compile(interpolate ? builder.Interpolated(density) : density);
     }
+
+    private enum BoundarySet
+    {
+        Ground,
+        Level,
+        Both
+    }
+
+    /// <summary>
+    ///     A ground boundary with a 3D term, so every component of its gradient varies, and a second boundary for an ice level.
+    ///     With both, the roots are the ground, a material from its depth, its absolute value, its slope cosine and its surface distance, then the level and the minimum of the two.
+    ///     With one, its value is the first root.
+    /// </summary>
+    private static DensityGraph TwoBoundaryGraph(BoundarySet boundaries)
+    {
+        var builder = new DensityGraphBuilder(3141);
+        var hills = builder.Noise2D("hills", frequency: 1.0f / 8.0f);
+        var caves = builder.Noise3D("caves", frequency: 1.0f / 4.0f);
+        var minusY = builder.Mul(builder.Y, builder.Constant(-1.0f));
+
+        var terrain = builder.Add(
+            builder.Add(builder.Constant(0.5f), builder.Mul(hills, builder.Constant(2.0f))),
+            builder.Add(minusY, builder.Mul(caves, builder.Constant(0.75f)))
+        );
+
+        var levelValue = builder.Max(terrain, builder.Add(builder.Constant(-0.5f), minusY));
+
+        if (boundaries == BoundarySet.Level)
+        {
+            return builder.Compile(builder.Interpolated(levelValue));
+        }
+
+        var ground = builder.Interpolated(terrain);
+
+        if (boundaries == BoundarySet.Ground)
+        {
+            return builder.Compile(ground);
+        }
+
+        var material = builder.Select(builder.Subtract(ground, builder.Constant(0.25f)), builder.Constant(20.0f), builder.Constant(10.0f));
+        var level = builder.Interpolated(levelValue);
+
+        return builder.Compile([ground, material, builder.Abs(ground), builder.SlopeCosine(ground), builder.SurfaceDistance(ground), level, builder.Min(ground, level)]);
+    }
+
+    private static bool IsLastInCell(int sample, int cell) => sample - MathX.FloorDiv(sample, cell) * cell == cell - 1;
 
     private static void AssertRangeMatchesPoints(DensitySampler sampler, Vector3i min, Vector3i maxInclusive)
     {

@@ -90,11 +90,66 @@ public class DensityGraphTests
         var corner = Assert.Single(graph.CornerProgram);
 
         Assert.Equal(DensityOp.Interpolated, interpolated.Op);
-        Assert.Equal(DensityGraph.FirstInterpolatedSampleSlot, interpolated.Output);
-        Assert.Equal(DensityGraph.FirstInterpolatedSampleSlot + 1, graph.SampleSlotCount);
+        Assert.Equal(DensityGraph.FirstInterpolatedSampleSlot(1), interpolated.Output);
+        Assert.Equal(DensityGraph.FirstInterpolatedSampleSlot(1) + 1, graph.SampleSlotCount);
         Assert.Equal(DensityOp.Constant, corner.Op);
-        Assert.Equal(corner.Output, graph.BoundaryRoot);
+        Assert.Equal(corner.Output, Assert.Single(graph.BoundaryRoots));
         Assert.Equal(DensityGraph.FirstProgramSlot + 1, graph.CornerSlotCount);
+    }
+
+    [Fact]
+    public void Compiler_GivesEachBoundaryItsOwnCornerSlots()
+    {
+        var builder = new DensityGraphBuilder(1);
+        var hills = builder.Noise2D("hills", frequency: 0.25f);
+        var ground = builder.Interpolated(builder.Add(hills, builder.Mul(builder.Y, builder.Constant(-1.0f))));
+        var level = builder.Interpolated(builder.Mul(builder.Y, builder.Constant(-1.0f)));
+        var graph = builder.Compile([level, ground, builder.SlopeCosine(ground)]);
+
+        Assert.Equal(2, graph.BoundaryCount);
+
+        // The boundaries are numbered in author order, whatever order the roots name them in:
+        var payloads = graph.SampleProgram.Where(instruction => instruction.Op != DensityOp.Constant).Select(instruction => (instruction.Op, instruction.Payload));
+
+        Assert.Equal([(DensityOp.Interpolated, 0), (DensityOp.Interpolated, 1), (DensityOp.SlopeCosine, 0)], payloads);
+        Assert.Equal(1, graph.RootBoundary(0));
+        Assert.Equal(0, graph.RootBoundary(1));
+        Assert.Equal(DensityInstruction.NoSlot, graph.RootBoundary(2));
+        Assert.True(graph.SampleProgram.All(instruction => instruction.Output >= DensityGraph.FirstInterpolatedSampleSlot(2)));
+    }
+
+    [Fact]
+    public void Compiler_DropsTheInterpolationOfABoundaryOnlyItsSlopeReads()
+    {
+        var builder = new DensityGraphBuilder(1);
+        var ground = builder.Interpolated(builder.Add(builder.Noise2D("hills", frequency: 0.25f), builder.Mul(builder.Y, builder.Constant(-1.0f))));
+        var graph = builder.Compile(builder.SurfaceDistance(ground));
+
+        var instruction = Assert.Single(graph.SampleProgram);
+
+        Assert.Equal(DensityOp.SurfaceDistance, instruction.Op);
+        Assert.True(graph.UsesBoundary);
+        Assert.Single(graph.BoundaryRoots);
+    }
+
+    [Fact]
+    public void Compiler_FoldsTheArithmeticOfConstants()
+    {
+        var builder = new DensityGraphBuilder(1);
+        var three = builder.Constant(3.0f);
+        var minusTwo = builder.Constant(-2.0f);
+
+        Assert.Equal(-2.0f, FoldedValue(builder, builder.Min(three, minusTwo)));
+        Assert.Equal(3.0f, FoldedValue(builder, builder.Max(three, minusTwo)));
+        Assert.Equal(2.0f, FoldedValue(builder, builder.Abs(minusTwo)));
+        Assert.Equal(-1.5f, FoldedValue(builder, builder.Div(three, minusTwo)));
+        Assert.Equal(MathF.Sqrt(3.0f), FoldedValue(builder, builder.Sqrt(three)));
+        Assert.Equal(0.0f, FoldedValue(builder, builder.Sqrt(minusTwo)));
+
+        // A division by a constant zero is left to the sampler:
+        var division = builder.Compile(builder.Div(three, builder.Constant(0.0f)));
+
+        Assert.Contains(division.SampleProgram, instruction => instruction.Op == DensityOp.Div);
     }
 
     [Fact]
@@ -112,18 +167,31 @@ public class DensityGraphTests
     }
 
     [Fact]
-    public void Builder_RejectsASecondInterpolationBoundary()
+    public void Builder_RejectsABoundaryOverAnotherBoundary()
+    {
+        var builder = new DensityGraphBuilder(1);
+        var inner = builder.Interpolated(builder.Y);
+
+        Assert.Throws<InvalidOperationException>(() => builder.Interpolated(builder.Add(inner, builder.Constant(1.0f))));
+        Assert.Throws<InvalidOperationException>(() => builder.Interpolated(builder.SlopeCosine(inner)));
+    }
+
+    [Fact]
+    public void Builder_ReturnsTheSameBoundaryForTheSameNode()
+    {
+        var builder = new DensityGraphBuilder(1);
+        var value = builder.Add(builder.X, builder.Y);
+
+        Assert.Equal(1, builder.Compile([builder.Interpolated(value), builder.Interpolated(value)]).BoundaryCount);
+    }
+
+    [Fact]
+    public void Builder_RejectsASlopeOfANodeThatIsNotABoundary()
     {
         var builder = new DensityGraphBuilder(1);
 
-        Assert.Throws<InvalidOperationException>(
-            () =>
-            {
-                var value = builder.Constant(1.0f);
-                builder.Interpolated(value);
-                builder.Interpolated(value);
-            }
-        );
+        Assert.Throws<ArgumentException>(() => builder.SlopeCosine(builder.Y));
+        Assert.Throws<ArgumentException>(() => builder.SurfaceDistance(builder.Add(builder.X, builder.Y)));
     }
 
     [Fact]
@@ -231,6 +299,16 @@ public class DensityGraphTests
 
         Assert.Equal(DensityOp.Constant, instruction.Op);
         Assert.Equal(2.0f, graph.Constants[instruction.Payload]);
+    }
+
+    private static float FoldedValue(DensityGraphBuilder builder, DensityNode root)
+    {
+        var graph = builder.Compile(root);
+        var instruction = Assert.Single(graph.SampleProgram);
+
+        Assert.Equal(DensityOp.Constant, instruction.Op);
+
+        return graph.Constants[instruction.Payload];
     }
 
     private static DensityGraph TwoNoiseGraph(int seed)

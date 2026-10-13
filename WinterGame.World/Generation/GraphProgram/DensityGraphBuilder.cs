@@ -18,7 +18,12 @@ public sealed class DensityGraphBuilder
     private readonly List<GradientSpec> _gradients = [];
     private readonly List<StrataSet> _strataSets = [];
     private readonly HashSet<string> _noiseNames = [];
-    private bool _hasInterpolationBoundary;
+
+    // Whether each node reads a boundary's interpolated value, directly or through its inputs:
+    private readonly List<bool> _aboveBoundary = [];
+
+    // The boundary node already made over each input node:
+    private readonly Dictionary<int, int> _boundaries = [];
 
     public DensityGraphBuilder(int seed)
     {
@@ -136,6 +141,50 @@ public sealed class DensityGraphBuilder
         return Append(new AuthorNode(DensityOp.Clamp, "clamp", value.Index, min.Index, max.Index, 0));
     }
 
+    public DensityNode Min(DensityNode left, DensityNode right)
+    {
+        RequireOwn(left);
+        RequireOwn(right);
+
+        return Append(new AuthorNode(DensityOp.Min, "min", left.Index, right.Index, DensityInstruction.NoSlot, 0));
+    }
+
+    public DensityNode Max(DensityNode left, DensityNode right)
+    {
+        RequireOwn(left);
+        RequireOwn(right);
+
+        return Append(new AuthorNode(DensityOp.Max, "max", left.Index, right.Index, DensityInstruction.NoSlot, 0));
+    }
+
+    public DensityNode Abs(DensityNode value)
+    {
+        RequireOwn(value);
+
+        return Append(new AuthorNode(DensityOp.Abs, "abs", value.Index, DensityInstruction.NoSlot, DensityInstruction.NoSlot, 0));
+    }
+
+    /// <summary>
+    ///     <see cref="dividend"/> over <see cref="divisor"/>, with no guard: a divisor that can reach zero needs a <see cref="Max"/> first.
+    /// </summary>
+    public DensityNode Div(DensityNode dividend, DensityNode divisor)
+    {
+        RequireOwn(dividend);
+        RequireOwn(divisor);
+
+        return Append(new AuthorNode(DensityOp.Div, "div", dividend.Index, divisor.Index, DensityInstruction.NoSlot, 0));
+    }
+
+    /// <summary>
+    ///     The square root of <see cref="value"/> clamped at zero.
+    /// </summary>
+    public DensityNode Sqrt(DensityNode value)
+    {
+        RequireOwn(value);
+
+        return Append(new AuthorNode(DensityOp.Sqrt, "sqrt", value.Index, DensityInstruction.NoSlot, DensityInstruction.NoSlot, 0));
+    }
+
     public DensityNode Spline(DensityNode input, float[] positions, float[] values)
     {
         RequireOwn(input);
@@ -202,21 +251,47 @@ public sealed class DensityGraphBuilder
     }
 
     /// <summary>
-    ///     Marks the cell boundary. Everything below is evaluated on the cell lattice and interpolated, and everything above is evaluated per sample.
-    ///     A graph has at most one boundary.
+    ///     Marks a cell boundary. Everything below is evaluated on the cell lattice and interpolated, and everything above is evaluated per sample.
+    ///     A graph may have several boundaries on the one lattice, but a boundary cannot read another boundary's value, and a second boundary over the same node is the first one.
     /// </summary>
     public DensityNode Interpolated(DensityNode value)
     {
         RequireOwn(value);
 
-        if (_hasInterpolationBoundary)
+        if (_aboveBoundary[value.Index])
         {
-            throw new InvalidOperationException("Tried to create more than one boundary");
+            throw new InvalidOperationException("A boundary cannot read another boundary's interpolated value.");
         }
 
-        _hasInterpolationBoundary = true;
+        if (_boundaries.TryGetValue(value.Index, out var existing))
+        {
+            return new DensityNode(this, existing);
+        }
 
-        return Append(new AuthorNode(DensityOp.Interpolated, "interpolated", value.Index, DensityInstruction.NoSlot, DensityInstruction.NoSlot, 0));
+        var boundary = Append(new AuthorNode(DensityOp.Interpolated, "interpolated", value.Index, DensityInstruction.NoSlot, DensityInstruction.NoSlot, 0));
+        _boundaries[value.Index] = boundary.Index;
+
+        return boundary;
+    }
+
+    /// <summary>
+    ///     The cosine of the slope of the surface where <see cref="boundary"/>'s value is zero, per sample from its cell's corners (<see cref="DensityOp.SlopeCosine"/>).
+    /// </summary>
+    public DensityNode SlopeCosine(DensityNode boundary)
+    {
+        RequireBoundary(boundary);
+
+        return Append(new AuthorNode(DensityOp.SlopeCosine, "slope_cosine", boundary.Index, DensityInstruction.NoSlot, DensityInstruction.NoSlot, 0));
+    }
+
+    /// <summary>
+    ///     The distance to the surface where <see cref="boundary"/>'s value is zero, per sample from its cell's corners (<see cref="DensityOp.SurfaceDistance"/>).
+    /// </summary>
+    public DensityNode SurfaceDistance(DensityNode boundary)
+    {
+        RequireBoundary(boundary);
+
+        return Append(new AuthorNode(DensityOp.SurfaceDistance, "surface_distance", boundary.Index, DensityInstruction.NoSlot, DensityInstruction.NoSlot, 0));
     }
 
     public DensityGraph Compile(DensityNode root, int cellX = 4, int cellY = 8, int cellZ = 4)
@@ -287,15 +362,28 @@ public sealed class DensityGraphBuilder
     {
         var index = _nodes.Count;
         _nodes.Add(node);
+        _aboveBoundary.Add(node.Op == DensityOp.Interpolated || ReadsBoundary(node.Input0) || ReadsBoundary(node.Input1) || ReadsBoundary(node.Input2));
 
         return new DensityNode(this, index);
     }
+
+    private bool ReadsBoundary(int index) => index >= 0 && _aboveBoundary[index];
 
     private void RequireOwn(DensityNode node)
     {
         if (!ReferenceEquals(node.GraphBuilder, this))
         {
             throw new ArgumentException("The node belongs to another builder.", nameof(node));
+        }
+    }
+
+    private void RequireBoundary(DensityNode node)
+    {
+        RequireOwn(node);
+
+        if (_nodes[node.Index].Op != DensityOp.Interpolated)
+        {
+            throw new ArgumentException("The node is not a boundary made by Interpolated.", nameof(node));
         }
     }
 }

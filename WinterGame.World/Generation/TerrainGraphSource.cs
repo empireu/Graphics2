@@ -14,7 +14,7 @@ public sealed class TerrainGraphSource
     private readonly TerrainGraph _graph;
     private readonly DensitySampler _sampler;
     private readonly DensityScratch _scratch;
-    private readonly bool _densityIsBoundary;
+    private readonly int _densityBoundary;
 
     public TerrainGraphSource(int seed, TerrainConfig config) : this(TerrainGraph.Build(seed, config))
     {
@@ -30,7 +30,7 @@ public sealed class TerrainGraphSource
         _graph = graph;
         _scratch = new DensityScratch(_graph.Graph);
         _sampler = new DensitySampler(_graph.Graph, _scratch);
-        _densityIsBoundary = _graph.Graph.IsBoundaryRoot(_graph.DensityRoot);
+        _densityBoundary = _graph.Graph.RootBoundary(_graph.DensityRoot);
     }
 
     public TerrainGraph Graph => _graph;
@@ -67,11 +67,11 @@ public sealed class TerrainGraphSource
         }
 
         // The content byte is 0 from this density down, so a box whose corners are all that low is air with no sample evaluated:
-        if (_densityIsBoundary)
+        if (_densityBoundary >= 0)
         {
             var emptyDensity = -WorldConstants.ContentIsoLevel / WorldConstants.ContentBytesPerSample * DensitySampler.SampleSpacing(0);
 
-            if (!_sampler.SampleRangeIfAbove(0, min, maxInclusive, emptyDensity))
+            if (!_sampler.SampleRangeIfAbove(0, min, maxInclusive, _densityBoundary, emptyDensity))
             {
                 content.Data.Fill(0);
                 material.Data.Fill(SurfaceMaterial.Null);
