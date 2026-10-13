@@ -322,6 +322,37 @@ public class DensitySamplerTests
     }
 
     [Fact]
+    public void Sampler_SkipsABoxWhoseCornersAreAllAtOrBelowTheLevel()
+    {
+        var graph = HeightFieldGraph(interpolate: true);
+        var scratch = new DensityScratch(graph);
+        var sampler = new DensitySampler(graph, scratch);
+
+        // The surface stays below 13.5 m and the box's lowest corners are at 24 m, so every corner is at least 10.5 m out of the ground:
+        Assert.False(sampler.SampleRangeIfAbove(0, new Vector3i(-8, 100, -8), new Vector3i(7, 115, 7), -10.0f));
+        Assert.True(sampler.SampleRangeIfAbove(0, new Vector3i(-8, 100, -8), new Vector3i(7, 115, 7), -30.0f));
+
+        var min = new Vector3i(-8, 0, -8);
+        var max = new Vector3i(7, 31, 7);
+
+        Assert.True(sampler.SampleRangeIfAbove(0, min, max, -11.0f));
+
+        var filled = scratch.RangeOutput(0).ToArray();
+        var index = 0;
+
+        for (var z = min.Z; z <= max.Z; z++)
+        {
+            for (var y = min.Y; y <= max.Y; y++)
+            {
+                for (var x = min.X; x <= max.X; x++)
+                {
+                    Assert.Equal(sampler.Sample(new Vector3i(x, y, z), 0), filled[index++]);
+                }
+            }
+        }
+    }
+
+    [Fact]
     public void Sampler_ReusesItsBufferForASmallerBox()
     {
         var graph = HeightFieldGraph(interpolate: true);

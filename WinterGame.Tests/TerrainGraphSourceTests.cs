@@ -16,37 +16,17 @@ public class TerrainGraphSourceTests
     [Fact]
     public void Generate_MatchesPointReadsAndMarksOnlySolidSamples()
     {
+        AssertGenerateMatchesPointReads(CreateSource(), new Vector3i(-6, -4, 2), new Vector3i(9, 8, 14));
+    }
+
+    [Fact]
+    public void Generate_WritesABoxAboveTheSurfaceAsAirLikePointReads()
+    {
         var source = CreateSource();
-        var min = new Vector3i(-6, -4, 2);
-        var max = new Vector3i(9, 8, 14);
+        var top = (int)MathF.Ceiling(source.Graph.MaxSurfaceY / WorldConstants.VoxelSize);
 
-        var countX = max.X - min.X + 1;
-        var countY = max.Y - min.Y + 1;
-        var countZ = max.Z - min.Z + 1;
-
-        var content = Memory3D<byte>.Allocate(countX, countY, countZ);
-        var material = Memory3D<byte>.Allocate(countX, countY, countZ);
-
-        source.Generate(min, max, content.Span, material.Span);
-        var contentSpan = content.Span;
-        var materialSpan = material.Span;
-
-        for (var z = 0; z < countZ; z++)
-        {
-            for (var y = 0; y < countY; y++)
-            {
-                for (var x = 0; x < countX; x++)
-                {
-                    var position = new Vector3i(min.X + x, min.Y + y, min.Z + z);
-
-                    Assert.Equal(source.SampleContent(position), contentSpan[x, y, z]);
-                    Assert.Equal(
-                        contentSpan[x, y, z] > WorldConstants.ContentIsoLevel,
-                        materialSpan[x, y, z] != SurfaceMaterial.Null
-                    );
-                }
-            }
-        }
+        // The box starts two metres above the highest surface the graph can make, so every corner of its cells is out of the ground and no sample is evaluated:
+        AssertGenerateMatchesPointReads(source, new Vector3i(-16, top + 8, -16), new Vector3i(15, top + 39, 15));
     }
 
     [Fact]
@@ -93,5 +73,36 @@ public class TerrainGraphSourceTests
                 source.Generate(Vector3i.Zero, new Vector3i(-1, 0, 0), content.Span, material.Span);
             }
         );
+    }
+
+    private static void AssertGenerateMatchesPointReads(TerrainGraphSource source, Vector3i min, Vector3i max)
+    {
+        var countX = max.X - min.X + 1;
+        var countY = max.Y - min.Y + 1;
+        var countZ = max.Z - min.Z + 1;
+
+        var content = Memory3D<byte>.Allocate(countX, countY, countZ);
+        var material = Memory3D<byte>.Allocate(countX, countY, countZ);
+
+        source.Generate(min, max, content.Span, material.Span);
+        var contentSpan = content.Span;
+        var materialSpan = material.Span;
+
+        for (var z = 0; z < countZ; z++)
+        {
+            for (var y = 0; y < countY; y++)
+            {
+                for (var x = 0; x < countX; x++)
+                {
+                    var position = new Vector3i(min.X + x, min.Y + y, min.Z + z);
+
+                    Assert.Equal(source.SampleContent(position), contentSpan[x, y, z]);
+                    Assert.Equal(
+                        contentSpan[x, y, z] > WorldConstants.ContentIsoLevel,
+                        materialSpan[x, y, z] != SurfaceMaterial.Null
+                    );
+                }
+            }
+        }
     }
 }

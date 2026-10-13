@@ -7,6 +7,7 @@ namespace WinterGame.World.Generation.GraphProgram;
 ///     Has two instruction programs over slot buffers, the side tables they index, and one root per value the author asked for.
 ///     Every program's slots 0 to 2 are the position in meters, which the sampler writes before each evaluation.
 ///     With a cell boundary, the sample program also reserves the three fractions and the eight corner values.
+///     Each program starts with the instructions that do not depend on the height, so a range fill runs them once per column.
 ///     The graph is immutable data, so it is safe to share, but a <see cref="DensitySampler"/> holds the buffers that evaluation needs.
 /// </summary>
 public sealed class DensityGraph
@@ -37,6 +38,10 @@ public sealed class DensityGraph
 
     public readonly DensityInstruction[] CornerProgram;
     public readonly DensityInstruction[] SampleProgram;
+
+    // How many instructions at the start of each program read neither the height nor anything that does:
+    public readonly int CornerColumnLength;
+    public readonly int SampleColumnLength;
 
     /// <summary>
     ///     The slot the corner program writes for the value the cell boundary interpolates, or <see cref="DensityInstruction.NoSlot" /> when the graph has no boundary.
@@ -87,6 +92,8 @@ public sealed class DensityGraph
     internal DensityGraph(
         DensityInstruction[] cornerProgram,
         DensityInstruction[] sampleProgram,
+        int cornerColumnLength,
+        int sampleColumnLength,
         int boundaryRoot,
         int[] cornerRoots,
         int[] sampleRoots,
@@ -106,6 +113,8 @@ public sealed class DensityGraph
     {
         CornerProgram = cornerProgram;
         SampleProgram = sampleProgram;
+        CornerColumnLength = cornerColumnLength;
+        SampleColumnLength = sampleColumnLength;
         BoundaryRoot = boundaryRoot;
         CornerRoots = cornerRoots;
         SampleRoots = sampleRoots;
@@ -125,4 +134,25 @@ public sealed class DensityGraph
     }
 
     public int RootCount => RootIsCorner.Length;
+
+    /// <summary>
+    ///     Whether a root's per-sample value is the interpolated boundary itself, which is a weighted mean of its cell's corners and so never leaves their range.
+    /// </summary>
+    public bool IsBoundaryRoot(int rootIndex)
+    {
+        if (RootIsCorner[rootIndex] || !UsesBoundary)
+        {
+            return false;
+        }
+
+        foreach (var instruction in SampleProgram)
+        {
+            if (instruction.Output == SampleRoots[rootIndex])
+            {
+                return instruction.Op == DensityOp.Interpolated;
+            }
+        }
+
+        return false;
+    }
 }

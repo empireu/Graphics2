@@ -110,12 +110,14 @@ internal static class DensityGraphCompiler
         }
 
         var tables = new SideTables(builder, emission.Constants);
-        cornerProgram = tables.Remap(cornerProgram);
-        sampleProgram = tables.Remap(sampleProgram);
+        cornerProgram = HoistColumnInvariant(tables.Remap(cornerProgram), cornerSlotCount, reservesCellSlots: false, out var cornerColumnLength);
+        sampleProgram = HoistColumnInvariant(tables.Remap(sampleProgram), sampleSlotCount, hasInterpolation, out var sampleColumnLength);
 
         return new DensityGraph(
             cornerProgram,
             sampleProgram,
+            cornerColumnLength,
+            sampleColumnLength,
             boundaryRoot,
             cornerRoots,
             sampleRoots,
@@ -133,6 +135,53 @@ internal static class DensityGraphCompiler
             hasInterpolation,
             usesBoundary
         );
+    }
+
+    /// <summary>
+    ///     Moves every instruction that does not depend on the height to the front, keeping the order within both parts, so a range fill runs the front once per column.
+    ///     An instruction depends on the height when it interpolates, or reads the position's y, a cell's y fraction or corners, or an instruction that does.
+    /// </summary>
+    private static DensityInstruction[] HoistColumnInvariant(DensityInstruction[] program, int slotCount, bool reservesCellSlots, out int columnLength)
+    {
+        var varies = new bool[Math.Max(slotCount, DensityGraph.FirstInterpolatedSampleSlot)];
+
+        varies[DensityGraph.PositionSlotY] = true;
+
+        if (reservesCellSlots)
+        {
+            varies[DensityGraph.FractionSlotY] = true;
+
+            for (var corner = 0; corner < DensityGraph.CornerCount; corner++)
+            {
+                varies[DensityGraph.CornerSlotBase + corner] = true;
+            }
+        }
+
+        var hoisted = new List<DensityInstruction>(program.Length);
+        var perSample = new List<DensityInstruction>(program.Length);
+
+        foreach (var instruction in program)
+        {
+            if (instruction.Op == DensityOp.Interpolated || Reads(varies, instruction.Input0) || Reads(varies, instruction.Input1) || Reads(varies, instruction.Input2))
+            {
+                varies[instruction.Output] = true;
+                perSample.Add(instruction);
+            }
+            else
+            {
+                hoisted.Add(instruction);
+            }
+        }
+
+        columnLength = hoisted.Count;
+        hoisted.AddRange(perSample);
+
+        return hoisted.ToArray();
+    }
+
+    private static bool Reads(bool[] varies, int slot)
+    {
+        return slot >= 0 && varies[slot];
     }
 
     /// <summary>

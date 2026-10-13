@@ -203,6 +203,24 @@ public class DensityGraphTests
     }
 
     [Fact]
+    public void Compiler_HoistsWhatDoesNotDependOnTheHeight()
+    {
+        var builder = new DensityGraphBuilder(1);
+        var caves = builder.Noise3D("caves", frequency: 0.25f);
+        var depth = builder.Add(builder.Constant(4.0f), builder.Mul(builder.Y, builder.Constant(-1.0f)));
+        var hills = builder.Noise2D("hills", frequency: 0.25f);
+        var graph = builder.Compile([builder.Add(caves, depth), builder.Add(hills, hills)]);
+
+        // Both parts keep the author order, and the constants count as hoisted:
+        Assert.Equal(
+            [DensityOp.Constant, DensityOp.Constant, DensityOp.Noise2D, DensityOp.Add, DensityOp.Noise3D, DensityOp.Mul, DensityOp.Add, DensityOp.Add],
+            graph.SampleProgram.Select(instruction => instruction.Op)
+        );
+
+        Assert.Equal(4, graph.SampleColumnLength);
+    }
+
+    [Fact]
     public void Compiler_FoldsASelectWithAConstantCondition()
     {
         var builder = new DensityGraphBuilder(1);
