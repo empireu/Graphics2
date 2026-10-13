@@ -173,16 +173,21 @@ internal sealed class SunShadow : IDisposable
     }
 
     /// <summary>
-    ///     Renders <paramref name="geometry"/>, prepared for this frame, into each of <paramref name="cascades"/>' tiles of this frame's map, which is left ready for sampling.
+    ///     Renders each of <paramref name="cascades"/> into its tile of this frame's map from the same element of <paramref name="casters"/>, lists of <paramref name="geometry"/> written this frame. The map is left ready for sampling.
     ///     A null <paramref name="geometry"/> only clears the map, for a frame whose light casts nothing. The map is cleared either way, so it can always be bound.
     /// </summary>
-    public void Render(Frame frame, SectionGeometry? geometry, ReadOnlySpan<ShadowCascade> cascades)
+    public void Render(Frame frame, SectionGeometry? geometry, ReadOnlySpan<ShadowCascade> cascades, ReadOnlySpan<SectionDrawList> casters)
     {
         WgAssert.DebugIsOnRenderThread();
 
         if (cascades.Length != CascadeCount)
         {
             throw new ArgumentException($"Expected {CascadeCount} cascades, got {cascades.Length}.", nameof(cascades));
+        }
+
+        if (casters.Length != CascadeCount)
+        {
+            throw new ArgumentException($"Expected {CascadeCount} caster lists, got {casters.Length}.", nameof(casters));
         }
 
         using var pass = frame.BeginRenderPass(new RenderPassDescription
@@ -198,7 +203,7 @@ internal sealed class SunShadow : IDisposable
             }
         });
 
-        if (geometry == null || geometry.RunCount == 0)
+        if (geometry == null)
         {
             return;
         }
@@ -215,7 +220,7 @@ internal sealed class SunShadow : IDisposable
                 ViewProj = cascades[cascade].ViewProj
             });
 
-            geometry.Draw(pass);
+            geometry.Draw(pass, casters[cascade]);
         }
     }
 

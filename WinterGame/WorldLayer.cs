@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Graphics2.Core.Render;
 using Graphics2.Core.Resources;
+using Graphics2.Mathematics;
 using Graphics2.Renderer;
 using Graphics2.Renderer.Lines;
 using Graphics2.Renderer.Quads;
@@ -97,6 +98,21 @@ internal sealed class WorldLayer : IDisposable
     private bool _normalMapOcclusion = true;
 
     private bool _materialVariants = true;
+
+    /// <summary>
+    ///     Whether the camera and each shadow cascade draw only the sections inside their frustum, rather than all of them.
+    /// </summary>
+    private bool _frustumCulling = true;
+
+    /// <summary>
+    ///     The sections the camera's passes drew in the last <see cref="Render"/>, for the panel.
+    /// </summary>
+    private SectionDrawList _cameraSections;
+
+    /// <summary>
+    ///     The sections each shadow cascade drew in the last <see cref="Render"/>, for the panel.
+    /// </summary>
+    private readonly SectionDrawList[] _casterSections = new SectionDrawList[SunShadow.CascadeCount];
 
     /// <summary>
     ///     The light direction the shadow cascades are rendered for, which follows the sun unless <see cref="_freezeShadowDirection"/> holds it.
@@ -264,11 +280,19 @@ internal sealed class WorldLayer : IDisposable
         var lighting = frame.AllocateUniform(Unsafe.SizeOf<FrameLighting>());
         MemoryMarshal.Write(lighting.Data, frameLighting);
 
-        _geometry.Prepare(frame);
+        // The depth prepass and the world pass draw the camera's list, and each shadow cascade draws its own, or every pass draws one list of all the sections:
+        _geometry.Prepare(frame, _frustumCulling ? 1 + SunShadow.CascadeCount : 1);
+        _cameraSections = _geometry.AddView(_frustumCulling ? new Frustum(viewProj) : null);
+
+        for (var cascade = 0; cascade < SunShadow.CascadeCount; cascade++)
+        {
+            _casterSections[cascade] = _frustumCulling ? _geometry.AddView(new Frustum(frameLighting.ShadowCascades[cascade].ViewProj)) : _cameraSections;
+        }
+
         frame.WriteTimestamp("Mesh uploads");
 
         // At night the sun lights nothing, so its map is only cleared:
-        _sunShadow.Render(frame, _daylight.SunIsUp ? _geometry : null, frameLighting.ShadowCascades);
+        _sunShadow.Render(frame, _daylight.SunIsUp ? _geometry : null, frameLighting.ShadowCascades, _casterSections);
         frame.WriteTimestamp("Sun shadow");
 
         // The copy waits for every command before it, so it comes after the shadow pass, and only the world pass waits for the copy:
@@ -319,7 +343,7 @@ internal sealed class WorldLayer : IDisposable
         {
             if (lightVolume != null && materials.IsUploaded)
             {
-                _sections.DrawDepth(frame, depthPass, _geometry, lighting);
+                _sections.DrawDepth(frame, depthPass, _geometry, _cameraSections, lighting);
             }
         }
 
@@ -352,7 +376,7 @@ internal sealed class WorldLayer : IDisposable
         {
             if (lightVolume != null && materials.IsUploaded)
             {
-                _sections.Draw(frame, worldPass, _geometry, lighting, _sunShadow.GetMap(frame), _sunShadow.Sampler, lightVolume, _lightVolume.Sampler, ambientOcclusion, materials);
+                _sections.Draw(frame, worldPass, _geometry, _cameraSections, lighting,_sunShadow.GetMap(frame), _sunShadow.Sampler, lightVolume, _lightVolume.Sampler, ambientOcclusion, materials);
             }
 
             // The sky fills only what the level left at the far plane, so it comes last:
@@ -401,10 +425,19 @@ internal sealed class WorldLayer : IDisposable
         if (ImGui.Begin("World"))
         {
             ImGui.Text("Sections:");
-            ImGui.Text($"Drawn: {_geometry.SectionCount}");
+            ImGui.Text($"Meshed: {_geometry.SectionCount}");
             ImGui.Text($"Vertices: {_geometry.VertexCount}");
             ImGui.Text($"Indices: {_geometry.IndexCount}");
-            ImGui.Text($"Draws: {_geometry.RunCount} run(s) over {_geometry.BufferPairCount} buffer pair(s), per pass");
+            ImGui.Text($"Buffer pairs: {_geometry.BufferPairCount}");
+            ImGui.Checkbox("Frustum culling", ref _frustumCulling);
+            ImGui.Text($"Camera: {_cameraSections.SectionCount} section(s), {_cameraSections.IndexCount / 3} triangles, {_cameraSections.RunCount} draw(s)");
+
+            for (var cascade = 0; cascade < SunShadow.CascadeCount; cascade++)
+            {
+                var casters = _casterSections[cascade];
+                ImGui.Text($"Shadow cascade {cascade}: {casters.SectionCount} section(s), {casters.IndexCount / 3} triangles, {casters.RunCount} draw(s)");
+            }
+
             ImGui.Text($"Voxel size: {WorldConstants.VoxelSize} m");
 
             ImGui.Separator();

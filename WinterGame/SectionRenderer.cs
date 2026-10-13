@@ -75,13 +75,13 @@ internal sealed class SectionRenderer : IDisposable
     }
 
     /// <summary>
-    ///     Draws the depth and the world normal of <paramref name="geometry"/>, prepared for this frame, into <paramref name="pass"/>, whose colour attachment is in <see cref="WorldLayer.NormalFormat"/>, from the camera of <paramref name="lighting"/>'s <see cref="FrameLighting"/>.
+    ///     Draws the depth and the world normal of <paramref name="sections"/>, a list of <paramref name="geometry"/> written this frame, into <paramref name="pass"/>, whose colour attachment is in <see cref="WorldLayer.NormalFormat"/>, from the camera of <paramref name="lighting"/>'s <see cref="FrameLighting"/>.
     /// </summary>
-    public void DrawDepth(Frame frame, RenderPassEncoder pass, SectionGeometry geometry, RingAllocation lighting)
+    public void DrawDepth(Frame frame, RenderPassEncoder pass, SectionGeometry geometry, SectionDrawList sections, RingAllocation lighting)
     {
         WgAssert.DebugIsOnRenderThread();
 
-        if (geometry.RunCount == 0)
+        if (sections.RunCount == 0)
         {
             return;
         }
@@ -91,20 +91,20 @@ internal sealed class SectionRenderer : IDisposable
         pass.SetScissor(0, 0, (uint)frame.Extent.X, (uint)frame.Extent.Y);
         pass.BindUniformBuffer("lighting", lighting);
 
-        geometry.Draw(pass);
+        geometry.Draw(pass, sections);
     }
 
     /// <summary>
-    ///     Draws <paramref name="geometry"/>, prepared for this frame, into <paramref name="pass"/>, whose depth attachment holds <see cref="DrawDepth"/>'s depth of the same geometry and camera.
+    ///     Draws <paramref name="sections"/>, a list of <paramref name="geometry"/> written this frame, into <paramref name="pass"/>, whose depth attachment holds <see cref="DrawDepth"/>'s depth of the same list and camera.
     ///     <paramref name="lighting"/> holds this frame's <see cref="FrameLighting"/>, and <paramref name="shadowMap"/> has to have been rendered in this frame already.
     ///     <paramref name="lightVolume"/> is the <see cref="LightVolume"/> that <paramref name="lighting"/> describes, and <paramref name="ambientOcclusion"/> is this frame's <see cref="AmbientOcclusion"/>.
     ///     <paramref name="materials"/> has to be uploaded.
     /// </summary>
-    public void Draw(Frame frame, RenderPassEncoder pass, SectionGeometry geometry, RingAllocation lighting, VkTexture shadowMap, VkSampler shadowSampler, VkTexture lightVolume, VkSampler lightSampler, VkTexture ambientOcclusion, TerrainMaterials materials)
+    public void Draw(Frame frame, RenderPassEncoder pass, SectionGeometry geometry, SectionDrawList sections, RingAllocation lighting, VkTexture shadowMap, VkSampler shadowSampler, VkTexture lightVolume, VkSampler lightSampler, VkTexture ambientOcclusion, TerrainMaterials materials)
     {
         WgAssert.DebugIsOnRenderThread();
 
-        if (geometry.RunCount == 0)
+        if (sections.RunCount == 0)
         {
             return;
         }
@@ -122,7 +122,7 @@ internal sealed class SectionRenderer : IDisposable
         pass.BindTexture("materialNormal", materials.Normal);
         pass.BindSampler("materialSampler", materials.Sampler);
 
-        geometry.Draw(pass);
+        geometry.Draw(pass, sections);
     }
 
     public void Dispose()
