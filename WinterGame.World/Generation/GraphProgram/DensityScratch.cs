@@ -19,6 +19,15 @@ public sealed class DensityScratch
     /// </summary>
     internal float[] CornerCache = [];
 
+    /// <summary>
+    ///     One column of a range fill: every sample slot's values over the column's samples, one slot after another.
+    /// </summary>
+    internal float[] Lanes = [];
+
+    // Per sample of a column, its cell row relative to the range's first and its fraction through that row:
+    internal int[] CellRows = [];
+    internal float[] RowFractions = [];
+
     private readonly float[][] _rangeOutputs;
 
     public DensityScratch(DensityGraph graph)
@@ -75,4 +84,18 @@ public sealed class DensityScratch
     }
 
     internal float[] RangeOutputBuffer(int rootIndex) => _rangeOutputs[rootIndex];
+
+    internal void PrepareColumns(int slotCount, int countY)
+    {
+        if (Lanes.Length < slotCount * countY)
+        {
+            Lanes = new float[slotCount * countY];
+        }
+
+        if (CellRows.Length < countY)
+        {
+            CellRows = new int[countY];
+            RowFractions = new float[countY];
+        }
+    }
 }

@@ -12,8 +12,44 @@ namespace WinterGame.World.Generation.GraphProgram;
 /// </summary>
 public sealed class DensitySampler
 {
+    /// <summary>
+    ///     A column's view of the corner lattices, for the instructions that read their cell.
+    /// </summary>
+    private readonly struct ColumnCells(float[] cornerCache, int cornerCount, int strideY, int strideZ, int columnBase, int[] cellRows, float[] rowFractions)
+    {
+        public readonly float[] CornerCache = cornerCache;
+
+        // One boundary's lattice is this long, and the next one follows it:
+        public readonly int CornerCount = cornerCount;
+
+        public readonly int StrideY = strideY;
+        public readonly int StrideZ = strideZ;
+
+        /// <summary>
+        ///     The lattice index of the column's cell in the range's first cell row.
+        /// </summary>
+        public readonly int ColumnBase = columnBase;
+
+        public readonly int[] CellRows = cellRows;
+        public readonly float[] RowFractions = rowFractions;
+    }
+
     private readonly FastNoiseLite[] _noises;
     private readonly DensityScratch _scratch;
+
+    /// <summary>
+    ///     Whether each root's slot changes along a column, so a range fill reads it from the lanes rather than from the column's one value.
+    /// </summary>
+    private readonly bool[] _rootVaries;
+
+    /// <summary>
+    ///     The column-invariant slots the per-sample instructions read, other than constants, which a range fill copies into the lanes once per column.
+    /// </summary>
+    private readonly int[] _columnInputs;
+
+    // The constant slots the per-sample instructions read and their values, which a range fill copies into the lanes once:
+    private readonly int[] _constantInputs;
+    private readonly float[] _constantInputValues;
 
     /// <summary>
     ///     Creates a sampler with a scratch of its own, which makes it safe to use on one thread only.
@@ -42,6 +78,67 @@ public sealed class DensitySampler
             noise.SetFrequency(spec.Frequency);
 
             _noises[index] = noise;
+        }
+
+        _rootVaries = new bool[graph.RootCount];
+
+        var program = graph.SampleProgram;
+        var varies = new bool[Math.Max(graph.SampleSlotCount, DensityGraph.FirstProgramSlot)];
+        var constants = new float?[varies.Length];
+        var inputs = new bool[varies.Length];
+
+        varies[DensityGraph.PositionSlotY] = true;
+
+        for (var index = 0; index < graph.SampleColumnLength; index++)
+        {
+            if (program[index].Op == DensityOp.Constant)
+            {
+                constants[program[index].Output] = graph.Constants[program[index].Payload];
+            }
+        }
+
+        for (var index = graph.SampleColumnLength; index < program.Length; index++)
+        {
+            foreach (var input in new[] { program[index].Input0, program[index].Input1, program[index].Input2 })
+            {
+                if (input >= 0 && !varies[input])
+                {
+                    inputs[input] = true;
+                }
+            }
+
+            varies[program[index].Output] = true;
+        }
+
+        var columnInputs = new List<int>();
+        var constantInputs = new List<int>();
+        var constantInputValues = new List<float>();
+
+        for (var slot = 0; slot < inputs.Length; slot++)
+        {
+            if (!inputs[slot])
+            {
+                continue;
+            }
+
+            if (constants[slot] is { } value)
+            {
+                constantInputs.Add(slot);
+                constantInputValues.Add(value);
+            }
+            else
+            {
+                columnInputs.Add(slot);
+            }
+        }
+
+        _columnInputs = columnInputs.ToArray();
+        _constantInputs = constantInputs.ToArray();
+        _constantInputValues = constantInputValues.ToArray();
+
+        for (var root = 0; root < graph.RootCount; root++)
+        {
+            _rootVaries[root] = !graph.RootIsCorner[root] && varies[graph.SampleRoots[root]];
         }
     }
 
@@ -199,13 +296,9 @@ public sealed class DensitySampler
         var spacing = SampleSpacing(lod);
         var values = _scratch.SampleValues;
         var cornerValues = _scratch.CornerValues;
-        var sampleProgram = Graph.SampleProgram;
-        var sampleColumnLength = Graph.SampleColumnLength;
 
         if (!Graph.HasInterpolation || !Graph.UsesBoundary)
         {
-            _scratch.PrepareRange(countX, countY, countZ);
-
             if (Graph.HasInterpolation)
             {
                 values[DensityGraph.FractionSlotX] = 0.0f;
@@ -213,23 +306,7 @@ public sealed class DensitySampler
                 values[DensityGraph.FractionSlotZ] = 0.0f;
             }
 
-            for (var z = 0; z < countZ; z++)
-            {
-                values[DensityGraph.PositionSlotZ] = (min.Z + z) * spacing;
-
-                for (var x = 0; x < countX; x++)
-                {
-                    values[DensityGraph.PositionSlotX] = (min.X + x) * spacing;
-                    Execute(sampleProgram, 0, sampleColumnLength, values);
-
-                    for (var y = 0; y < countY; y++)
-                    {
-                        values[DensityGraph.PositionSlotY] = (min.Y + y) * spacing;
-                        Execute(sampleProgram, sampleColumnLength, sampleProgram.Length, values);
-                        WriteRoots(values, x + (y + z * countY) * countX);
-                    }
-                }
-            }
+            FillColumns(spacing, min, countX, countY, countZ, 0, 0, 0, new ColumnCells([], 0, 0, 0, 0, [], []));
 
             return true;
         }
@@ -295,8 +372,51 @@ public sealed class DensitySampler
             return false;
         }
 
-        _scratch.PrepareRange(countX, countY, countZ);
         WriteInverseCellLengths(values, spacing);
+        FillColumns(spacing, min, countX, countY, countZ, firstCellX, firstCellY, firstCellZ, new ColumnCells(cornerCache, cornerCount, cornerStrideY, cornerStrideZ, 0, [], []));
+
+        return true;
+    }
+
+    /// <summary>
+    ///     Fills every sample-side root over the box one column at a time.
+    ///     The column-invariant instructions run once per column into the scalar slots, and every other instruction runs over the whole column into its lanes, which costs one dispatch per instruction and column rather than per sample.
+    ///     Both do the same arithmetic in the same order per sample as a point read, so the two agree bit for bit.
+    ///     When the samples read a boundary, <paramref name="cells"/> holds the corner lattices, and its row arrays and column base are filled here.
+    /// </summary>
+    private void FillColumns(float spacing, Vector3i min, int countX, int countY, int countZ, int firstCellX, int firstCellY, int firstCellZ, ColumnCells cells)
+    {
+        var values = _scratch.SampleValues;
+        var sampleProgram = Graph.SampleProgram;
+        var sampleColumnLength = Graph.SampleColumnLength;
+        var hasCells = Graph.HasInterpolation && Graph.UsesBoundary;
+
+        _scratch.PrepareRange(countX, countY, countZ);
+        _scratch.PrepareColumns(Graph.SampleSlotCount, countY);
+
+        var lanes = _scratch.Lanes;
+        var cellRows = _scratch.CellRows;
+        var rowFractions = _scratch.RowFractions;
+
+        for (var y = 0; y < countY; y++)
+        {
+            var worldY = min.Y + y;
+
+            lanes[DensityGraph.PositionSlotY * countY + y] = worldY * spacing;
+
+            if (hasCells)
+            {
+                var cellY = MathX.FloorDiv(worldY, Graph.CellY) - firstCellY;
+
+                cellRows[y] = cellY;
+                rowFractions[y] = (worldY - (cellY + firstCellY) * Graph.CellY) / (float)Graph.CellY;
+            }
+        }
+
+        for (var index = 0; index < _constantInputs.Length; index++)
+        {
+            lanes.AsSpan(_constantInputs[index] * countY, countY).Fill(_constantInputValues[index]);
+        }
 
         for (var z = 0; z < countZ; z++)
         {
@@ -304,7 +424,11 @@ public sealed class DensitySampler
             var cellZ = MathX.FloorDiv(worldZ, Graph.CellZ) - firstCellZ;
 
             values[DensityGraph.PositionSlotZ] = worldZ * spacing;
-            values[DensityGraph.FractionSlotZ] = (worldZ - (cellZ + firstCellZ) * Graph.CellZ) / (float)Graph.CellZ;
+
+            if (hasCells)
+            {
+                values[DensityGraph.FractionSlotZ] = (worldZ - (cellZ + firstCellZ) * Graph.CellZ) / (float)Graph.CellZ;
+            }
 
             for (var x = 0; x < countX; x++)
             {
@@ -312,46 +436,27 @@ public sealed class DensitySampler
                 var cellX = MathX.FloorDiv(worldX, Graph.CellX) - firstCellX;
 
                 values[DensityGraph.PositionSlotX] = worldX * spacing;
-                values[DensityGraph.FractionSlotX] = (worldX - (cellX + firstCellX) * Graph.CellX) / (float)Graph.CellX;
+
+                if (hasCells)
+                {
+                    values[DensityGraph.FractionSlotX] = (worldX - (cellX + firstCellX) * Graph.CellX) / (float)Graph.CellX;
+                }
+
                 Execute(sampleProgram, 0, sampleColumnLength, values);
 
-                // The corners change only when the column enters the next cell up:
-                var loadedCellY = -1;
-
-                for (var y = 0; y < countY; y++)
+                for (var index = 0; index < _columnInputs.Length; index++)
                 {
-                    var worldY = min.Y + y;
-                    var cellY = MathX.FloorDiv(worldY, Graph.CellY) - firstCellY;
-
-                    values[DensityGraph.PositionSlotY] = worldY * spacing;
-                    values[DensityGraph.FractionSlotY] = (worldY - (cellY + firstCellY) * Graph.CellY) / (float)Graph.CellY;
-
-                    if (cellY != loadedCellY)
-                    {
-                        loadedCellY = cellY;
-
-                        var cornerIndex = cellX + cellY * cornerStrideY + cellZ * cornerStrideZ;
-
-                        for (var boundary = 0; boundary < boundaryRoots.Length; boundary++)
-                        {
-                            var slotBase = DensityGraph.CornerSlotBase + boundary * DensityGraph.CornerCount;
-                            var latticeBase = boundary * cornerCount + cornerIndex;
-
-                            for (var corner = 0; corner < DensityGraph.CornerCount; corner++)
-                            {
-                                var offset = (corner & 1) + ((corner >> 1) & 1) * cornerStrideY + ((corner >> 2) & 1) * cornerStrideZ;
-                                values[slotBase + corner] = cornerCache[latticeBase + offset];
-                            }
-                        }
-                    }
-
-                    Execute(sampleProgram, sampleColumnLength, sampleProgram.Length, values);
-                    WriteRoots(values, x + (y + z * countY) * countX);
+                    lanes.AsSpan(_columnInputs[index] * countY, countY).Fill(values[_columnInputs[index]]);
                 }
+
+                var columnCells = hasCells
+                    ? new ColumnCells(cells.CornerCache, cells.CornerCount, cells.StrideY, cells.StrideZ, cellX + cellZ * cells.StrideZ, cellRows, rowFractions)
+                    : cells;
+
+                ExecuteLanes(sampleProgram, sampleColumnLength, sampleProgram.Length, values, lanes, countY, columnCells);
+                WriteColumnRoots(values, lanes, countX, countY, x + z * countY * countX);
             }
         }
-
-        return true;
     }
 
     /// <summary>
@@ -387,17 +492,6 @@ public sealed class DensitySampler
                 {
                     destination[x, y, z] = source[x + y * countX + z * countX * countY];
                 }
-            }
-        }
-    }
-
-    private void WriteRoots(float[] values, int index)
-    {
-        for (var root = 0; root < Graph.RootCount; root++)
-        {
-            if (!Graph.RootIsCorner[root])
-            {
-                _scratch.RangeOutputBuffer(root)[index] = values[Graph.SampleRoots[root]];
             }
         }
     }
@@ -486,81 +580,435 @@ public sealed class DensitySampler
         values[DensityGraph.InverseCellLengthSlotZ] = 1.0f / (Graph.CellZ * spacing);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static float Interpolate(float[] values, int cornerBase)
+    /// <summary>
+    ///     Runs the instructions in [<paramref name="first"/>, <paramref name="end"/>) of the sample program over one column, each over every sample of its lanes.
+    ///     A lane is a slot's <paramref name="count"/> values, at <c>slot * count</c>, and every input a lane does not vary in has been copied in already.
+    /// </summary>
+    private void ExecuteLanes(DensityInstruction[] program, int first, int end, float[] values, float[] lanes, int count, in ColumnCells cells)
     {
-        var fractionX = values[DensityGraph.FractionSlotX];
-        var fractionY = values[DensityGraph.FractionSlotY];
-        var fractionZ = values[DensityGraph.FractionSlotZ];
-
-        var value = 0.0f;
-
-        for (var corner = 0; corner < DensityGraph.CornerCount; corner++)
+        for (var index = first; index < end; index++)
         {
-            var weightX = (corner & 1) != 0 ? fractionX : 1.0f - fractionX;
-            var weightY = (corner & 2) != 0 ? fractionY : 1.0f - fractionY;
-            var weightZ = (corner & 4) != 0 ? fractionZ : 1.0f - fractionZ;
+            ref readonly var instruction = ref program[index];
+            var output = lanes.AsSpan(instruction.Output * count, count);
 
-            value += values[cornerBase + corner] * weightX * weightY * weightZ;
+            switch (instruction.Op)
+            {
+                case DensityOp.Constant:
+                    output.Fill(Graph.Constants[instruction.Payload]);
+                    break;
+                case DensityOp.Noise2D:
+                {
+                    var noise = _noises[instruction.Payload];
+                    var x = Lane(lanes, instruction.Input0, count);
+                    var z = Lane(lanes, instruction.Input1, count);
+
+                    for (var sample = 0; sample < output.Length; sample++)
+                    {
+                        output[sample] = noise.GetNoise(x[sample], z[sample]);
+                    }
+
+                    break;
+                }
+                case DensityOp.Noise3D:
+                {
+                    var noise = _noises[instruction.Payload];
+                    var x = Lane(lanes, instruction.Input0, count);
+                    var y = Lane(lanes, instruction.Input1, count);
+                    var z = Lane(lanes, instruction.Input2, count);
+
+                    for (var sample = 0; sample < output.Length; sample++)
+                    {
+                        output[sample] = noise.GetNoise(x[sample], y[sample], z[sample]);
+                    }
+
+                    break;
+                }
+                case DensityOp.Add:
+                {
+                    var left = Lane(lanes, instruction.Input0, count);
+                    var right = Lane(lanes, instruction.Input1, count);
+
+                    for (var sample = 0; sample < output.Length; sample++)
+                    {
+                        output[sample] = left[sample] + right[sample];
+                    }
+
+                    break;
+                }
+                case DensityOp.Mul:
+                {
+                    var left = Lane(lanes, instruction.Input0, count);
+                    var right = Lane(lanes, instruction.Input1, count);
+
+                    for (var sample = 0; sample < output.Length; sample++)
+                    {
+                        output[sample] = left[sample] * right[sample];
+                    }
+
+                    break;
+                }
+                case DensityOp.Clamp:
+                {
+                    var value = Lane(lanes, instruction.Input0, count);
+                    var min = Lane(lanes, instruction.Input1, count);
+                    var max = Lane(lanes, instruction.Input2, count);
+
+                    for (var sample = 0; sample < output.Length; sample++)
+                    {
+                        output[sample] = Math.Clamp(value[sample], min[sample], max[sample]);
+                    }
+
+                    break;
+                }
+                case DensityOp.Min:
+                {
+                    var left = Lane(lanes, instruction.Input0, count);
+                    var right = Lane(lanes, instruction.Input1, count);
+
+                    for (var sample = 0; sample < output.Length; sample++)
+                    {
+                        output[sample] = Math.Min(left[sample], right[sample]);
+                    }
+
+                    break;
+                }
+                case DensityOp.Max:
+                {
+                    var left = Lane(lanes, instruction.Input0, count);
+                    var right = Lane(lanes, instruction.Input1, count);
+
+                    for (var sample = 0; sample < output.Length; sample++)
+                    {
+                        output[sample] = Math.Max(left[sample], right[sample]);
+                    }
+
+                    break;
+                }
+                case DensityOp.Abs:
+                {
+                    var value = Lane(lanes, instruction.Input0, count);
+
+                    for (var sample = 0; sample < output.Length; sample++)
+                    {
+                        output[sample] = Math.Abs(value[sample]);
+                    }
+
+                    break;
+                }
+                case DensityOp.Div:
+                {
+                    var left = Lane(lanes, instruction.Input0, count);
+                    var right = Lane(lanes, instruction.Input1, count);
+
+                    for (var sample = 0; sample < output.Length; sample++)
+                    {
+                        output[sample] = left[sample] / right[sample];
+                    }
+
+                    break;
+                }
+                case DensityOp.Sqrt:
+                {
+                    var value = Lane(lanes, instruction.Input0, count);
+
+                    for (var sample = 0; sample < output.Length; sample++)
+                    {
+                        output[sample] = MathF.Sqrt(Math.Max(value[sample], 0.0f));
+                    }
+
+                    break;
+                }
+                case DensityOp.Spline:
+                {
+                    var spline = Graph.Splines[instruction.Payload];
+                    var value = Lane(lanes, instruction.Input0, count);
+
+                    for (var sample = 0; sample < output.Length; sample++)
+                    {
+                        output[sample] = spline.Evaluate(value[sample]);
+                    }
+
+                    break;
+                }
+                case DensityOp.YClampedGradient:
+                {
+                    var gradient = Graph.Gradients[instruction.Payload];
+                    var value = Lane(lanes, instruction.Input0, count);
+
+                    for (var sample = 0; sample < output.Length; sample++)
+                    {
+                        output[sample] = gradient.Evaluate(value[sample]);
+                    }
+
+                    break;
+                }
+                case DensityOp.Blend:
+                {
+                    var from = Lane(lanes, instruction.Input0, count);
+                    var to = Lane(lanes, instruction.Input1, count);
+                    var weight = Lane(lanes, instruction.Input2, count);
+
+                    for (var sample = 0; sample < output.Length; sample++)
+                    {
+                        output[sample] = from[sample] + (to[sample] - from[sample]) * weight[sample];
+                    }
+
+                    break;
+                }
+                case DensityOp.Select:
+                {
+                    var condition = Lane(lanes, instruction.Input0, count);
+                    var ifPositive = Lane(lanes, instruction.Input1, count);
+                    var ifNotPositive = Lane(lanes, instruction.Input2, count);
+
+                    for (var sample = 0; sample < output.Length; sample++)
+                    {
+                        output[sample] = condition[sample] > 0.0f ? ifPositive[sample] : ifNotPositive[sample];
+                    }
+
+                    break;
+                }
+                case DensityOp.BandedTable:
+                {
+                    var strata = Graph.StrataSets[instruction.Payload];
+                    var height = Lane(lanes, instruction.Input0, count);
+                    var province = Lane(lanes, instruction.Input1, count);
+
+                    for (var sample = 0; sample < output.Length; sample++)
+                    {
+                        output[sample] = strata.Select(province[sample], height[sample]);
+                    }
+
+                    break;
+                }
+                case DensityOp.Interpolated or DensityOp.SlopeCosine or DensityOp.SurfaceDistance:
+                    ExecuteCellLanes(instruction.Op, instruction.Payload, values, output, cells);
+                    break;
+                default:
+                    throw new InvalidOperationException($"Invalid opcode {instruction.Op}");
+            }
         }
+    }
 
-        return value;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ReadOnlySpan<float> Lane(float[] lanes, int slot, int count)
+    {
+        return new ReadOnlySpan<float>(lanes, slot * count, count);
     }
 
     /// <summary>
-    ///     The gradient in meters of the trilinear blend of the eight corners starting at <paramref name="cornerBase"/>, at the cell's fractions.
+    ///     One instruction that reads its cell over a column, reading the corners of each cell row from the boundary's lattice once.
     /// </summary>
-    private static void Gradient(float[] values, int cornerBase, out float gradientX, out float gradientY, out float gradientZ)
+    private static void ExecuteCellLanes(DensityOp op, int boundary, float[] values, Span<float> output, in ColumnCells cells)
     {
         var fractionX = values[DensityGraph.FractionSlotX];
-        var fractionY = values[DensityGraph.FractionSlotY];
         var fractionZ = values[DensityGraph.FractionSlotZ];
+        var inverseLengthX = values[DensityGraph.InverseCellLengthSlotX];
+        var inverseLengthY = values[DensityGraph.InverseCellLengthSlotY];
+        var inverseLengthZ = values[DensityGraph.InverseCellLengthSlotZ];
+        var latticeBase = boundary * cells.CornerCount + cells.ColumnBase;
+        var loadedRow = -1;
+        var corners = default(CellCorners);
 
-        var corner0 = values[cornerBase];
-        var corner1 = values[cornerBase + 1];
-        var corner2 = values[cornerBase + 2];
-        var corner3 = values[cornerBase + 3];
-        var corner4 = values[cornerBase + 4];
-        var corner5 = values[cornerBase + 5];
-        var corner6 = values[cornerBase + 6];
-        var corner7 = values[cornerBase + 7];
+        for (var sample = 0; sample < output.Length; sample++)
+        {
+            var row = cells.CellRows[sample];
 
-        // Each axis's derivative is its four edge differences weighted by the other two fractions:
-        var alongX = ((corner1 - corner0) * (1.0f - fractionY) + (corner3 - corner2) * fractionY) * (1.0f - fractionZ)
-            + ((corner5 - corner4) * (1.0f - fractionY) + (corner7 - corner6) * fractionY) * fractionZ;
+            if (row != loadedRow)
+            {
+                loadedRow = row;
+                corners = CellCorners.FromLattice(cells.CornerCache, latticeBase + row * cells.StrideY, cells.StrideY, cells.StrideZ);
+            }
 
-        var alongY = ((corner2 - corner0) * (1.0f - fractionX) + (corner3 - corner1) * fractionX) * (1.0f - fractionZ)
-            + ((corner6 - corner4) * (1.0f - fractionX) + (corner7 - corner5) * fractionX) * fractionZ;
+            var fractionY = cells.RowFractions[sample];
 
-        var alongZ = ((corner4 - corner0) * (1.0f - fractionX) + (corner5 - corner1) * fractionX) * (1.0f - fractionY)
-            + ((corner6 - corner2) * (1.0f - fractionX) + (corner7 - corner3) * fractionX) * fractionY;
+            output[sample] = op switch
+            {
+                DensityOp.Interpolated => corners.Blend(fractionX, fractionY, fractionZ),
+                DensityOp.SlopeCosine => corners.SlopeCosine(fractionX, fractionY, fractionZ, inverseLengthX, inverseLengthY, inverseLengthZ),
+                _ => corners.SurfaceDistance(fractionX, fractionY, fractionZ, inverseLengthX, inverseLengthY, inverseLengthZ)
+            };
+        }
+    }
 
-        gradientX = alongX * values[DensityGraph.InverseCellLengthSlotX];
-        gradientY = alongY * values[DensityGraph.InverseCellLengthSlotY];
-        gradientZ = alongZ * values[DensityGraph.InverseCellLengthSlotZ];
+    /// <summary>
+    ///     Copies a column's value of every sample-side root into the range outputs, which run x fastest, so a column's samples are <paramref name="countX"/> apart.
+    /// </summary>
+    private void WriteColumnRoots(float[] values, float[] lanes, int countX, int countY, int columnIndex)
+    {
+        for (var root = 0; root < Graph.RootCount; root++)
+        {
+            if (Graph.RootIsCorner[root])
+            {
+                continue;
+            }
+
+            var buffer = _scratch.RangeOutputBuffer(root);
+            var slot = Graph.SampleRoots[root];
+
+            if (_rootVaries[root])
+            {
+                var lane = Lane(lanes, slot, countY);
+
+                for (var y = 0; y < countY; y++)
+                {
+                    buffer[columnIndex + y * countX] = lane[y];
+                }
+            }
+            else
+            {
+                var value = values[slot];
+
+                for (var y = 0; y < countY; y++)
+                {
+                    buffer[columnIndex + y * countX] = value;
+                }
+            }
+        }
+    }
+
+    private static float Interpolate(float[] values, int cornerBase)
+    {
+        return CellCorners.FromSlots(values, cornerBase).Blend(values[DensityGraph.FractionSlotX], values[DensityGraph.FractionSlotY], values[DensityGraph.FractionSlotZ]);
     }
 
     private static float SlopeCosine(float[] values, int cornerBase)
     {
-        Gradient(values, cornerBase, out var gradientX, out var gradientY, out var gradientZ);
-
-        var lengthSquared = gradientX * gradientX + gradientY * gradientY + gradientZ * gradientZ;
-
-        if (lengthSquared < DensityGraph.MinimumGradientLength * DensityGraph.MinimumGradientLength)
-        {
-            return 1.0f;
-        }
-
-        // The value is positive inside, so the outward normal is the negated gradient:
-        return -gradientY / MathF.Sqrt(lengthSquared);
+        return CellCorners.FromSlots(values, cornerBase).SlopeCosine(
+            values[DensityGraph.FractionSlotX],
+            values[DensityGraph.FractionSlotY],
+            values[DensityGraph.FractionSlotZ],
+            values[DensityGraph.InverseCellLengthSlotX],
+            values[DensityGraph.InverseCellLengthSlotY],
+            values[DensityGraph.InverseCellLengthSlotZ]
+        );
     }
 
     private static float SurfaceDistance(float[] values, int cornerBase)
     {
-        Gradient(values, cornerBase, out var gradientX, out var gradientY, out var gradientZ);
+        return CellCorners.FromSlots(values, cornerBase).SurfaceDistance(
+            values[DensityGraph.FractionSlotX],
+            values[DensityGraph.FractionSlotY],
+            values[DensityGraph.FractionSlotZ],
+            values[DensityGraph.InverseCellLengthSlotX],
+            values[DensityGraph.InverseCellLengthSlotY],
+            values[DensityGraph.InverseCellLengthSlotZ]
+        );
+    }
 
-        var length = MathF.Sqrt(gradientX * gradientX + gradientY * gradientY + gradientZ * gradientZ);
+    /// <summary>
+    ///     One boundary's eight cell corner values, packed like the corner slots, and the arithmetic every read of a cell shares, so a point read and a range fill agree bit for bit.
+    /// </summary>
+    private readonly struct CellCorners(float corner0, float corner1, float corner2, float corner3, float corner4, float corner5, float corner6, float corner7)
+    {
+        private readonly float _corner0 = corner0;
+        private readonly float _corner1 = corner1;
+        private readonly float _corner2 = corner2;
+        private readonly float _corner3 = corner3;
+        private readonly float _corner4 = corner4;
+        private readonly float _corner5 = corner5;
+        private readonly float _corner6 = corner6;
+        private readonly float _corner7 = corner7;
 
-        return Interpolate(values, cornerBase) / Math.Max(length, DensityGraph.MinimumGradientLength);
+        public static CellCorners FromSlots(float[] values, int cornerBase)
+        {
+            return new CellCorners(
+                values[cornerBase],
+                values[cornerBase + 1],
+                values[cornerBase + 2],
+                values[cornerBase + 3],
+                values[cornerBase + 4],
+                values[cornerBase + 5],
+                values[cornerBase + 6],
+                values[cornerBase + 7]
+            );
+        }
+
+        public static CellCorners FromLattice(float[] lattice, int index, int strideY, int strideZ)
+        {
+            return new CellCorners(
+                lattice[index],
+                lattice[index + 1],
+                lattice[index + strideY],
+                lattice[index + 1 + strideY],
+                lattice[index + strideZ],
+                lattice[index + 1 + strideZ],
+                lattice[index + strideY + strideZ],
+                lattice[index + 1 + strideY + strideZ]
+            );
+        }
+
+        /// <summary>
+        ///     The trilinear blend, summed corner by corner from zero.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public float Blend(float fractionX, float fractionY, float fractionZ)
+        {
+            var value = 0.0f;
+
+            value += _corner0 * (1.0f - fractionX) * (1.0f - fractionY) * (1.0f - fractionZ);
+            value += _corner1 * fractionX * (1.0f - fractionY) * (1.0f - fractionZ);
+            value += _corner2 * (1.0f - fractionX) * fractionY * (1.0f - fractionZ);
+            value += _corner3 * fractionX * fractionY * (1.0f - fractionZ);
+            value += _corner4 * (1.0f - fractionX) * (1.0f - fractionY) * fractionZ;
+            value += _corner5 * fractionX * (1.0f - fractionY) * fractionZ;
+            value += _corner6 * (1.0f - fractionX) * fractionY * fractionZ;
+            value += _corner7 * fractionX * fractionY * fractionZ;
+
+            return value;
+        }
+
+        public float SlopeCosine(float fractionX, float fractionY, float fractionZ, float inverseLengthX, float inverseLengthY, float inverseLengthZ)
+        {
+            Gradient(fractionX, fractionY, fractionZ, inverseLengthX, inverseLengthY, inverseLengthZ, out var gradientX, out var gradientY, out var gradientZ);
+
+            var lengthSquared = gradientX * gradientX + gradientY * gradientY + gradientZ * gradientZ;
+
+            if (lengthSquared < DensityGraph.MinimumGradientLength * DensityGraph.MinimumGradientLength)
+            {
+                return 1.0f;
+            }
+
+            // The value is positive inside, so the outward normal is the negated gradient:
+            return -gradientY / MathF.Sqrt(lengthSquared);
+        }
+
+        public float SurfaceDistance(float fractionX, float fractionY, float fractionZ, float inverseLengthX, float inverseLengthY, float inverseLengthZ)
+        {
+            Gradient(fractionX, fractionY, fractionZ, inverseLengthX, inverseLengthY, inverseLengthZ, out var gradientX, out var gradientY, out var gradientZ);
+
+            var length = MathF.Sqrt(gradientX * gradientX + gradientY * gradientY + gradientZ * gradientZ);
+
+            return Blend(fractionX, fractionY, fractionZ) / Math.Max(length, DensityGraph.MinimumGradientLength);
+        }
+
+        /// <summary>
+        ///     The gradient in meters of the trilinear blend at the cell's fractions.
+        /// </summary>
+        private void Gradient(
+            float fractionX,
+            float fractionY,
+            float fractionZ,
+            float inverseLengthX,
+            float inverseLengthY,
+            float inverseLengthZ,
+            out float gradientX,
+            out float gradientY,
+            out float gradientZ)
+        {
+            // Each axis's derivative is its four edge differences weighted by the other two fractions:
+            var alongX = ((_corner1 - _corner0) * (1.0f - fractionY) + (_corner3 - _corner2) * fractionY) * (1.0f - fractionZ)
+                + ((_corner5 - _corner4) * (1.0f - fractionY) + (_corner7 - _corner6) * fractionY) * fractionZ;
+
+            var alongY = ((_corner2 - _corner0) * (1.0f - fractionX) + (_corner3 - _corner1) * fractionX) * (1.0f - fractionZ)
+                + ((_corner6 - _corner4) * (1.0f - fractionX) + (_corner7 - _corner5) * fractionX) * fractionZ;
+
+            var alongZ = ((_corner4 - _corner0) * (1.0f - fractionX) + (_corner5 - _corner1) * fractionX) * (1.0f - fractionY)
+                + ((_corner6 - _corner2) * (1.0f - fractionX) + (_corner7 - _corner3) * fractionX) * fractionY;
+
+            gradientX = alongX * inverseLengthX;
+            gradientY = alongY * inverseLengthY;
+            gradientZ = alongZ * inverseLengthZ;
+        }
     }
 }
