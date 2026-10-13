@@ -22,7 +22,7 @@ internal readonly struct SkyFloorMove(int brickX, int brickZ, int previousFloor,
 /// <summary>
 ///     Keeps a sky floor per brick column, for every section column that has had a ready section.
 ///     A column's floor is its lowest brick that sees the sky. Every brick at or above it sees the sky, and the brick below it blocks (<see cref="SkyBlockers"/>).
-///     A walk finds the floor by going down from the top of <see cref="WorldLevel.LowestSkySectionY"/> one ready section at a time.
+///     A walk finds the floor by going down from the top of its section column's <see cref="WorldLevel.GetLowestSkySectionY"/> one ready section at a time.
 ///     When the section below is not ready, the walk waits at its top and the floor is not found yet.
 ///     Each section the level reports as ready or written is checked against the floors. A blocking brick above a floor raises it, and an opened floor lets the walk go on.
 ///     A record is never freed, so it keeps the floors of a section column whose sections unloaded.
@@ -40,17 +40,11 @@ internal sealed class SkyColumns
     private readonly Dictionary<ulong, SkyColumnRecord> _records = [];
     private readonly SkyColumnAllocator _storage = new();
 
-    /// <summary>
-    ///     The floor every column of a new record starts at. It is the top of <see cref="WorldLevel.LowestSkySectionY"/>.
-    /// </summary>
-    private readonly int _startFloor;
-
     public SkyColumns(WorldLevel level)
     {
         ArgumentNullException.ThrowIfNull(level);
 
         _level = level;
-        _startFloor = (level.LowestSkySectionY + 1) << Section.BricksPerAxisLog;
     }
 
     /// <summary>
@@ -123,9 +117,10 @@ internal sealed class SkyColumns
 
         ref var record = ref CollectionsMarshal.GetValueRefOrAddDefault(_records, SectionPos.Pack(position.X, 0, position.Z), out var exists);
 
+        // Every column of a new record starts at the top of its section column's lowest sky section:
         if (!exists)
         {
-            record = _storage.Allocate(_startFloor);
+            record = _storage.Allocate((_level.GetLowestSkySectionY(position.X, position.Z) + 1) << Section.BricksPerAxisLog);
         }
 
         var moved = false;

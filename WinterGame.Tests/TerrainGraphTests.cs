@@ -10,6 +10,11 @@ public class TerrainGraphTests(ITestOutputHelper output)
 {
     private static readonly TerrainConfig Config = new();
 
+    /// <summary>
+    ///     The game's seed, which has a river through the origin.
+    /// </summary>
+    private const int IceSeed = 3141;
+
     [Fact]
     public void Cells_KeepTheSurfaceWithinAFewBytes()
     {
@@ -108,6 +113,136 @@ public class TerrainGraphTests(ITestOutputHelper output)
                 Assert.True(sampler.Sample(new Vector3i(x, 0, z), 0, graph.ElevationRoot) <= graph.MaxSurfaceY);
             }
         }
+    }
+
+    [Fact]
+    public void Ice_TopIsFlatAtTheIceLevel()
+    {
+        foreach (var interpolate in new[] { false, true })
+        {
+            var graph = TerrainGraph.Build(IceSeed, Config, interpolate);
+            var sampler = new DensitySampler(graph.Graph);
+            var level = (int)MathF.Round(Config.IceLevel / WorldConstants.VoxelSize);
+
+            foreach (var (x, z) in FindIceColumns(graph, sampler, depth: 1.0f))
+            {
+                // Every corner column of the cell lies under the ice, so the blend is exact there too:
+                Assert.Equal(Config.IceLevel, sampler.Sample(new Vector3i(x, 0, z), 0, graph.ElevationRoot));
+                Assert.Equal(254, DensitySampler.ContentFromDensity(sampler.Sample(new Vector3i(x, level - 1, z), 0, graph.DensityRoot), 0));
+                Assert.Equal(WorldConstants.ContentIsoLevel, DensitySampler.ContentFromDensity(sampler.Sample(new Vector3i(x, level, z), 0, graph.DensityRoot), 0));
+                Assert.Equal(0, DensitySampler.ContentFromDensity(sampler.Sample(new Vector3i(x, level + 1, z), 0, graph.DensityRoot), 0));
+            }
+        }
+    }
+
+    [Fact]
+    public void Ice_FillsOnlyWhereTheGroundLeavesAirBelowTheIceLevel()
+    {
+        var graph = TerrainGraph.Build(IceSeed, Config, interpolate: false);
+        var sampler = new DensitySampler(graph.Graph);
+        var spacing = DensitySampler.SampleSpacing(0);
+        var roots = new float[graph.Graph.RootCount];
+        var iceSamples = 0;
+        var bedSamples = 0;
+
+        foreach (var (x, z) in FindIceColumns(graph, sampler, depth: 0.5f))
+        {
+            var ground = sampler.Sample(new Vector3i(x, 0, z), 0, graph.GroundRoot);
+
+            for (var y = (int)MathF.Floor(ground / spacing) - 8; y <= (int)MathF.Ceiling(Config.IceLevel / spacing) + 4; y++)
+            {
+                sampler.Sample(new Vector3i(x, y, z), 0, roots);
+
+                var height = y * spacing;
+                var material = (byte)roots[graph.MaterialRoot];
+                var solid = roots[graph.DensityRoot] > 0.0f;
+
+                Assert.Equal(height < Config.IceLevel, solid);
+
+                if (height > ground && height < Config.IceLevel)
+                {
+                    Assert.True(material is SurfaceMaterial.Ice or SurfaceMaterial.Snow, $"The fill at ({x}, {y}, {z}) is material {material}.");
+                    iceSamples++;
+                }
+                else if (height < ground && Config.IceLevel - height > Config.SnowThickness + Config.IceThickness)
+                {
+                    // The skin is measured from the top of the ice, so a bed deeper than it is the bands' stone:
+                    Assert.True(material is not (SurfaceMaterial.Ice or SurfaceMaterial.Snow), $"The bed at ({x}, {y}, {z}) is material {material}.");
+                    bedSamples++;
+                }
+            }
+        }
+
+        Assert.True(iceSamples > 100 && bedSamples > 100, $"Only {iceSamples} ice and {bedSamples} bed sample(s) were checked.");
+
+        // Above the ice level the solid is the ground's alone:
+        for (var z = -64; z <= 64; z += 16)
+        {
+            for (var x = -64; x <= 64; x += 16)
+            {
+                var ground = sampler.Sample(new Vector3i(x, 0, z), 0, graph.GroundRoot);
+                var top = (int)MathF.Ceiling(Math.Max(ground, Config.IceLevel) / spacing) + 4;
+
+                for (var y = (int)MathF.Ceiling(Config.IceLevel / spacing); y <= top; y++)
+                {
+                    Assert.Equal(y * spacing < ground, sampler.Sample(new Vector3i(x, y, z), 0, graph.DensityRoot) > 0.0f);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public void SurfaceBound_IsAtOrAboveTheTopOfEveryColumn()
+    {
+        var graph = TerrainGraph.Build(IceSeed, Config);
+        var sampler = new DensitySampler(graph.Graph);
+        var bound = new DensitySampler(graph.SurfaceBoundGraph);
+
+        for (var z = -2048; z <= 2048; z += 52)
+        {
+            for (var x = -2048; x <= 2048; x += 52)
+            {
+                var position = new Vector3i(x, 0, z);
+                var top = sampler.Sample(position, 0, graph.ElevationRoot);
+
+                Assert.True(bound.Sample(position, 0) >= top, $"The bound at ({x}, {z}) is below the top {top}.");
+                Assert.True(top <= graph.MaxSurfaceY);
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Columns near the origin whose ground and the ground of every corner column around them lie at least <paramref name="depth"/> below the ice level.
+    /// </summary>
+    private static List<(int X, int Z)> FindIceColumns(TerrainGraph graph, DensitySampler sampler, float depth)
+    {
+        var columns = new List<(int X, int Z)>();
+        var cellX = graph.Graph.CellX;
+        var cellZ = graph.Graph.CellZ;
+
+        for (var z = -256; z <= 256 && columns.Count < 40; z += 3)
+        {
+            for (var x = -256; x <= 256 && columns.Count < 40; x += 3)
+            {
+                var deep = true;
+                var cornerX = MathX.FloorDiv(x, cellX) * cellX;
+                var cornerZ = MathX.FloorDiv(z, cellZ) * cellZ;
+
+                foreach (var (sampleX, sampleZ) in new[] { (x, z), (cornerX, cornerZ), (cornerX + cellX, cornerZ), (cornerX, cornerZ + cellZ), (cornerX + cellX, cornerZ + cellZ) })
+                {
+                    deep &= sampler.Sample(new Vector3i(sampleX, 0, sampleZ), 0, graph.GroundRoot) < Config.IceLevel - depth;
+                }
+
+                if (deep)
+                {
+                    columns.Add((x, z));
+                }
+            }
+        }
+
+        Assert.True(columns.Count >= 10, $"Only {columns.Count} column(s) under the ice were found near the origin.");
+
+        return columns;
     }
 
     /// <summary>

@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using Graphics2.Mathematics;
 using WinterGame.Jobs;
 using WinterGame.World.Generation;
+using WinterGame.World.Generation.GraphProgram;
 using WinterGame.World.Level.Meshing;
 using WinterGame.World.Level.Residency;
 using WinterGame.World.Storage;
@@ -13,7 +15,7 @@ using WinterGame.World.Storage;
 namespace WinterGame.World.Level.Loading;
 
 /// <summary>
-///     Loads the sections the tickets' load shapes hold: generated off-thread nearest first, one per free executor slot per update, and a section entirely above the surface written as uniform air without a job.
+///     Loads the sections the tickets' load shapes hold: generated off-thread nearest first, one per free executor slot per update, and a section entirely above its column's surface written as uniform air without a job.
 /// </summary>
 internal sealed class SectionLoader
 {
@@ -51,9 +53,23 @@ internal sealed class SectionLoader
     private readonly float _skyMinimumY;
 
     /// <summary>
-    ///     The lowest section written as uniform air without a job, the first whose lowest sample is at or above <see cref="_skyMinimumY"/>.
+    ///     The lowest section that is air in every column, the first whose lowest sample is at or above <see cref="_skyMinimumY"/>.
     /// </summary>
     public readonly int LowestSkySectionY;
+
+    /// <summary>
+    ///     Evaluates <see cref="TerrainGraph.SurfaceBoundGraph"/> on the game thread.
+    /// </summary>
+    private readonly DensitySampler _surfaceBound;
+
+    // The corner lattice's spacing in samples, whose columns bound a section column's surface:
+    private readonly int _cellX;
+    private readonly int _cellZ;
+
+    /// <summary>
+    ///     Each section column's lowest sky section, computed when the column is first asked about and kept, about 28 bytes per column ever visited.
+    /// </summary>
+    private readonly Dictionary<ulong, int> _lowestSkySectionYs = [];
 
     /// <summary>
     ///     The sections inside some ticket's load shape that are neither generating nor loaded, by squared distance to that ticket's center.
@@ -75,12 +91,10 @@ internal sealed class SectionLoader
         _executor = new SectionGenerationExecutor(graph, scheduler.ThreadCount, slotCount);
         _providerId = scheduler.RegisterExecutor(_executor);
         _skyMinimumY = graph.MaxSurfaceY + WorldConstants.VoxelSize;
-        LowestSkySectionY = (int)MathF.Ceiling(_skyMinimumY / (SectionPos.SectionSize * WorldConstants.VoxelSize));
-
-        Debug.Assert(
-            IsSky(new SectionPos(0, LowestSkySectionY, 0)) && !IsSky(new SectionPos(0, LowestSkySectionY - 1, 0)),
-            $"Section {LowestSkySectionY} is not the lowest one the loader writes as sky."
-        );
+        LowestSkySectionY = SectionYAtOrAbove(_skyMinimumY);
+        _surfaceBound = new DensitySampler(graph.SurfaceBoundGraph);
+        _cellX = graph.Graph.CellX;
+        _cellZ = graph.Graph.CellZ;
     }
 
     public int PendingCount => _loadQueue.Count;
@@ -351,9 +365,46 @@ internal sealed class SectionLoader
         }
     }
 
+    /// <summary>
+    ///     The lowest section of a section column whose lowest sample is one sample above the column's surface bound.
+    ///     Every corner of its cells is then at least a sample out of the ground, so generating it would give content 0 and no material throughout, which is what the loader writes.
+    /// </summary>
+    public int GetLowestSkySectionY(int sectionX, int sectionZ)
+    {
+        ref var lowest = ref CollectionsMarshal.GetValueRefOrAddDefault(_lowestSkySectionYs, SectionPos.Pack(sectionX, 0, sectionZ), out var exists);
+
+        if (!exists)
+        {
+            var minX = SectionPos.SectionToVoxelCoord(sectionX);
+            var minZ = SectionPos.SectionToVoxelCoord(sectionZ);
+            var bound = float.NegativeInfinity;
+
+            // The section's cells have their corners on these columns, the ones on its far faces included:
+            for (var z = 0; z <= SectionPos.SectionSize; z += _cellZ)
+            {
+                for (var x = 0; x <= SectionPos.SectionSize; x += _cellX)
+                {
+                    bound = Math.Max(bound, _surfaceBound.Sample(new Vector3i(minX + x, 0, minZ + z), 0));
+                }
+            }
+
+            lowest = Math.Min(SectionYAtOrAbove(bound + WorldConstants.VoxelSize), LowestSkySectionY);
+        }
+
+        return lowest;
+    }
+
     private bool IsSky(SectionPos position)
     {
-        return SectionPos.SectionToVoxelCoord(position.Y) * WorldConstants.VoxelSize >= _skyMinimumY;
+        return position.Y >= GetLowestSkySectionY(position.X, position.Z);
+    }
+
+    /// <summary>
+    ///     The lowest section whose lowest sample is at or above a height in meters.
+    /// </summary>
+    private static int SectionYAtOrAbove(float height)
+    {
+        return (int)MathF.Ceiling(height / (SectionPos.SectionSize * WorldConstants.VoxelSize));
     }
 
     private GeneratedSection WriteSky(SectionPos position)

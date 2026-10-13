@@ -30,6 +30,17 @@ public class TerrainGraphSourceTests
     }
 
     [Fact]
+    public void Generate_MatchesPointReadsAcrossTheIce()
+    {
+        // The game's seed has a river through the origin, so the box holds its bed, its ice and the air above:
+        var source = CreateSource(3141);
+
+        Assert.True(source.Graph.Graph.BoundaryCount == 2 && source.Elevation(0, 0) == new TerrainConfig().IceLevel);
+
+        AssertGenerateMatchesPointReads(source, new Vector3i(-9, -14, -7), new Vector3i(22, 10, 24));
+    }
+
+    [Fact]
     public void Elevation_IsInsideTheGeneratedSurface()
     {
         var source = CreateSource();

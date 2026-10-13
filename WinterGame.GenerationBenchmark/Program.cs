@@ -88,15 +88,15 @@ internal static class Benchmark
     public static void Run(BenchmarkOptions options)
     {
         var graph = TerrainGraph.Build(options.Seed, new TerrainConfig());
-        var skyMinimumY = graph.MaxSurfaceY + WorldConstants.VoxelSize;
         var center = SurfaceSection(graph, 0, 0);
         var shape = GetLoadShape(center, options.Radius, options.VerticalRadius, out var columns);
-        var generated = shape.Count(position => !IsSky(position, skyMinimumY));
+        var sky = GetSkySections(graph, shape);
+        var generated = shape.Length - sky.Count;
 
-        Console.WriteLine($"Shape: {shape.Length} section(s) in {columns} column(s) of {2 * options.VerticalRadius + 1}, {shape.Length - generated} of them sky, {generated} generated");
+        Console.WriteLine($"Shape: {shape.Length} section(s) in {columns} column(s) of {2 * options.VerticalRadius + 1}, {sky.Count} of them sky, {generated} generated");
         Console.WriteLine();
 
-        MeasureSectionCost(graph, center, shape, skyMinimumY, options);
+        MeasureSectionCost(graph, center, shape, sky, options);
 
         var unpaced = new List<RunResult>();
         var maximumWorkers = options.Workers.Max();
@@ -158,10 +158,10 @@ internal static class Benchmark
     /// <summary>
     ///     Times the three stages of one section on the calling thread, over the generated sections of the columns nearest the centre, so the sample holds the shape's mix of surface and deep sections.
     /// </summary>
-    private static void MeasureSectionCost(TerrainGraph graph, SectionPos center, SectionPos[] shape, float skyMinimumY, BenchmarkOptions options)
+    private static void MeasureSectionCost(TerrainGraph graph, SectionPos center, SectionPos[] shape, HashSet<SectionPos> sky, BenchmarkOptions options)
     {
         var positions = shape
-            .Where(position => !IsSky(position, skyMinimumY))
+            .Where(position => !sky.Contains(position))
             .OrderBy(position => HorizontalDistanceSquared(position, center))
             .ThenBy(position => position.Y)
             .Take(options.CostSections)
@@ -603,11 +603,24 @@ internal static class Benchmark
     }
 
     /// <summary>
-    ///     The same test <see cref="WorldLevel"/> uses to write a section as air without a job.
+    ///     The sections of a shape that <see cref="WorldLevel"/> writes as air without a job, from each section column's own surface bound.
     /// </summary>
-    private static bool IsSky(SectionPos position, float skyMinimumY)
+    private static HashSet<SectionPos> GetSkySections(TerrainGraph graph, SectionPos[] shape)
     {
-        return SectionPos.SectionToVoxelCoord(position.Y) * WorldConstants.VoxelSize >= skyMinimumY;
+        // A level over a scheduler that never starts, asked only for its bounds:
+        using var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = 1 });
+        using var level = new WorldLevel(scheduler, graph);
+        var sky = new HashSet<SectionPos>();
+
+        foreach (var position in shape)
+        {
+            if (position.Y >= level.GetLowestSkySectionY(position.X, position.Z))
+            {
+                sky.Add(position);
+            }
+        }
+
+        return sky;
     }
 
     internal static SectionPos SurfaceSection(TerrainGraph graph, int sectionX, int sectionZ)

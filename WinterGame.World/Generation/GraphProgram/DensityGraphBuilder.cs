@@ -187,10 +187,15 @@ public sealed class DensityGraphBuilder
 
     public DensityNode Spline(DensityNode input, float[] positions, float[] values)
     {
+        return Spline(input, new CubicSpline(positions, values));
+    }
+
+    public DensityNode Spline(DensityNode input, CubicSpline spline)
+    {
         RequireOwn(input);
 
         var payload = _splines.Count;
-        _splines.Add(new CubicSpline(positions, values));
+        _splines.Add(spline);
 
         return Append(new AuthorNode(DensityOp.Spline, "spline", input.Index, DensityInstruction.NoSlot, DensityInstruction.NoSlot, payload));
     }

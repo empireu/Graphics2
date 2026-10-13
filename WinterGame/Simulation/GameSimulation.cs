@@ -23,7 +23,11 @@ internal sealed class GameSimulation : IDisposable
     ///     The player's ticket's radius in sections, which the render side's fog also follows.
     /// </summary>
     public const int TicketHorizontalRadius = 8;
-    private const int TicketVerticalRadius = 4;
+
+    /// <summary>
+    ///     The ticket's height above and below the player in sections, which holds a slope of 45 degrees out to the horizontal radius.
+    /// </summary>
+    private const int TicketVerticalRadius = 8;
 
     /// <summary>
     ///     How far above the surface the player starts, in metres.

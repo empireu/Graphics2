@@ -93,10 +93,15 @@ public sealed class WorldLevel : IDisposable
     public BoundingBox3i MeshWindow => _meshReadiness.MeshWindow;
 
     /// <summary>
-    ///     The lowest section the level writes as uniform air without generating it, since the generator puts no surface there.
-    ///     The sections above it hold only what writes put there.
+    ///     The lowest section that no column of the world generates any solid in, the highest of every column's <see cref="GetLowestSkySectionY"/>.
     /// </summary>
     public int LowestSkySectionY => _loader.LowestSkySectionY;
+
+    /// <summary>
+    ///     The lowest section of a section column the level writes as uniform air without generating it, since the generator puts no solid there.
+    ///     The sections at and above it hold only what writes put there. Game thread only.
+    /// </summary>
+    public int GetLowestSkySectionY(int sectionX, int sectionZ) => _loader.GetLowestSkySectionY(sectionX, sectionZ);
 
     /// <summary>
     ///     Whether the level was created to record its changes for <see cref="TakeChanges"/>.

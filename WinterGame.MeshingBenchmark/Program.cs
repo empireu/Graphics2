@@ -45,10 +45,6 @@ internal static class Benchmark
 
         var config = new TerrainConfig
         {
-            BaseHeight = options.BaseHeight,
-            ContinentalAmplitude = options.ContinentalAmplitude,
-            HillAmplitude = options.HillAmplitude,
-            MountainAmplitude = options.MountainAmplitude,
             ProvinceWavelength = options.ProvinceWavelength,
             FoldAmplitude = options.FoldAmplitude,
             FoldWavelength = options.FoldWavelength,
@@ -488,10 +484,6 @@ internal sealed class BenchmarkOptions
     public int SectionsY = 10;
     public int SectionsZ = 4;
 
-    public float BaseHeight = 4.0f;
-    public float ContinentalAmplitude = 8.0f;
-    public float HillAmplitude = 1.5f;
-    public float MountainAmplitude = 12.0f;
     public float ProvinceWavelength = 24.0f;
     public float ProvinceHalfWidth = 0.3f;
     public float FoldAmplitude = 4.0f;

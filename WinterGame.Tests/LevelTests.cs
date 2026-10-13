@@ -1,5 +1,6 @@
 using Graphics2.Data;
 using Graphics2.Mathematics;
+using Graphics2.Mathematics.Interpolation;
 using WinterGame.Jobs;
 using WinterGame.Utilities;
 using WinterGame.World;
@@ -14,7 +15,26 @@ namespace WinterGame.Tests;
 
 public class LevelTests
 {
-    internal static readonly TerrainGraph Graph = TerrainGraph.Build(11, new TerrainConfig());
+    /// <summary>
+    ///     The scales of the generator's first shape: about 25 m of relief with 12 m ridges every 96 m, no ice near the surface and no river near the origin, so a ticket a few sections tall reaches the sky over every column.
+    ///     The level, lighting and meshing tests are about mechanics and were written against that world, and the game's shape has its own tests.
+    /// </summary>
+    internal static readonly TerrainConfig Config = new()
+    {
+        IceLevel = -14.0f,
+        ContinentalWavelength = 512.0f,
+        BaseHeight = new CubicSpline([-1.0f, 1.0f], [12.0f, 28.0f]),
+        MountainWavelength = 96.0f,
+        MountainAmplitude = new CubicSpline([-1.0f, 1.0f], [12.0f, 12.0f]),
+        MountainMaskMin = 0.05f,
+        MountainMaskMax = 0.55f,
+        HillWavelength = 32.0f,
+        HillAmplitude = new CubicSpline([-1.0f, 1.0f], [1.5f, 1.5f]),
+        DetailAmplitude = 0.0f,
+        RiverWavelength = 100000.0f
+    };
+
+    internal static readonly TerrainGraph Graph = TerrainGraph.Build(11, Config);
 
     /// <summary>
     ///     A level over a scheduler that is never started, so a tick runs its work on the test thread.
@@ -196,6 +216,49 @@ public class LevelTests
         Assert.Equal(0, harness.Level.InFlightCount);
         Assert.True(harness.Level.TryGetSection(sky, out var section));
         AssertUniformAir(section);
+    }
+
+    [Fact]
+    public void ASkySection_StartsAboveItsOwnColumnsSurface()
+    {
+        WgAssert.InitGameThread();
+
+        // The game's shape reaches about 220 m, but its origin lies on a river at the ice level:
+        var graph = TerrainGraph.Build(3141, new TerrainConfig());
+        using var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = 2 });
+        var level = new WorldLevel(scheduler, graph);
+        var source = new TerrainGraphSource(graph);
+        var content = Memory3D<byte>.Allocate(SectionPos.SectionSize, SectionPos.SectionSize, SectionPos.SectionSize);
+        var material = Memory3D<byte>.Allocate(SectionPos.SectionSize, SectionPos.SectionSize, SectionPos.SectionSize);
+
+        Assert.True(level.GetLowestSkySectionY(0, 0) + 20 < level.LowestSkySectionY);
+
+        for (var sectionZ = -24; sectionZ <= 24; sectionZ += 6)
+        {
+            for (var sectionX = -24; sectionX <= 24; sectionX += 6)
+            {
+                var skyY = level.GetLowestSkySectionY(sectionX, sectionZ);
+                var origin = new SectionPos(sectionX, skyY, sectionZ).GetOrigin();
+
+                Assert.True(skyY <= level.LowestSkySectionY);
+
+                // Generating the sky section gives the uniform air the loader writes in its place:
+                source.Generate(origin, origin + SectionPos.SectionMask, content.Span, material.Span);
+
+                Assert.True(content.Span.Data.IndexOfAnyExcept((byte)0) < 0, $"Section ({sectionX}, {skyY}, {sectionZ}) has content.");
+                Assert.True(material.Span.Data.IndexOfAnyExcept(SurfaceMaterial.Null) < 0, $"Section ({sectionX}, {skyY}, {sectionZ}) has material.");
+            }
+        }
+
+        var sky = new SectionPos(0, level.GetLowestSkySectionY(0, 0), 0);
+
+        level.AddTicket(sky, horizontalRadius: 0, verticalRadius: 0);
+        level.Update();
+
+        Assert.Equal(SectionStatus.Ready, level.GetStatus(sky));
+        Assert.Equal(0, level.InFlightCount);
+
+        level.Dispose();
     }
 
     [Fact]

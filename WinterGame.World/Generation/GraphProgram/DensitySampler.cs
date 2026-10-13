@@ -807,27 +807,52 @@ public sealed class DensitySampler
         var inverseLengthY = values[DensityGraph.InverseCellLengthSlotY];
         var inverseLengthZ = values[DensityGraph.InverseCellLengthSlotZ];
         var latticeBase = boundary * cells.CornerCount + cells.ColumnBase;
+        var cellRows = cells.CellRows.AsSpan(0, output.Length);
+        var rowFractions = cells.RowFractions.AsSpan(0, output.Length);
         var loadedRow = -1;
         var corners = default(CellCorners);
 
-        for (var sample = 0; sample < output.Length; sample++)
+        switch (op)
         {
-            var row = cells.CellRows[sample];
+            case DensityOp.Interpolated:
+                for (var sample = 0; sample < output.Length; sample++)
+                {
+                    if (cellRows[sample] != loadedRow)
+                    {
+                        loadedRow = cellRows[sample];
+                        corners = CellCorners.FromLattice(cells.CornerCache, latticeBase + loadedRow * cells.StrideY, cells.StrideY, cells.StrideZ);
+                    }
 
-            if (row != loadedRow)
-            {
-                loadedRow = row;
-                corners = CellCorners.FromLattice(cells.CornerCache, latticeBase + row * cells.StrideY, cells.StrideY, cells.StrideZ);
-            }
+                    output[sample] = corners.Blend(fractionX, rowFractions[sample], fractionZ);
+                }
 
-            var fractionY = cells.RowFractions[sample];
+                break;
+            case DensityOp.SlopeCosine:
+                for (var sample = 0; sample < output.Length; sample++)
+                {
+                    if (cellRows[sample] != loadedRow)
+                    {
+                        loadedRow = cellRows[sample];
+                        corners = CellCorners.FromLattice(cells.CornerCache, latticeBase + loadedRow * cells.StrideY, cells.StrideY, cells.StrideZ);
+                    }
 
-            output[sample] = op switch
-            {
-                DensityOp.Interpolated => corners.Blend(fractionX, fractionY, fractionZ),
-                DensityOp.SlopeCosine => corners.SlopeCosine(fractionX, fractionY, fractionZ, inverseLengthX, inverseLengthY, inverseLengthZ),
-                _ => corners.SurfaceDistance(fractionX, fractionY, fractionZ, inverseLengthX, inverseLengthY, inverseLengthZ)
-            };
+                    output[sample] = corners.SlopeCosine(fractionX, rowFractions[sample], fractionZ, inverseLengthX, inverseLengthY, inverseLengthZ);
+                }
+
+                break;
+            default:
+                for (var sample = 0; sample < output.Length; sample++)
+                {
+                    if (cellRows[sample] != loadedRow)
+                    {
+                        loadedRow = cellRows[sample];
+                        corners = CellCorners.FromLattice(cells.CornerCache, latticeBase + loadedRow * cells.StrideY, cells.StrideY, cells.StrideZ);
+                    }
+
+                    output[sample] = corners.SurfaceDistance(fractionX, rowFractions[sample], fractionZ, inverseLengthX, inverseLengthY, inverseLengthZ);
+                }
+
+                break;
         }
     }
 
@@ -958,6 +983,7 @@ public sealed class DensitySampler
             return value;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public float SlopeCosine(float fractionX, float fractionY, float fractionZ, float inverseLengthX, float inverseLengthY, float inverseLengthZ)
         {
             Gradient(fractionX, fractionY, fractionZ, inverseLengthX, inverseLengthY, inverseLengthZ, out var gradientX, out var gradientY, out var gradientZ);
@@ -973,6 +999,7 @@ public sealed class DensitySampler
             return -gradientY / MathF.Sqrt(lengthSquared);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public float SurfaceDistance(float fractionX, float fractionY, float fractionZ, float inverseLengthX, float inverseLengthY, float inverseLengthZ)
         {
             Gradient(fractionX, fractionY, fractionZ, inverseLengthX, inverseLengthY, inverseLengthZ, out var gradientX, out var gradientY, out var gradientZ);
@@ -985,6 +1012,7 @@ public sealed class DensitySampler
         /// <summary>
         ///     The gradient in meters of the trilinear blend at the cell's fractions.
         /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void Gradient(
             float fractionX,
             float fractionY,

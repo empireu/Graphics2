@@ -3,6 +3,7 @@ using Graphics2.Mathematics;
 using WinterGame.Jobs;
 using WinterGame.Utilities;
 using WinterGame.World;
+using WinterGame.World.Generation;
 using WinterGame.World.Level;
 using WinterGame.World.Level.Residency;
 using WinterGame.World.Lighting;
@@ -246,20 +247,23 @@ public class SkyColumnsTests
         var sky = new SkyColumns(level);
         var surface = LevelTests.SurfaceSection(3, -2);
         var lowest = surface.Y - 1;
+        var skyY = level.GetLowestSkySectionY(surface.X, surface.Z);
         var brickX = surface.X * Section.BricksPerAxis + 5;
         var brickZ = surface.Z * Section.BricksPerAxis + 2;
 
-        // The ground first, so the walk waits at the lowest sky section:
+        Assert.True(skyY > surface.Y, "The walk would not wait.");
+
+        // The ground first, so the walk waits at the column's lowest sky section:
         level.GetOrLoadSection(surface);
         level.GetOrLoadSection(surface with { Y = lowest });
         UpdateSky(level, sky);
 
         Assert.True(sky.TryGetFloor(brickX, brickZ, out var waitingFloor, out var isFound));
         Assert.False(isFound);
-        Assert.Equal((level.LowestSkySectionY + 1) * Section.BricksPerAxis, waitingFloor);
+        Assert.Equal((skyY + 1) * Section.BricksPerAxis, waitingFloor);
 
         // The rest from the bottom up, all ready before the walk looks at them:
-        for (var y = surface.Y + 1; y <= level.LowestSkySectionY; y++)
+        for (var y = surface.Y + 1; y <= skyY; y++)
         {
             level.GetOrLoadSection(surface with { Y = y });
         }
@@ -271,6 +275,41 @@ public class SkyColumnsTests
             for (var x = 0; x < Section.BricksPerAxis; x++)
             {
                 AssertFloorMatchesScan(level, sky, surface.X * Section.BricksPerAxis + x, surface.Z * Section.BricksPerAxis + z, lowest);
+            }
+        }
+
+        level.Dispose();
+    }
+
+    [Fact]
+    public void AWalk_StartsAtItsOwnColumnsSkySection()
+    {
+        WgAssert.InitGameThread();
+
+        // The game's shape reaches about 220 m, but its origin lies on a river at the ice level, so the walk there starts far below the highest sky:
+        using var scheduler = new JobScheduler(new JobSchedulerDescription { ThreadCount = 1 });
+        var graph = TerrainGraph.Build(3141, new TerrainConfig());
+        var level = new WorldLevel(scheduler, graph, recordChanges: true);
+        var sky = new SkyColumns(level);
+        var surfaceY = SectionPos.VoxelToSectionCoord((int)MathF.Floor(new TerrainGraphSource(graph).Elevation(16, 16) / WorldConstants.VoxelSize));
+        var skyY = level.GetLowestSkySectionY(0, 0);
+
+        Assert.True(skyY + 20 < level.LowestSkySectionY);
+
+        for (var y = surfaceY - 1; y <= skyY; y++)
+        {
+            level.GetOrLoadSection(new SectionPos(0, y, 0));
+        }
+
+        UpdateSky(level, sky);
+
+        Assert.True(sky.IsSkyKnown(new SectionPos(0, surfaceY, 0)));
+
+        for (var z = 0; z < Section.BricksPerAxis; z++)
+        {
+            for (var x = 0; x < Section.BricksPerAxis; x++)
+            {
+                AssertFloorMatchesScan(level, sky, x, z, surfaceY - 1);
             }
         }
 
@@ -290,7 +329,7 @@ public class SkyColumnsTests
     }
 
     /// <summary>
-    ///     Checks a column's floor against a scan of the voxels the level holds, from the top of the lowest sky section down to the bottom of <paramref name="lowestLoadedSectionY"/>.
+    ///     Checks a column's floor against a scan of the voxels the level holds, from the top of its section column's lowest sky section down to the bottom of <paramref name="lowestLoadedSectionY"/>.
     /// </summary>
     private static void AssertFloorMatchesScan(WorldLevel level, SkyColumns sky, int brickX, int brickZ, int lowestLoadedSectionY)
     {
@@ -308,7 +347,7 @@ public class SkyColumnsTests
     /// </summary>
     private static (int Floor, bool Found) ScanFloor(WorldLevel level, int brickX, int brickZ, int lowestLoadedSectionY)
     {
-        var topBrick = (level.LowestSkySectionY + 1) * Section.BricksPerAxis;
+        var topBrick = (level.GetLowestSkySectionY(brickX >> Section.BricksPerAxisLog, brickZ >> Section.BricksPerAxisLog) + 1) * Section.BricksPerAxis;
         var bottomBrick = lowestLoadedSectionY * Section.BricksPerAxis;
         var min = new Vector3i(brickX, bottomBrick, brickZ) * Section.BrickSize;
         var max = new Vector3i(brickX + 1, topBrick, brickZ + 1) * Section.BrickSize - 1;

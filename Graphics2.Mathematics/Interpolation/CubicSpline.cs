@@ -80,6 +80,67 @@ public readonly struct CubicSpline : IEquatable<CubicSpline>
                + h11 * span * _tangents[index + 1];
     }
 
+    /// <summary>
+    ///     The largest value the curve takes, which is at a control point or where a segment turns, since Catmull-Rom tangents can overshoot the control values.
+    ///     Near a turn, <see cref="Evaluate"/> rounds a few units in the last place either way, so a bound should leave a margin.
+    /// </summary>
+    public float Maximum()
+    {
+        var maximum = float.NegativeInfinity;
+
+        for (var index = 0; index < _values.Length; index++)
+        {
+            maximum = Math.Max(maximum, _values[index]);
+        }
+
+        Span<double> roots = stackalloc double[2];
+
+        for (var index = 0; index < _positions.Length - 1; index++)
+        {
+            var span = (double)_positions[index + 1] - _positions[index];
+            var from = (double)_values[index];
+            var to = (double)_values[index + 1];
+            var fromSlope = span * _tangents[index];
+            var toSlope = span * _tangents[index + 1];
+
+            // The segment is a t^3 + b t^2 + c t + d over t in [0, 1], so it turns where 3a t^2 + 2b t + c is zero:
+            var a = 2.0 * from + fromSlope - 2.0 * to + toSlope;
+            var b = -3.0 * from - 2.0 * fromSlope + 3.0 * to - toSlope;
+            var c = fromSlope;
+            var rootCount = 0;
+
+            if (Math.Abs(a) < 1.0e-12)
+            {
+                if (Math.Abs(b) > 1.0e-12)
+                {
+                    roots[rootCount++] = -c / (2.0 * b);
+                }
+            }
+            else
+            {
+                var discriminant = 4.0 * b * b - 12.0 * a * c;
+
+                if (discriminant >= 0.0)
+                {
+                    var root = Math.Sqrt(discriminant);
+
+                    roots[rootCount++] = (-2.0 * b + root) / (6.0 * a);
+                    roots[rootCount++] = (-2.0 * b - root) / (6.0 * a);
+                }
+            }
+
+            for (var root = 0; root < rootCount; root++)
+            {
+                if (roots[root] > 0.0 && roots[root] < 1.0)
+                {
+                    maximum = Math.Max(maximum, Evaluate((float)(_positions[index] + roots[root] * span)));
+                }
+            }
+        }
+
+        return maximum;
+    }
+
     private static float[] ComputeTangents(float[] positions, float[] values)
     {
         var last = positions.Length - 1;
